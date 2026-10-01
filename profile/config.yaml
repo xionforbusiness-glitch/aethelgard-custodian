@@ -1,0 +1,18 @@
+model:
+  default: antigravity/gemini-3.7-flash-high
+  api_mode: chat_completions
+  provider: first-time
+  base_url: http://127.0.0.1:20128/v1
+  key_env: HERMES_CUSTOM_FIRST_TIME_API_KEY
+  context_length: 1048576
+  aliases:
+    flash: antigravity/gemini-3.7-flash-high
+    gemini: antigravity/gemini-3.7-flash-high
+    sonnet: antigravity/claude-sonnet-4-6
+    opus: antigravity/claude-opus-4-6-thinking
+providers:
+  first-time:
+    name: omnirouter
+    base_url: http://127.0.0.1:20128/v1
+    model: antigravity/gemini-3.7-flash-high
+    discover_models: true

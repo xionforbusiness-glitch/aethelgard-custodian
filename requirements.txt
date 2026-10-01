@@ -1,0 +1,6 @@
+hermes-agent[voice]
+faster-whisper
+requests
+yt-dlp
+pillow
+pyyaml

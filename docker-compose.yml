@@ -1,0 +1,11 @@
+services:
+  custodian:
+    build: .
+    container_name: aethelgard_custodian
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      - ./vault:/root/vault
+    ports:
+      - "20128:20128"
