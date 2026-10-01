@@ -112,11 +112,16 @@ def init_omniroute():
     subprocess.run(f"omniroute stop 2>/dev/null; pkill -9 -f omniroute 2>/dev/null; fuser -k {OMNIROUTE_PORT}/tcp 2>/dev/null || true", shell=True)
     time.sleep(1)
 
+    # Disable Linux IPv6 to prevent 30-second connection timeouts in Google Cloud
+    if os.name != "nt":
+        subprocess.run("sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1 net.ipv6.conf.default.disable_ipv6=1 2>/dev/null || true", shell=True)
+
     # Start OmniRoute daemon via 'omniroute serve'
     env = dict(os.environ)
     env["STORAGE_ENCRYPTION_KEY"] = STORAGE_ENCRYPTION_KEY
     env["OMNIROUTE_MAX_PENDING_MIGRATIONS"] = "0"
     env["PORT"] = str(OMNIROUTE_PORT)
+    env["NODE_OPTIONS"] = "--dns-result-order=ipv4first --max-old-space-size=1536"
 
     log_path = "/tmp/omniroute.log" if os.name != "nt" else os.path.join(SCRIPT_DIR, "omniroute.log")
     log_f = open(log_path, "w", encoding="utf-8")
@@ -169,7 +174,11 @@ def init_hermes():
     print(f"\n⚙️ [3/4] Configuring Hermes Profile '{HERMES_PROFILE}'...")
     os.makedirs(HERMES_PROFILE_DIR, exist_ok=True)
 
-    # Sync SOUL.md & skills
+    # Sync config.yaml, SOUL.md & skills
+    cfg_src = os.path.join(SCRIPT_DIR, "profile", "config.yaml")
+    if os.path.exists(cfg_src):
+        shutil.copy2(cfg_src, os.path.join(HERMES_PROFILE_DIR, "config.yaml"))
+
     soul_src = os.path.join(SCRIPT_DIR, "profile", "SOUL.md")
     if os.path.exists(soul_src):
         shutil.copy2(soul_src, os.path.join(HERMES_PROFILE_DIR, "SOUL.md"))
@@ -199,18 +208,23 @@ def init_hermes():
     os.environ["GATEWAY_ALLOW_ALL_USERS"] = "true"
     os.environ["HERMES_PROFILE"] = HERMES_PROFILE
     os.environ["HERMES_HOME"] = HERMES_HOME
+    os.environ["HERMES_CUSTOM_FIRST_TIME_API_KEY"] = OMNIROUTE_API_KEY
+    os.environ["OMNIROUTE_API_KEY"] = OMNIROUTE_API_KEY
+    os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
+    os.environ["NODE_OPTIONS"] = "--dns-result-order=ipv4first --max-old-space-size=1536"
 
     # Apply hermes CLI configurations
     subprocess.run(["hermes", "profile", "use", HERMES_PROFILE], check=True)
     subprocess.run(["hermes", "config", "set", "model.provider", "first-time"], check=True)
     subprocess.run(["hermes", "config", "set", "model.default", MODEL_DEFAULT], check=True)
     subprocess.run(["hermes", "config", "set", "model.base_url", f"http://127.0.0.1:{OMNIROUTE_PORT}/v1"], check=True)
-    subprocess.run(["hermes", "config", "set", "model.api_key", OMNIROUTE_API_KEY], check=True)
+    subprocess.run(["hermes", "config", "set", "model.key_env", "HERMES_CUSTOM_FIRST_TIME_API_KEY"], check=True)
     subprocess.run(["hermes", "config", "set", "model.context_length", str(CONTEXT_LENGTH)], check=True)
+    subprocess.run(["hermes", "config", "set", "compression.enabled", "false"], check=True)
     subprocess.run(["hermes", "config", "set", "model.aliases.flash", MODEL_DEFAULT], check=True)
     subprocess.run(["hermes", "config", "set", "model.aliases.sonnet", "antigravity/claude-sonnet-4-6"], check=True)
     subprocess.run(["hermes", "config", "set", "model.aliases.opus", "antigravity/claude-opus-4-6-thinking"], check=True)
-    print("✅ Hermes profile configured with 1M context routing.")
+    print("✅ Hermes profile configured with 1M context routing (compression disabled for instantaneous replies).")
 
 
 # ── 5. Background Vault Auto-Sync Worker ─────────────────────────────────────

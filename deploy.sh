@@ -26,6 +26,10 @@ fi
 echo 'Acquire::ForceIPv4 "true";' | $SUDO tee /etc/apt/apt.conf.d/99force-ipv4 >/dev/null 2>&1 || true
 $SUDO sed -i 's/#$nrconf{restart} = .*/$nrconf{restart} = "a";/' /etc/needrestart/needrestart.conf 2>/dev/null || true
 
+# Disable IPv6 system-wide to eliminate 30-second network timeouts on Google Cloud
+$SUDO sysctl -w net.ipv6.conf.all.disable_ipv6=1 >/dev/null 2>&1 || true
+$SUDO sysctl -w net.ipv6.conf.default.disable_ipv6=1 >/dev/null 2>&1 || true
+
 # Configure 3GB Swap memory if not present (Crucial for 1GB RAM e2-micro VMs)
 if [ $(free -m | awk '/^Swap:/ {print $2}') -lt 2048 ]; then
   echo "💾 [0/5] Configuring 3GB Swap memory to eliminate 1GB RAM bottlenecks..."
@@ -103,6 +107,7 @@ StandardOutput=journal
 StandardError=journal
 Environment=PYTHONUNBUFFERED=1
 Environment=PATH=$VENV_DIR/bin:/usr/local/bin:/usr/bin:/bin
+Environment=NODE_OPTIONS="--dns-result-order=ipv4first --max-old-space-size=1536"
 
 [Install]
 WantedBy=multi-user.target
