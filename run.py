@@ -36,7 +36,10 @@ GITHUB_USER = os.environ.get("GITHUB_USER", "xionforbusiness-glitch")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "GITHUB_TOKEN_REDACTED")
 VAULT_REPO = os.environ.get("VAULT_REPO", "aethelgard-vault")
 VAULT_BRANCH = os.environ.get("VAULT_BRANCH", "main")
-VAULT_DIR = os.environ.get("VAULT_DIR", os.path.expanduser("~/vault"))
+raw_vault = os.environ.get("VAULT_DIR", "~/vault")
+if os.name != "nt" and hasattr(os, "geteuid") and os.geteuid() != 0 and raw_vault.startswith("/root"):
+    raw_vault = "~/vault"
+VAULT_DIR = os.path.abspath(os.path.expanduser(raw_vault))
 
 STORAGE_ENCRYPTION_KEY = os.environ.get("STORAGE_ENCRYPTION_KEY", "0000000000000000000000000000000000000000000000000000000000000000")
 OMNIROUTE_PORT = os.environ.get("OMNIROUTE_PORT", "20128")
