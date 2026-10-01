@@ -112,10 +112,6 @@ def init_omniroute():
     subprocess.run(f"omniroute stop 2>/dev/null; pkill -9 -f omniroute 2>/dev/null; fuser -k {OMNIROUTE_PORT}/tcp 2>/dev/null || true", shell=True)
     time.sleep(1)
 
-    # Disable Linux IPv6 to prevent 30-second connection timeouts in Google Cloud
-    if os.name != "nt":
-        subprocess.run("sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1 net.ipv6.conf.default.disable_ipv6=1 2>/dev/null || true", shell=True)
-
     # Start OmniRoute daemon via 'omniroute serve'
     env = dict(os.environ)
     env["STORAGE_ENCRYPTION_KEY"] = STORAGE_ENCRYPTION_KEY
