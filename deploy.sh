@@ -60,11 +60,25 @@ if ! command -v omniroute >/dev/null 2>&1; then
 fi
 echo "✅ OmniRoute installed."
 
-# Install Python requirements
-echo "🐍 [4/5] Installing Hermes Agent and Python dependencies..."
-pip install --upgrade pip
-pip install -r requirements.txt
-echo "✅ Python libraries installed."
+# Install Python 3.11 & Hermes requirements (hermes-agent requires Python >= 3.11)
+echo "🐍 [4/5] Installing Python 3.11 and Hermes Agent..."
+if ! command -v python3.11 >/dev/null 2>&1; then
+  echo "📦 Adding Python 3.11 repository (deadsnakes)..."
+  $SUDO add-apt-repository ppa:deadsnakes/ppa -y
+  $SUDO apt-get update -y
+  $SUDO apt-get install -y python3.11 python3.11-venv python3.11-dev
+fi
+
+VENV_DIR="$SCRIPT_DIR/venv"
+if [ ! -d "$VENV_DIR" ]; then
+  echo "📦 Creating Python 3.11 virtual environment in $VENV_DIR..."
+  python3.11 -m venv "$VENV_DIR"
+fi
+
+"$VENV_DIR/bin/pip" install --upgrade pip
+"$VENV_DIR/bin/pip" install -r requirements.txt
+$SUDO ln -sf "$VENV_DIR/bin/hermes" /usr/local/bin/hermes
+echo "✅ Python 3.11 and Hermes Agent installed."
 
 # Configure Systemd Service for 24/7 Autostart & Auto-Restart (if systemd available)
 echo "⚙️ [5/5] Configuring 24/7 Always-On Background Daemon..."
@@ -82,12 +96,13 @@ Wants=network-online.target
 Type=simple
 User=$(whoami)
 WorkingDirectory=$SCRIPT_DIR
-ExecStart=/usr/bin/python3 $SCRIPT_DIR/run.py
+ExecStart=$VENV_DIR/bin/python3 $SCRIPT_DIR/run.py
 Restart=always
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
 Environment=PYTHONUNBUFFERED=1
+Environment=PATH=$VENV_DIR/bin:/usr/local/bin:/usr/bin:/bin
 
 [Install]
 WantedBy=multi-user.target
@@ -110,7 +125,7 @@ else
   echo "💡 Systemd not detected (Running in container or sandbox mode)."
   echo "🚀 Launching in continuous background mode via nohup..."
   pkill -9 -f "run.py" 2>/dev/null || true
-  nohup python3 "$SCRIPT_DIR/run.py" > /tmp/aethelgard.log 2>&1 &
+  nohup "$VENV_DIR/bin/python3" "$SCRIPT_DIR/run.py" > /tmp/aethelgard.log 2>&1 &
   echo "============================================================"
   echo "🎉 [SUCCESS] AETHELGARD DAEMON LAUNCHED IN BACKGROUND!"
   echo "============================================================"

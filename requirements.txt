@@ -1,5 +1,4 @@
-hermes-agent[voice]
-faster-whisper
+hermes-agent
 requests
 yt-dlp
 pillow
