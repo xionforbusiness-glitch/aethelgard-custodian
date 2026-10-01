@@ -86,9 +86,14 @@ def init_omniroute():
     print("\n🧠 [2/4] Initializing OmniRoute Google Antigravity Pro Plan Engine...")
     os.makedirs(OMNIROUTE_DIR, exist_ok=True)
 
+    os.environ["STORAGE_ENCRYPTION_KEY"] = STORAGE_ENCRYPTION_KEY
+    os.environ["OMNIROUTE_MAX_PENDING_MIGRATIONS"] = "0"
+    os.environ["PORT"] = str(OMNIROUTE_PORT)
+
     # Write OmniRoute .env
     with open(os.path.join(OMNIROUTE_DIR, ".env"), "w", encoding="utf-8") as f:
         f.write(f"STORAGE_ENCRYPTION_KEY={STORAGE_ENCRYPTION_KEY}\n")
+        f.write(f"OMNIROUTE_MAX_PENDING_MIGRATIONS=0\n")
         f.write(f"PORT={OMNIROUTE_PORT}\n")
 
     # Restore pre-verified SQLite database containing Antigravity Pro credentials
@@ -101,22 +106,23 @@ def init_omniroute():
         print("✅ Database restored.")
 
     # Stop any conflicting process on port 20128
-    subprocess.run(f"fuser -k {OMNIROUTE_PORT}/tcp 2>/dev/null || true", shell=True)
+    subprocess.run(f"omniroute stop 2>/dev/null; pkill -9 -f omniroute 2>/dev/null; fuser -k {OMNIROUTE_PORT}/tcp 2>/dev/null || true", shell=True)
     time.sleep(1)
 
-    # Start OmniRoute daemon
+    # Start OmniRoute daemon via 'omniroute serve'
     env = dict(os.environ)
     env["STORAGE_ENCRYPTION_KEY"] = STORAGE_ENCRYPTION_KEY
+    env["OMNIROUTE_MAX_PENDING_MIGRATIONS"] = "0"
     env["PORT"] = str(OMNIROUTE_PORT)
 
     log_path = "/tmp/omniroute.log" if os.name != "nt" else os.path.join(SCRIPT_DIR, "omniroute.log")
     log_f = open(log_path, "w", encoding="utf-8")
-    subprocess.Popen(["omniroute", "start"], env=env, stdout=log_f, stderr=subprocess.STDOUT)
+    subprocess.Popen(["omniroute", "serve"], env=env, stdout=log_f, stderr=subprocess.STDOUT, start_new_session=True)
 
-    # Health check
+    # Health check: wait up to 45 seconds on e2-micro
     print(f"⏳ Waiting for OmniRoute on http://127.0.0.1:{OMNIROUTE_PORT}...")
     ready = False
-    for _ in range(25):
+    for _ in range(45):
         try:
             req = urllib.request.Request(
                 f"http://127.0.0.1:{OMNIROUTE_PORT}/v1/models",
