@@ -217,7 +217,7 @@ def init_hermes():
     subprocess.run(["hermes", "config", "set", "model.key_env", "HERMES_CUSTOM_FIRST_TIME_API_KEY"], check=True)
     subprocess.run(["hermes", "config", "set", "model.context_length", str(CONTEXT_LENGTH)], check=True)
     subprocess.run(["hermes", "config", "set", "compression.enabled", "false"], check=True)
-    subprocess.run(["hermes", "config", "set", "model.aliases.flash", "antigravity/gemini-3.7-flash-low"], check=True)
+    subprocess.run(["hermes", "config", "set", "model.aliases.flash", "antigravity/gemini-3.7-flash-high"], check=True)
     subprocess.run(["hermes", "config", "set", "model.aliases.flash-low", "antigravity/gemini-3.7-flash-low"], check=True)
     subprocess.run(["hermes", "config", "set", "model.aliases.flash-medium", "antigravity/gemini-3.7-flash-medium"], check=True)
     subprocess.run(["hermes", "config", "set", "model.aliases.flash-high", "antigravity/gemini-3.7-flash-high"], check=True)
