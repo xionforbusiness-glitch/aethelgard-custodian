@@ -26,14 +26,14 @@ fi
 echo 'Acquire::ForceIPv4 "true";' | $SUDO tee /etc/apt/apt.conf.d/99force-ipv4 >/dev/null 2>&1 || true
 $SUDO sed -i 's/#$nrconf{restart} = .*/$nrconf{restart} = "a";/' /etc/needrestart/needrestart.conf 2>/dev/null || true
 
-# Configure 2GB Swap memory if not present (Crucial for 1GB RAM e2-micro VMs)
-if [ $(free -m | awk '/^Swap:/ {print $2}') -lt 1024 ]; then
-  echo "💾 [0/5] Configuring 2GB Swap memory for e2-micro stability..."
-  $SUDO fallocate -l 2G /swapfile 2>/dev/null || $SUDO dd if=/dev/zero of=/swapfile bs=1M count=2048
+# Configure 3GB Swap memory if not present (Crucial for 1GB RAM e2-micro VMs)
+if [ $(free -m | awk '/^Swap:/ {print $2}') -lt 2048 ]; then
+  echo "💾 [0/5] Configuring 3GB Swap memory to eliminate 1GB RAM bottlenecks..."
+  $SUDO fallocate -l 3G /swapfile 2>/dev/null || $SUDO dd if=/dev/zero of=/swapfile bs=1M count=3072
   $SUDO chmod 600 /swapfile
   $SUDO mkswap /swapfile >/dev/null 2>&1
   $SUDO swapon /swapfile >/dev/null 2>&1
-  echo "✅ 2GB Swap memory activated."
+  echo "✅ 3GB Swap memory activated (Total effective RAM: 4 GB)."
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -55,7 +55,8 @@ echo "✅ Node.js version: $(node -v)"
 # Install OmniRoute globally
 echo "📦 [3/5] Installing OmniRoute (Google Antigravity Pro Plan Router)..."
 if ! command -v omniroute >/dev/null 2>&1; then
-  NODE_OPTIONS="--max-old-space-size=1536" $SUDO npm install -g omniroute --no-audit --no-fund
+  echo "⏳ Downloading and unpacking OmniRoute (this takes ~2-3 minutes)..."
+  NODE_OPTIONS="--max-old-space-size=2048" $SUDO npm install -g omniroute --omit=dev --no-audit --no-fund --loglevel=info
 fi
 echo "✅ OmniRoute installed."
 
