@@ -10,6 +10,11 @@ echo "============================================================"
 echo "🚀 AETHELGARD 24/7 VAULT CUSTODIAN - 1-CLICK DEPLOYER"
 echo "============================================================"
 
+# Set non-interactive mode so purple dialog screens never block execution
+export DEBIAN_FRONTEND=noninteractive
+export NEEDRESTART_MODE=a
+export NEEDRESTART_SUSPEND=1
+
 # Ensure script is run with appropriate permissions
 if [ "$EUID" -ne 0 ]; then
   SUDO="sudo"
@@ -17,12 +22,16 @@ else
   SUDO=""
 fi
 
+# Accelerate apt by forcing IPv4 (avoids slow IPv6 routing timeouts in Google Cloud)
+echo 'Acquire::ForceIPv4 "true";' | $SUDO tee /etc/apt/apt.conf.d/99force-ipv4 >/dev/null 2>&1 || true
+$SUDO sed -i 's/#$nrconf{restart} = .*/$nrconf{restart} = "a";/' /etc/needrestart/needrestart.conf 2>/dev/null || true
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 echo "📦 [1/5] Updating system packages and installing prerequisites..."
 $SUDO apt-get update -y
-$SUDO apt-get install -y curl git ffmpeg psmisc pciutils lshw zstd python3 python3-pip python3-venv
+$SUDO apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" curl git ffmpeg psmisc pciutils lshw zstd python3 python3-pip python3-venv
 
 # Install Node.js 22 LTS (Required for OmniRoute Antigravity router)
 echo "📦 [2/5] Installing Node.js 22 LTS..."
