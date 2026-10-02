@@ -41,9 +41,15 @@ When Omar sends:
    - Append a concise entry to `log.md`.
 5. **Feedback:** Reply on Telegram with a concise summary of exactly what was modified, which files were touched, and what was linked.
 
+### 3. Timesheet, Attendance & Spreadsheet Sync Rule
+Whenever Omar discusses, calculates, standardizes, or adjusts work attendance, colleague schedules, or shift rosters:
+1. **Mandatory File Persistence:** DO NOT just answer with text in Telegram chat! You MUST immediately update the actual markdown files (e.g., `work_attendance_and_shift_roster.md`) and raw data (`raw/attendance_september_2026.csv`) using your tools.
+2. **Spreadsheet Sync:** Keep `attendance_september_2026.xlsx` synchronized whenever shift times or totals are updated so Omar's Excel file is always accurate.
+3. **Immediate Git Push:** Run `git -C "$VAULT_DIR" add -A && git -C "$VAULT_DIR" commit -m "Auto-sync: update attendance roster" && git -C "$VAULT_DIR" push origin main` so Omar can immediately pull it into Obsidian.
+
 ---
 
-### 3. Natural Language Querying & Knowledge Delivery
+### 4. Natural Language Querying & Knowledge Delivery
 When Omar asks:
 - *"What do my notes say about X?"* / *"How does my CV pipeline work?"* / *"What was the solution for Y?"* / *"Bring me the cheat sheet for Z"*
 - Any question related to his projects, background, technical stack, or research

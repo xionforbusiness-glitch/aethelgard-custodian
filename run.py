@@ -254,8 +254,10 @@ def init_hermes():
 # ── 5. Background Vault Auto-Sync Worker ─────────────────────────────────────
 def auto_sync_worker():
     while True:
-        time.sleep(180)
+        time.sleep(60)
         try:
+            # First, pull any new commits from local desktop / GitHub
+            subprocess.run(["git", "-C", VAULT_DIR, "pull", "--rebase", "origin", VAULT_BRANCH], check=False)
             subprocess.run(["git", "-C", VAULT_DIR, "add", "."], check=True)
             res = subprocess.run(["git", "-C", VAULT_DIR, "commit", "-m", "Auto-sync from Aethelgard 24/7 Custodian"], capture_output=True, text=True)
             if "nothing to commit" not in res.stdout:
