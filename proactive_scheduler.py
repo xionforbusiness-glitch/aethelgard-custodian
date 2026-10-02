@@ -7,6 +7,7 @@ from librarian import SecondBrainLibrarian
 from airport_radar import format_damascus_flight_briefing
 from voice_engine import send_telegram_voice_sync
 from wargame_engine import run_cognitive_collision
+from circadian_oracle import get_circadian_forecast
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_TOKEN_REDACTED")
 TELEGRAM_USER_ID = os.environ.get("TELEGRAM_ALLOWED_USERS", "1021125594")
@@ -74,11 +75,15 @@ def trigger_morning_briefing(vault_dir):
     date_str = now.strftime("%B %d, %Y")
     schedule = get_roster_schedule_for_today(vault_dir, weekday)
     airport_weather = format_damascus_flight_briefing()
+    circadian = get_circadian_forecast(vault_dir)
 
     msg = (
         f"🌅 *Good morning Omar! Aethelgard Shift Briefing*\n"
         f"📅 *{weekday}, {date_str}* (Damascus Time)\n\n"
         f"⏰ *Your Scheduled Shift:* `{schedule['omar']}`\n\n"
+        f"🧬 *Circadian Alertness Profile:* `{circadian['shift_type']}`\n"
+        f"• Predicted Dip: `{circadian['alertness_dip']}` (Alertness: `{circadian['min_alertness']}`)\n"
+        f"• Caffeine Curfew: ☕ `{circadian['caffeine_cutoff']}`\n\n"
         f"{airport_weather}\n\n"
         f"👥 *Duty Team Overview:*\n"
         f"• *Khaled:* `{schedule.get('khaled', '08:00 AM → 16:30')}`\n"
@@ -93,7 +98,7 @@ def trigger_morning_briefing(vault_dir):
     buttons = [
         [{"text": "🚌 Bus Sync (07:20 AM)"}, {"text": "🏢 Standard (08:15 AM)"}],
         [{"text": "✈️ Dawn Shift (03:00 AM)"}, {"text": "🏖️ Scheduled Off"}],
-        [{"text": "📊 Current Leaderboard"}, {"text": "🏛️ Vault Status"}]
+        [{"text": "📊 Current Leaderboard"}, {"text": "🧬 Circadian Oracle"}]
     ]
 
     sent = send_telegram(msg, buttons)
@@ -112,11 +117,13 @@ def trigger_evening_checkout(vault_dir):
     """Constructs and delivers the evening shift wrap-up check-out prompt."""
     now = get_damascus_now()
     weekday = now.strftime("%A")
+    circadian = get_circadian_forecast(vault_dir)
 
     msg = (
         f"🏁 *Evening Shift Check-Out ({weekday})*\n\n"
         f"Omar, your shift was scheduled to wrap up at ~04:00 PM.\n"
         f"Did your shift conclude on time, or did you stay for flight overtime?\n\n"
+        f"🛏️ *Tonight's Circadian Sleep Anchor:* `{circadian['sleep_anchor']}`\n\n"
         f"Tap below or send your departure time to automatically sync your timesheet & Excel sheet:"
     )
 

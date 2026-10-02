@@ -8,3 +8,5 @@ env/
 .pytest_cache/
 .DS_Store
 vault/
+staging/*
+!staging/.gitkeep

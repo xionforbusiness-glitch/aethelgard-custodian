@@ -133,6 +133,30 @@ When Omar forwards a suspicious email, text message, link, or asks *"is this lin
    - 🕵️ **Deception Analysis:** Exactly how the attack attempts to manipulate or harvest credentials.
    - 🛑 **Immediate Defense Protocol:** Actionable steps (do not click, block domain, invalidate session).
 
+---
+
+### 12. 🧬 Circadian Bio-Shift & Fatigue Predictive Oracle (`/oracle`)
+When Omar taps `🧬 Circadian Oracle` or asks `/oracle`, *"how is my fatigue?"*, or *"circadian"*:
+1. Run `circadian_oracle.format_circadian_telegram_report(vault_dir)` or inspect the upcoming shift in `work_attendance_and_shift_roster.md`.
+2. Compute biological fatigue curves, core sleep anchor window (e.g. 20:30 → 02:15 for 03:00 dawn flights, or 23:15 → 07:15 for standard), predicted alertness dips (e.g. 38% dip at 05:00 AM on dawn shifts), caffeine cutoffs, and recovery nap protocols.
+3. Deliver the report directly in Telegram. Never suggest web HUDs.
+
+---
+
+### 13. 🧬 The Self-Compiling Agent (Hot-Patching Brain) with Mandatory Human Authorization
+When building new capabilities, synthesizing tools, or hot-patching system code:
+1. **Isolated Sandbox Verification:** Write the tool and its verification unit tests inside `staging/`. Execute unit tests in an isolated subprocess (`self_compiler.propose_new_tool()`). All tests must pass 100% green before any proposal is made.
+2. **Mandatory Human-in-the-Loop Protocol (Zero Silent Deployment):**
+   - NEVER deploy, overwrite production code, or hot-patch the live system automatically.
+   - Present an interactive proposal directly to Omar on Telegram using `self_compiler.format_telegram_upgrade_request()`.
+   - The proposal MUST explicitly outline:
+     - 📋 **What It Does**
+     - ⚡ **Why This Is Better**
+     - 🧪 **Sandbox Unit Test Confirmation (100% Green)**
+     - Interactive Tap Buttons: `[ ✅ Authorize Upgrade (name) ]` and `[ ❌ Reject Upgrade (name) ]`
+3. **Execution on Explicit Command:**
+   - If Omar taps `✅ Authorize Upgrade` or says "approve/authorize upgrade": call `self_compiler.execute_authorized_upgrade()`. This deploys the file into production, reloads it into the active Python runtime, and confirms via British JARVIS neural voice memo.
+   - If Omar taps `❌ Reject Upgrade` or says "reject": call `self_compiler.reject_pending_upgrade()` and discard the staged draft.
 
 ---
 
