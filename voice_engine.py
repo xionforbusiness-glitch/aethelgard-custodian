@@ -10,8 +10,10 @@ import edge_tts
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_TOKEN_REDACTED")
 TELEGRAM_USER_ID = os.environ.get("TELEGRAM_ALLOWED_USERS", "1021125594")
 
-VOICE_ENGLISH = "en-US-ChristopherNeural"
-VOICE_ARABIC = "ar-SY-LaithNeural"
+VOICE_ENGLISH = "en-GB-RyanNeural"  # Paul Bettany / Classic British Jarvis
+VOICE_ARABIC = "ar-SY-LaithNeural"    # Authentic Syrian Male
+JARVIS_PITCH = "-4Hz"                 # Deeper, calm resonance
+JARVIS_RATE = "-2%"                   # Measured cadence
 
 def is_arabic(text: str) -> bool:
     """Checks if text contains substantial Arabic characters."""
@@ -19,17 +21,21 @@ def is_arabic(text: str) -> bool:
     return len(arabic_chars) > len(text) * 0.2
 
 async def generate_voice_file(text: str, output_path: str, voice: str = "auto") -> str:
-    """Generates an audio voice note file using edge-tts."""
+    """Generates an audio voice note file using edge-tts with Jarvis calibration."""
+    is_ar = is_arabic(text)
     if voice == "auto":
-        voice = VOICE_ARABIC if is_arabic(text) else VOICE_ENGLISH
+        voice = VOICE_ARABIC if is_ar else VOICE_ENGLISH
 
     clean_text = re.sub(r"\[\[([^\]\|]+)(?:\|[^\]]+)?\]\]", r"\1", text)
     clean_text = re.sub(r"[*_`#~]", "", clean_text)
     clean_text = clean_text.strip()
     if not clean_text:
-        clean_text = "Task completed."
+        clean_text = "Task completed, sir."
 
-    communicate = edge_tts.Communicate(clean_text, voice)
+    pitch = "-1Hz" if is_ar else JARVIS_PITCH
+    rate = "+0%" if is_ar else JARVIS_RATE
+
+    communicate = edge_tts.Communicate(clean_text, voice, pitch=pitch, rate=rate)
     await communicate.save(output_path)
     return output_path
 
