@@ -198,8 +198,39 @@ def trigger_weekly_review(vault_dir):
     voice_msg = f"Omar, your weekly executive review has been generated. Total cataloged knowledge notes: {audit['total_notes']}. Master roster and shift metrics are synchronized."
     send_telegram_voice_sync(voice_msg, caption="🎙️ Weekly Review Audio Memo")
 
+def trigger_wakeup_alarm(vault_dir):
+    """Fires a high-priority 06:00 AM wake-up alarm with runway weather radar and circadian forecast."""
+    now = get_damascus_now()
+    weekday = now.strftime("%A")
+    date_str = now.strftime("%B %d, %Y")
+    circadian = get_circadian_forecast(vault_dir)
+    airport_weather = format_damascus_flight_briefing()
+
+    msg = (
+        f"⏰ *06:00 AM WAKE-UP CALL — DAMASCUS*\n"
+        f"📅 *{weekday}, {date_str}*\n\n"
+        f"Rise and shine, Omar. Your scheduled wake-up reminder is firing.\n\n"
+        f"🧬 *Circadian Alertness Profile:* `{circadian['shift_type']}`\n"
+        f"• Optimal Core Window: `{circadian['sleep_anchor']}`\n"
+        f"• Predicted Peak Alertness Dip: `{circadian['alertness_dip']}`\n\n"
+        f"{airport_weather}\n\n"
+        f"Get ready for your shift. Full shift briefing will trigger at 07:15 AM."
+    )
+    buttons = [
+        [{"text": "☀️ I'm Awake & Ready"}, {"text": "☕ Need 15m Snooze"}],
+        [{"text": "✈️ Damascus Runway Radar"}, {"text": "🧬 Circadian Oracle"}]
+    ]
+    send_telegram(msg, buttons)
+
+    voice_alarm = (
+        f"Good morning Omar. It is 6:00 AM Damascus time. "
+        f"Time to rise. Your flight schedule and runway radar are standing by."
+    )
+    send_telegram_voice_sync(voice_alarm, caption="🎙️ 06:00 AM Neural Wake-Up Alarm")
+
 def proactive_scheduler_daemon(vault_dir):
     """Continuous background loop monitoring Damascus time and firing scheduled proactive events."""
+    last_wakeup_date = None
     last_morning_date = None
     last_evening_date = None
     last_scout_date = None
@@ -215,6 +246,12 @@ def proactive_scheduler_daemon(vault_dir):
             hour = now.hour
             minute = now.minute
             is_sunday = now.weekday() == 6
+
+            # 0. Dedicated Wake-Up Call (06:00 AM)
+            if hour == 6 and minute >= 0 and last_wakeup_date != today_str:
+                print(f"[Proactive Scheduler] Firing 06:00 AM Wake-Up Call: {today_str}")
+                trigger_wakeup_alarm(vault_dir)
+                last_wakeup_date = today_str
 
             # 1. Morning Shift Briefing (07:15 AM)
             if hour == 7 and minute >= 15 and last_morning_date != today_str:

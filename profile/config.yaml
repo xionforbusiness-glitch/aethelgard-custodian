@@ -30,3 +30,7 @@ auxiliary:
     model: antigravity/gemini-3.7-flash-high
     base_url: http://127.0.0.1:20128/v1
     key_env: HERMES_CUSTOM_FIRST_TIME_API_KEY
+
+stt:
+  enabled: true
+  provider: local_command

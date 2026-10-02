@@ -211,6 +211,9 @@ def init_hermes():
             shutil.rmtree(skills_dest, ignore_errors=True)
         shutil.copytree(skills_src, skills_dest)
 
+    stt_script = os.path.join(SCRIPT_DIR, "transcribe_gemini.py")
+    stt_cmd = f"python3 {stt_script} {{input_path}} --output_dir {{output_dir}}"
+
     # Write profile .env
     with open(os.path.join(HERMES_PROFILE_DIR, ".env"), "w", encoding="utf-8") as f:
         f.write(f"TELEGRAM_BOT_TOKEN={TELEGRAM_BOT_TOKEN}\n")
@@ -221,6 +224,7 @@ def init_hermes():
         f.write(f"HERMES_CUSTOM_FIRST_TIME_API_KEY={OMNIROUTE_API_KEY}\n")
         f.write(f"OMNIROUTE_API_KEY={OMNIROUTE_API_KEY}\n")
         f.write(f"GOOGLE_API_KEY={GOOGLE_API_KEY}\n")
+        f.write(f"HERMES_LOCAL_STT_COMMAND={stt_cmd}\n")
 
     os.environ["WIKI_PATH"] = VAULT_DIR
     os.environ["OBSIDIAN_VAULT_PATH"] = VAULT_DIR
@@ -232,6 +236,7 @@ def init_hermes():
     os.environ["HERMES_CUSTOM_FIRST_TIME_API_KEY"] = OMNIROUTE_API_KEY
     os.environ["OMNIROUTE_API_KEY"] = OMNIROUTE_API_KEY
     os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
+    os.environ["HERMES_LOCAL_STT_COMMAND"] = stt_cmd
     os.environ["NODE_OPTIONS"] = "--dns-result-order=ipv4first --max-old-space-size=1536"
 
     # Apply hermes CLI configurations
@@ -242,6 +247,7 @@ def init_hermes():
     subprocess.run(["hermes", "config", "set", "model.key_env", "HERMES_CUSTOM_FIRST_TIME_API_KEY"], check=True)
     subprocess.run(["hermes", "config", "set", "model.context_length", str(CONTEXT_LENGTH)], check=True)
     subprocess.run(["hermes", "config", "set", "compression.enabled", "false"], check=True)
+    subprocess.run(["hermes", "config", "set", "stt.provider", "local_command"], check=False)
     subprocess.run(["hermes", "config", "set", "model.aliases.flash", "antigravity/gemini-3.7-flash-high"], check=True)
     subprocess.run(["hermes", "config", "set", "model.aliases.flash-low", "antigravity/gemini-3.7-flash-low"], check=True)
     subprocess.run(["hermes", "config", "set", "model.aliases.flash-medium", "antigravity/gemini-3.7-flash-medium"], check=True)
@@ -270,9 +276,8 @@ def auto_sync_worker():
 # ── 6. Send Telegram Startup Notification ────────────────────────────────────
 def send_telegram_startup():
     try:
-        # Clear stale updates
+        # Clear stale webhooks and pending updates cleanly
         urllib.request.urlopen(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteWebhook?drop_pending_updates=true", timeout=5)
-        urllib.request.urlopen(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates?offset=-1", timeout=5)
 
         tg_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         msg = (
