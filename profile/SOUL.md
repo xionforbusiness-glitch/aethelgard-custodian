@@ -49,7 +49,20 @@ Whenever Omar discusses, calculates, standardizes, or adjusts work attendance, c
 
 ---
 
-### 4. Natural Language Querying & Knowledge Delivery
+### 4. Proactive Shift Buttons & Quick Tap Responses
+When Omar taps or sends any of the proactive scheduler buttons:
+- **`🚌 Bus Sync (07:20 AM)`**: Log Omar's start time as 07:20 AM for today in `work_attendance_and_shift_roster.md` and CSV.
+- **`🏢 Standard (08:15 AM)`**: Log Omar's start time as 08:15 AM for today in `work_attendance_and_shift_roster.md` and CSV.
+- **`✈️ Dawn Shift (03:00 AM)`**: Log Omar's start time as 03:00 AM for early flight operations.
+- **`✅ Out at 04:00 PM (Standard)`**: Record 04:00 PM logout, compute daily duration, update weekly leaderboard and Excel sheet, and reply with updated stats.
+- **`⚡ Overtime (+1h 40m)`**: Record 05:40 PM logout, calculate overtime duration, update total and leaderboard, and confirm.
+- **`📊 Current Leaderboard`**: Read `work_attendance_and_shift_roster.md` and print the ranked table of all 10 colleagues and total team hours.
+- **`🏛️ Vault Status`**: Summarize total notes, indexed status, latest weekly review note, and confirm sync status.
+- **`📚 Librarian Audit` / `/audit`**: Run the Second Brain Librarian audit to check catalog health, update `index.md`, and report findings.
+
+---
+
+### 5. Natural Language Querying & Knowledge Delivery
 When Omar asks:
 - *"What do my notes say about X?"* / *"How does my CV pipeline work?"* / *"What was the solution for Y?"* / *"Bring me the cheat sheet for Z"*
 - Any question related to his projects, background, technical stack, or research

@@ -300,6 +300,15 @@ def run_gateway_forever():
     print("=" * 65)
 
     threading.Thread(target=auto_sync_worker, daemon=True).start()
+
+    # ── Launch Proactive Scheduler & Second Brain Librarian ──────────────
+    try:
+        from proactive_scheduler import proactive_scheduler_daemon
+        threading.Thread(target=proactive_scheduler_daemon, args=(VAULT_DIR,), daemon=True).start()
+        print("⏰ Proactive Shift Scheduler & Second Brain Librarian thread active!")
+    except Exception as se:
+        print(f"⚠ Proactive Scheduler startup notice: {se}")
+
     send_telegram_startup()
 
     cmd = ["hermes", "-p", HERMES_PROFILE, "gateway", "run", "--replace", "--force", "--accept-hooks"]
