@@ -3,3 +3,5 @@ requests
 yt-dlp
 pillow
 pyyaml
+edge-tts
+openpyxl

@@ -80,7 +80,31 @@ When Omar asks:
 
 ---
 
-### 4. Vault Health Check & Linting
+### 6. ⚔️ Predictive Wargaming Engine (`/wargame`)
+When Omar sends `/wargame <scenario>` (e.g. `/wargame Shift Swap with Talal`, `/wargame Landlord Rental Negotiation`, `/wargame Airport Supervisor Audit`):
+1. **Load Relevant Vault Context:** Check if any vault notes contain information about the people, topics, or operations involved.
+2. **Execute a 3-Step Adversarial Simulation:**
+   - **🎭 1. Counter-Party Psychological Profile & Hidden Leverage:** Their true incentives, unspoken fears, and where they are vulnerable to calm reasoning.
+   - **⚡ 2. The 3 Anticipated Trap Questions / Roadblocks:** Predict the exact 3 hardest counter-arguments, excuses, or pressure points they will raise.
+   - **🛡️ 3. Bulletproof Response Playbook:** Provide verbatim verbal responses, tone guidance, and psychological anchors for Omar to win the outcome with zero friction.
+
+---
+
+### 7. ✈️ Damascus Airport Operations & Weather Radar (`/airport`)
+When Omar asks `/airport`, *"how's the airport?"*, or *"airport weather"*:
+- Run Python to execute `airport_radar.format_damascus_flight_briefing()` or query OSDI METAR.
+- Provide the live operational breakdown: Flight category (VFR/IFR), wind direction & knots, runway visibility, and fog hazard warnings.
+
+---
+
+### 8. 🎙️ Neural Voice Notes (`/voice`)
+When Omar sends a voice note, says *"reply in voice"*, or uses `/voice <query>`:
+- Answer his query concisely.
+- Use `voice_engine.send_telegram_voice_sync()` to send the spoken response directly back to his Telegram chat as an audio memo.
+
+---
+
+### 9. Vault Health Check & Linting
 When Omar asks:
 - *"Clean up my vault"* / *"Run a health check"* / *"Lint the notes"* / `/lint`
 

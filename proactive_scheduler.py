@@ -4,6 +4,9 @@ import json
 import datetime
 import urllib.request
 from librarian import SecondBrainLibrarian
+from airport_radar import format_damascus_flight_briefing
+from voice_engine import send_telegram_voice_sync
+from wargame_engine import run_cognitive_collision
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_TOKEN_REDACTED")
 TELEGRAM_USER_ID = os.environ.get("TELEGRAM_ALLOWED_USERS", "1021125594")
@@ -33,8 +36,7 @@ def send_telegram(text, buttons=None, chat_id=TELEGRAM_USER_ID, token=TELEGRAM_B
     try:
         with urllib.request.urlopen(req, timeout=10) as r:
             return r.status == 200
-    except Exception as e:
-        # Fallback without markdown if formatting was rejected
+    except Exception:
         try:
             payload.pop("parse_mode", None)
             data = json.dumps(payload).encode("utf-8")
@@ -46,7 +48,6 @@ def send_telegram(text, buttons=None, chat_id=TELEGRAM_USER_ID, token=TELEGRAM_B
 
 def get_roster_schedule_for_today(vault_dir, weekday_name):
     """Inspects work_attendance_and_shift_roster.md for today's scheduled shift."""
-    roster_file = os.path.join(vault_dir, "work_attendance_and_shift_roster.md")
     schedule = {
         "omar": "08:15 AM → 04:00 PM (Standard)",
         "khaled": "08:00 AM → 04:30 PM",
@@ -67,25 +68,26 @@ def get_roster_schedule_for_today(vault_dir, weekday_name):
     return schedule
 
 def trigger_morning_briefing(vault_dir):
-    """Constructs and delivers the proactive morning briefing."""
+    """Constructs and delivers the proactive morning briefing with live airport radar and voice greeting."""
     now = get_damascus_now()
     weekday = now.strftime("%A")
     date_str = now.strftime("%B %d, %Y")
     schedule = get_roster_schedule_for_today(vault_dir, weekday)
+    airport_weather = format_damascus_flight_briefing()
 
     msg = (
         f"🌅 *Good morning Omar! Aethelgard Shift Briefing*\n"
         f"📅 *{weekday}, {date_str}* (Damascus Time)\n\n"
-        f"✈️ *Station:* Damascus Airport Ground Operations\n"
         f"⏰ *Your Scheduled Shift:* `{schedule['omar']}`\n\n"
-        f"👥 *Team Duty Overview:*\n"
+        f"{airport_weather}\n\n"
+        f"👥 *Duty Team Overview:*\n"
         f"• *Khaled:* `{schedule.get('khaled', '08:00 AM → 16:30')}`\n"
         f"• *Rasheed Akel:* `{schedule.get('rasheed', '08:00 AM → 16:30')}`\n"
         f"• *Mohamed Adnan:* `{schedule.get('adnan', 'On duty')}`\n"
         f"• *Tarek Orfhly:* `{schedule.get('tarek', 'On duty')}`\n"
         f"• *Hanan & Joudi:* `{schedule.get('hanan', 'Flight Handling')}`\n"
         f"🏖️ *Scheduled Off:* `{schedule.get('off', 'None')}`\n\n"
-        f"⚡ *Quick Action:* Tap below or send your log-in time to record today's shift:"
+        f"⚡ *Quick Action:* Tap below to record today's shift:"
     )
 
     buttons = [
@@ -94,13 +96,22 @@ def trigger_morning_briefing(vault_dir):
         [{"text": "📊 Current Leaderboard"}, {"text": "🏛️ Vault Status"}]
     ]
 
-    return send_telegram(msg, buttons)
+    sent = send_telegram(msg, buttons)
+    
+    # Send natural voice memo greeting
+    voice_greeting = (
+        f"Good morning Omar. Today is {weekday}. "
+        f"Your shift at Damascus Airport is scheduled from {schedule['omar'].split(' ')[0]} to 4:00 PM. "
+        f"Runway operations are active. Have a productive shift."
+    )
+    send_telegram_voice_sync(voice_greeting, caption="🎙️ Daily Morning Audio Briefing")
+
+    return sent
 
 def trigger_evening_checkout(vault_dir):
     """Constructs and delivers the evening shift wrap-up check-out prompt."""
     now = get_damascus_now()
     weekday = now.strftime("%A")
-    date_str = now.strftime("%B %d, %Y")
 
     msg = (
         f"🏁 *Evening Shift Check-Out ({weekday})*\n\n"
@@ -116,6 +127,45 @@ def trigger_evening_checkout(vault_dir):
 
     return send_telegram(msg, buttons)
 
+def trigger_night_owl_scout(vault_dir):
+    """Nightly autonomous collision engine that synthesizes original ideas and writes playbooks."""
+    try:
+        print("[Night Owl Scout] Running cognitive collision across vault notes...")
+        res = run_cognitive_collision(vault_dir)
+        if not res or not res.get("result"):
+            return
+
+        text = res["result"]
+        domain_a = res.get("domain_a", "Domain A")
+        domain_b = res.get("domain_b", "Domain B")
+        
+        # Save to concepts
+        concepts_dir = os.path.join(vault_dir, "concepts")
+        os.makedirs(concepts_dir, exist_ok=True)
+        filename = f"collision-{domain_a[:15]}-{domain_b[:15]}.md".lower().replace(" ", "-")
+        filepath = os.path.join(concepts_dir, filename)
+
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(text)
+
+        # Notify Omar on Telegram
+        msg = (
+            f"🦉 *Night-Owl Cognitive Collision Complete!*\n\n"
+            f"While you slept, Aethelgard collided two disparate areas of your knowledge:\n"
+            f"• Domain 1: `[[{domain_a}]]`\n"
+            f"• Domain 2: `[[{domain_b}]]`\n\n"
+            f"Generated new original blueprint in your vault:\n"
+            f"📄 `[[concepts/{filename}]]`\n\n"
+            f"Available on your local Obsidian on your next sync!"
+        )
+        send_telegram(msg)
+        
+        # Voice note alert
+        voice_summary = f"Night owl intelligence cycle complete. I synthesized a new blueprint combining {domain_a} and {domain_b}. It is saved in your vault."
+        send_telegram_voice_sync(voice_summary, caption="🎙️ Night-Owl Scout Audio Memo")
+    except Exception as e:
+        print(f"⚠ Night Owl Scout notice: {e}")
+
 def trigger_librarian_nightly(vault_dir):
     """Performs the nightly index sync and catalog update."""
     lib = SecondBrainLibrarian(vault_dir)
@@ -128,7 +178,6 @@ def trigger_weekly_review(vault_dir):
     lib = SecondBrainLibrarian(vault_dir)
     review_path = lib.generate_weekly_review()
     audit = lib.audit_vault()
-    now = get_damascus_now()
     
     msg = (
         f"🏛️ *Aethelgard Executive Weekly Review Published!*\n\n"
@@ -139,15 +188,18 @@ def trigger_weekly_review(vault_dir):
         f"Your local Obsidian vault will pull this review on your next desktop sync."
     )
     send_telegram(msg)
+    voice_msg = f"Omar, your weekly executive review has been generated. Total cataloged knowledge notes: {audit['total_notes']}. Master roster and shift metrics are synchronized."
+    send_telegram_voice_sync(voice_msg, caption="🎙️ Weekly Review Audio Memo")
 
 def proactive_scheduler_daemon(vault_dir):
     """Continuous background loop monitoring Damascus time and firing scheduled proactive events."""
     last_morning_date = None
     last_evening_date = None
+    last_scout_date = None
     last_nightly_date = None
     last_weekly_date = None
 
-    print(f"[{time.strftime('%H:%M:%S')}] ⏰ Proactive Scheduler & Second Brain Librarian started (Damascus UTC+3)...")
+    print(f"[{time.strftime('%H:%M:%S')}] ⏰ Full Proactive Autonomy Suite active (Damascus UTC+3)...")
 
     while True:
         try:
@@ -169,13 +221,19 @@ def proactive_scheduler_daemon(vault_dir):
                 if trigger_evening_checkout(vault_dir):
                     last_evening_date = today_str
 
-            # 3. Nightly Librarian Audit & Catalog Sync (00:05 AM)
+            # 3. Night-Owl Cognitive Collision Scout (02:00 AM)
+            if hour == 2 and minute >= 0 and last_scout_date != today_str:
+                print(f"[Night Owl Scout] Firing Autonomous Collision: {today_str}")
+                trigger_night_owl_scout(vault_dir)
+                last_scout_date = today_str
+
+            # 4. Nightly Librarian Audit & Catalog Sync (00:05 AM)
             if hour == 0 and minute >= 5 and last_nightly_date != today_str:
                 print(f"[Second Brain Librarian] Firing Nightly Catalog Sync: {today_str}")
                 trigger_librarian_nightly(vault_dir)
                 last_nightly_date = today_str
 
-            # 4. Weekly Executive Review (Sunday 23:00 PM)
+            # 5. Weekly Executive Review (Sunday 23:00 PM)
             if is_sunday and hour == 23 and minute >= 0 and last_weekly_date != today_str:
                 print(f"[Second Brain Librarian] Firing Weekly Executive Review: {today_str}")
                 trigger_weekly_review(vault_dir)
