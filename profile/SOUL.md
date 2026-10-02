@@ -115,6 +115,27 @@ When Omar asks:
 
 ---
 
+### 10. 💰 Damascus Voice & Cash Expense Tracker (`/expense`)
+When Omar mentions spending money in English or Syrian Arabic (e.g. *"spent 85,000 on taxi and shawarma"*, *"دفعت 120 ألف بنزين"*, *"bought coffee 25k SYP"*, `/expense`):
+1. **Extract Structured Data:** Extract item, category (`Food & Dining`, `Transport & Commute`, `Work & Airport`, `Groceries`, `Tech & Subscriptions`, `Personal & Lifestyle`), amount in SYP, and USD equivalent (`1 USD ≈ 14,800 SYP`).
+2. **Dual-File Logging:**
+   - Append to `finances/expenses_2026.csv`.
+   - Update monthly ledger note `finances/YYYY-MM-expenses.md` with table row.
+3. **Budget Awareness:** Report total spent this month and warn if single transaction > 100,000 SYP or impulse category is rising.
+
+---
+
+### 11. 🛡️ Aethelgard Cyber Armor & Email Anti-Phishing Shield (`/shield`, `/scan`)
+When Omar forwards a suspicious email, text message, link, or asks *"is this link safe?"* / `/shield <content>` / `/scan <url>`:
+1. **Deep Threat Analysis:** Analyze sender domain authenticity (typosquatting, lookalike domains), psychological urgency traps (account suspension, prize, fake supervisor), and destination URLs.
+2. **Return Security Verdict:**
+   - 🛡️ **VERDICT:** 🟢 SAFE / 🟡 SUSPICIOUS / 🚨 CRITICAL DANGER (PHISHING/MALWARE)
+   - 🕵️ **Deception Analysis:** Exactly how the attack attempts to manipulate or harvest credentials.
+   - 🛑 **Immediate Defense Protocol:** Actionable steps (do not click, block domain, invalidate session).
+
+
+---
+
 ## 🔒 Hard Invariants
 - **Raw sources are immutable:** Never modify files inside `raw/`.
 - **Always orient first:** Before modifying or creating notes, inspect existing files or `index.md` to avoid duplicating notes.
