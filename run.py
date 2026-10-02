@@ -99,64 +99,76 @@ def init_omniroute():
         f.write(f"OMNIROUTE_MAX_PENDING_MIGRATIONS=0\n")
         f.write(f"PORT={OMNIROUTE_PORT}\n")
 
-    # Stop any conflicting process on port 20128 first
-    subprocess.run(f"omniroute stop 2>/dev/null; pkill -9 -f omniroute 2>/dev/null; fuser -k {OMNIROUTE_PORT}/tcp 2>/dev/null || true", shell=True)
-    time.sleep(2)
-
-    # Clean stale SQLite WAL/SHM files to prevent corruption
-    for extra in ["storage.sqlite-wal", "storage.sqlite-shm", "storage.sqlite-journal"]:
-        p = os.path.join(OMNIROUTE_DIR, extra)
-        if os.path.exists(p):
-            try:
-                os.remove(p)
-            except Exception:
-                pass
-
-    # Restore pre-verified SQLite database containing Antigravity Pro credentials
-    db_dest = os.path.join(OMNIROUTE_DIR, "storage.sqlite")
-    db_gz = os.path.join(SCRIPT_DIR, "omniroute", "storage.sqlite.gz")
-    if os.path.exists(db_gz):
-        print(f"📦 Decompressing Antigravity Pro credentials database from {db_gz}...")
-        with gzip.open(db_gz, "rb") as f_in, open(db_dest, "wb") as f_out:
-            shutil.copyfileobj(f_in, f_out)
-        print("✅ Database restored.")
-
-    # Start OmniRoute daemon via 'omniroute serve'
-    env = dict(os.environ)
-    env["STORAGE_ENCRYPTION_KEY"] = STORAGE_ENCRYPTION_KEY
-    env["OMNIROUTE_MAX_PENDING_MIGRATIONS"] = "0"
-    env["PORT"] = str(OMNIROUTE_PORT)
-    env["NODE_OPTIONS"] = "--dns-result-order=ipv4first --max-old-space-size=1536"
-
-    log_path = "/tmp/omniroute.log" if os.name != "nt" else os.path.join(SCRIPT_DIR, "omniroute.log")
-    log_f = open(log_path, "w", encoding="utf-8")
-    subprocess.Popen(["omniroute", "serve"], env=env, stdout=log_f, stderr=subprocess.STDOUT, start_new_session=True)
-
-    # Health check: wait up to 60 seconds on e2-micro
-    print(f"⏳ Waiting for OmniRoute on http://127.0.0.1:{OMNIROUTE_PORT}...")
-    ready = False
-    for _ in range(60):
+    # Check if OmniRoute is already alive and serving requests
+    def is_omniroute_alive():
         try:
             req = urllib.request.Request(
                 f"http://127.0.0.1:{OMNIROUTE_PORT}/v1/models",
                 headers={"Authorization": f"Bearer {OMNIROUTE_API_KEY}"}
             )
             with urllib.request.urlopen(req, timeout=2) as resp:
-                if resp.status == 200:
-                    ready = True
-                    break
+                return resp.status == 200
         except Exception:
-            time.sleep(1)
+            return False
 
-    if not ready:
-        print(f"❌ Failed to connect to OmniRoute. Recent log from {log_path}:")
-        if os.path.exists(log_path):
-            with open(log_path, "r", encoding="utf-8", errors="ignore") as lf:
-                for line in lf.readlines()[-25:]:
-                    print(f"  [OmniRoute] {line.strip()}")
-        sys.exit(1)
+    if is_omniroute_alive():
+        print("✅ OmniRoute is already running and healthy on port 20128!")
+    else:
+        # Stop any conflicting process on port 20128 first
+        subprocess.run(f"omniroute stop 2>/dev/null; pkill -9 -f omniroute 2>/dev/null; fuser -k {OMNIROUTE_PORT}/tcp 2>/dev/null || true", shell=True)
+        time.sleep(2)
 
-    print("✅ OmniRoute is active!")
+        # Clean stale SQLite WAL/SHM files to prevent corruption
+        for extra in ["storage.sqlite-wal", "storage.sqlite-shm", "storage.sqlite-journal"]:
+            p = os.path.join(OMNIROUTE_DIR, extra)
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
+
+        # Restore pre-verified SQLite database containing Antigravity Pro credentials
+        db_dest = os.path.join(OMNIROUTE_DIR, "storage.sqlite")
+        db_gz = os.path.join(SCRIPT_DIR, "omniroute", "storage.sqlite.gz")
+        if os.path.exists(db_gz):
+            print(f"📦 Decompressing Antigravity Pro credentials database from {db_gz}...")
+            with gzip.open(db_gz, "rb") as f_in, open(db_dest, "wb") as f_out:
+                shutil.copyfileobj(f_in, f_out)
+            print("✅ Database restored.")
+
+        # Start OmniRoute daemon via 'omniroute serve'
+        env = dict(os.environ)
+        env["STORAGE_ENCRYPTION_KEY"] = STORAGE_ENCRYPTION_KEY
+        env["OMNIROUTE_MAX_PENDING_MIGRATIONS"] = "0"
+        env["PORT"] = str(OMNIROUTE_PORT)
+        env["NODE_OPTIONS"] = "--dns-result-order=ipv4first --max-old-space-size=1536"
+
+        log_path = "/tmp/omniroute.log" if os.name != "nt" else os.path.join(SCRIPT_DIR, "omniroute.log")
+        log_f = open(log_path, "w", encoding="utf-8")
+        subprocess.Popen(["omniroute", "serve"], env=env, stdout=log_f, stderr=subprocess.STDOUT, start_new_session=True)
+
+        # Health check: wait up to 180 seconds on e2-micro (CPU throttled cold boot)
+        print(f"⏳ Waiting for OmniRoute on http://127.0.0.1:{OMNIROUTE_PORT} (up to 3 min for cold boot)...")
+        ready = False
+        start_wait = time.time()
+        for i in range(90):
+            if is_omniroute_alive():
+                ready = True
+                break
+            time.sleep(2)
+            elapsed = int(time.time() - start_wait)
+            if (i + 1) % 10 == 0:
+                print(f"   ...still initializing OmniRoute ({elapsed}s elapsed)...", flush=True)
+
+        if not ready:
+            print(f"❌ Failed to connect to OmniRoute after {int(time.time() - start_wait)}s. Recent log from {log_path}:")
+            if os.path.exists(log_path):
+                with open(log_path, "r", encoding="utf-8", errors="ignore") as lf:
+                    for line in lf.readlines()[-25:]:
+                        print(f"  [OmniRoute] {line.strip()}")
+            sys.exit(1)
+
+        print("✅ OmniRoute is active!")
 
     # Smoke test Antigravity Pro Gemini Flash High
     print(f"🧪 Smoke testing {MODEL_DEFAULT} via Antigravity Pro Plan...")
