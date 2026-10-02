@@ -69,14 +69,25 @@ Provide a structured, razor-sharp security evaluation:
         "temperature": 0.2
     }).encode("utf-8")
 
-    req = urllib.request.Request(
-        f"http://127.0.0.1:{OMNIROUTE_PORT}/v1/chat/completions",
-        data=payload,
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {OMNIROUTE_API_KEY}"}
-    )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        res = json.loads(resp.read().decode("utf-8"))
-        analysis = res.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{OMNIROUTE_PORT}/v1/chat/completions",
+            data=payload,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {OMNIROUTE_API_KEY}"}
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            res = json.loads(resp.read().decode("utf-8"))
+            analysis = res.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+    except Exception:
+        # Heuristic fallback report
+        verdict = "🚨 CRITICAL DANGER (PHISHING / SPOOFING)" if heuristic_findings else "🟢 NO OBVIOUS FLAGS DETECTED"
+        analysis = (
+            f"1. 🛡️ **VERDICT:** {verdict}\n"
+            f"2. 🕵️ **Deception Analysis:** Heuristic scanner identified {len(heuristic_findings)} red flags.\n"
+            + "\n".join(f"   • {f}" for f in heuristic_findings) + "\n"
+            f"3. 🛑 **Immediate Defense Protocol:** Do NOT click any links. Never enter passwords or personal details.\n"
+            f"4. 🧠 **Technical Breakdown:** Domain impersonation or untrusted TLD detected."
+        )
 
     return f"🛡️ *AETHELGARD CYBER SHIELD REPORT*\n\n{analysis}"
 

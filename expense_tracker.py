@@ -39,17 +39,55 @@ def parse_expense_with_ai(text: str) -> dict:
         "temperature": 0.1
     }).encode("utf-8")
 
-    req = urllib.request.Request(
-        f"http://127.0.0.1:{OMNIROUTE_PORT}/v1/chat/completions",
-        data=payload,
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {OMNIROUTE_API_KEY}"}
-    )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        res = json.loads(resp.read().decode("utf-8"))
-        raw_ans = res.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-        raw_ans = re.sub(r"^```json\s*", "", raw_ans)
-        raw_ans = re.sub(r"\s*```$", "", raw_ans)
-        return json.loads(raw_ans)
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{OMNIROUTE_PORT}/v1/chat/completions",
+            data=payload,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {OMNIROUTE_API_KEY}"}
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            res = json.loads(resp.read().decode("utf-8"))
+            raw_ans = res.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+            raw_ans = re.sub(r"^```json\s*", "", raw_ans)
+            raw_ans = re.sub(r"\s*```$", "", raw_ans)
+            return json.loads(raw_ans)
+    except Exception as e:
+        # Offline / Fallback heuristic parser
+        return parse_expense_fallback(text)
+
+def parse_expense_fallback(text: str) -> dict:
+    """Heuristic fallback parser when AI router is offline."""
+    text_clean = text.replace(",", "")
+    match = re.search(r"(\d+(?:\.\d+)?)\s*(?:k|thousand|ألف)?", text_clean, re.I)
+    amt = 0.0
+    if match:
+        raw_val = float(match.group(1))
+        if ("k" in text.lower() or "ألف" in text) and raw_val < 1000:
+            amt = raw_val * 1000.0
+        else:
+            amt = raw_val
+            
+    is_usd = "$" in text or "usd" in text.lower()
+    amt_syp = amt * DEFAULT_SYP_PER_USD if is_usd else amt
+    amt_usd = amt if is_usd else round(amt / DEFAULT_SYP_PER_USD, 2)
+    
+    cat = "Food & Dining"
+    t_low = text.lower()
+    if any(k in t_low for k in ["taxi", "bus", "transport", "fuel", "gas", "بنزين", "تكسي", "مواصلات"]):
+        cat = "Transport & Commute"
+    elif any(k in t_low for k in ["airport", "station", "uniform", "flight", "duty"]):
+        cat = "Work & Airport"
+    elif any(k in t_low for k in ["supermarket", "groceries", "market"]):
+        cat = "Groceries"
+        
+    return {
+        "amount_syp": amt_syp,
+        "amount_usd": amt_usd,
+        "currency_stated": "USD" if is_usd else "SYP",
+        "category": cat,
+        "item": text[:35],
+        "notes": "Logged via instant parser"
+    }
 
 def record_expense(text: str, vault_dir: str) -> str:
     """Records the expense to both CSV and monthly Obsidian Markdown ledger, and returns a formatted report."""
