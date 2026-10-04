@@ -174,7 +174,17 @@ def trigger_spontaneous_ping(vault_dir: str, force: bool = False) -> bool:
         [{"text": "📞 Call Aethelgard"}, {"text": "✈️ Airport Radar"}]
     ]
 
-    sent = send_human_bursts(thought, buttons=buttons)
+    # Stochastically alternate between pure British voice memo (no text) and snappy text bursts
+    send_as_voice = random.choice([True, False])
+    if send_as_voice:
+        try:
+            from voice_engine import send_telegram_voice_sync
+            print(f"[Spontaneous Curiosity] Delivering spontaneous audio voice memo (no text caption)...")
+            sent = send_telegram_voice_sync(thought, caption=None)
+        except Exception as ve:
+            sent = send_human_bursts(thought, buttons=buttons)
+    else:
+        sent = send_human_bursts(thought, buttons=buttons)
 
     # Update state
     state = load_conversation_state()
