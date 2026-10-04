@@ -14,10 +14,15 @@ import datetime
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-import websockets
-from websockets.asyncio.server import serve
-from google import genai
-from google.genai import types
+try:
+    import websockets
+    from websockets.asyncio.server import serve
+    from google import genai
+    from google.genai import types
+    LIVE_CALL_AVAILABLE = True
+except ImportError as err:
+    print(f"⚠ Live Call dependencies missing (install websockets google-genai): {err}")
+    LIVE_CALL_AVAILABLE = False
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 HTML_PATH = os.path.join(SCRIPT_DIR, "call_interface.html")
@@ -213,6 +218,9 @@ async def run_ws_server():
 
 def start_live_call_server_background():
     """Starts both HTTP UI server and WebSocket bridge in background threads."""
+    if not LIVE_CALL_AVAILABLE:
+        print("⚠ Live call server skipped: google-genai or websockets not installed.")
+        return None, None
     t_http = threading.Thread(target=start_http_server, daemon=True)
     t_http.start()
 

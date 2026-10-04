@@ -237,28 +237,35 @@ def init_hermes():
     os.environ["HERMES_LOCAL_STT_COMMAND"] = stt_cmd
     os.environ["NODE_OPTIONS"] = "--dns-result-order=ipv4first --max-old-space-size=1536"
 
-    # Apply hermes CLI configurations
-    subprocess.run(["hermes", "profile", "use", HERMES_PROFILE], check=True)
-    subprocess.run(["hermes", "config", "set", "model.provider", "first-time"], check=True)
-    subprocess.run(["hermes", "config", "set", "model.default", MODEL_DEFAULT], check=True)
-    subprocess.run(["hermes", "config", "set", "model.base_url", f"http://127.0.0.1:{OMNIROUTE_PORT}/v1"], check=True)
-    subprocess.run(["hermes", "config", "set", "model.key_env", "HERMES_CUSTOM_FIRST_TIME_API_KEY"], check=True)
-    subprocess.run(["hermes", "config", "set", "model.context_length", str(CONTEXT_LENGTH)], check=True)
-    subprocess.run(["hermes", "config", "set", "compression.enabled", "false"], check=True)
-    subprocess.run(["hermes", "config", "set", "stt.provider", "local_command"], check=False)
-    subprocess.run(["hermes", "config", "set", "model.aliases.flash", "antigravity/gemini-3.7-flash-low"], check=True)
-    subprocess.run(["hermes", "config", "set", "model.aliases.flash-low", "antigravity/gemini-3.7-flash-low"], check=True)
-    subprocess.run(["hermes", "config", "set", "model.aliases.gemini", "antigravity/gemini-3.7-flash-low"], check=True)
-    subprocess.run(["hermes", "config", "set", "model.aliases.fast", "antigravity/gemini-3.7-flash-low"], check=True)
-    subprocess.run(["hermes", "config", "set", "model.aliases.chat", "antigravity/gemini-3.7-flash-low"], check=True)
-    subprocess.run(["hermes", "config", "set", "model.aliases.casual", "antigravity/gemini-3.7-flash-low"], check=True)
-    subprocess.run(["hermes", "config", "set", "model.aliases.low", "antigravity/gemini-3.7-flash-low"], check=True)
-    subprocess.run(["hermes", "config", "set", "model.aliases.custodian", "antigravity/gemini-3.7-flash-high"], check=True)
-    subprocess.run(["hermes", "config", "set", "model.aliases.vault", "antigravity/gemini-3.7-flash-high"], check=True)
-    subprocess.run(["hermes", "config", "set", "model.aliases.high", "antigravity/gemini-3.7-flash-high"], check=True)
-    subprocess.run(["hermes", "config", "set", "model.aliases.thinking", "antigravity/gemini-3.7-flash-high"], check=True)
-    subprocess.run(["hermes", "config", "set", "model.aliases.flash-high", "antigravity/gemini-3.7-flash-high"], check=True)
-    print("✅ Hermes profile configured: LOW mode for Chat/Casual (sub-second) & HIGH mode for Custodian/Vault work.")
+    # Apply hermes CLI configurations safely
+    try:
+        commands = [
+            ["hermes", "profile", "use", HERMES_PROFILE],
+            ["hermes", "config", "set", "model.provider", "first-time"],
+            ["hermes", "config", "set", "model.default", MODEL_DEFAULT],
+            ["hermes", "config", "set", "model.base_url", f"http://127.0.0.1:{OMNIROUTE_PORT}/v1"],
+            ["hermes", "config", "set", "model.key_env", "HERMES_CUSTOM_FIRST_TIME_API_KEY"],
+            ["hermes", "config", "set", "model.context_length", str(CONTEXT_LENGTH)],
+            ["hermes", "config", "set", "compression.enabled", "false"],
+            ["hermes", "config", "set", "stt.provider", "local_command"],
+            ["hermes", "config", "set", "model.aliases.flash", "antigravity/gemini-3.7-flash-low"],
+            ["hermes", "config", "set", "model.aliases.flash-low", "antigravity/gemini-3.7-flash-low"],
+            ["hermes", "config", "set", "model.aliases.gemini", "antigravity/gemini-3.7-flash-low"],
+            ["hermes", "config", "set", "model.aliases.fast", "antigravity/gemini-3.7-flash-low"],
+            ["hermes", "config", "set", "model.aliases.chat", "antigravity/gemini-3.7-flash-low"],
+            ["hermes", "config", "set", "model.aliases.casual", "antigravity/gemini-3.7-flash-low"],
+            ["hermes", "config", "set", "model.aliases.low", "antigravity/gemini-3.7-flash-low"],
+            ["hermes", "config", "set", "model.aliases.custodian", "antigravity/gemini-3.7-flash-high"],
+            ["hermes", "config", "set", "model.aliases.vault", "antigravity/gemini-3.7-flash-high"],
+            ["hermes", "config", "set", "model.aliases.high", "antigravity/gemini-3.7-flash-high"],
+            ["hermes", "config", "set", "model.aliases.thinking", "antigravity/gemini-3.7-flash-high"],
+            ["hermes", "config", "set", "model.aliases.flash-high", "antigravity/gemini-3.7-flash-high"],
+        ]
+        for cmd in commands:
+            subprocess.run(cmd, check=False)
+        print("✅ Hermes profile configured: LOW mode for Chat/Casual (sub-second) & HIGH mode for Custodian/Vault work.")
+    except Exception as he:
+        print(f"⚠ Hermes config CLI notice: {he}")
 
 
 # ── 5. Background Vault Auto-Sync Worker ─────────────────────────────────────
@@ -280,8 +287,8 @@ def auto_sync_worker():
 # ── 6. Send Telegram Startup Notification ────────────────────────────────────
 def send_telegram_startup():
     try:
-        # Clear stale webhooks and pending updates cleanly
-        urllib.request.urlopen(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteWebhook?drop_pending_updates=true", timeout=5)
+        # Clear stale webhooks cleanly (preserve pending user updates)
+        urllib.request.urlopen(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteWebhook", timeout=5)
 
         tg_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         msg = (
