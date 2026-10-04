@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Aethelgard Live Voice Call</title>
+  <style>
+    :root {
+      --bg: #090c10;
+      --card: #161b22;
+      --accent: #38bdf8;
+      --accent-glow: rgba(56, 189, 248, 0.35);
+      --ai-speaking: #10b981;
+      --user-speaking: #6366f1;
+      --text: #f0f6fc;
+      --text-muted: #8b949e;
+      --danger: #ef4444;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: space-between;
+      padding: 24px 16px;
+      overflow: hidden;
+    }
+
+    /* Top Bar */
+    .top-bar {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+      width: 100%;
+      max-width: 440px;
+    }
+
+    .title {
+      font-size: 1.15rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.82rem;
+      font-weight: 500;
+      padding: 4px 12px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--text-muted);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      transition: all 0.3s ease;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #71717a;
+      transition: background 0.3s ease;
+    }
+
+    .status-badge.connected {
+      color: #34d399;
+      border-color: rgba(52, 211, 153, 0.25);
+    }
+    .status-badge.connected .status-dot {
+      background: #10b981;
+      box-shadow: 0 0 8px #10b981;
+    }
+
+    /* Center Orb Visualizer */
+    .orb-container {
+      position: relative;
+      width: 240px;
+      height: 240px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: auto 0;
+    }
+
+    .orb-ring {
+      position: absolute;
+      border-radius: 50%;
+      border: 1.5px solid var(--accent);
+      opacity: 0.2;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .ring-1 { width: 100%; height: 100%; animation: pulse-ring 4s infinite linear; }
+    .ring-2 { width: 80%; height: 80%; animation: pulse-ring 3s infinite reverse linear; }
+    .ring-3 { width: 60%; height: 60%; animation: pulse-ring 2.5s infinite linear; }
+
+    .orb-core {
+      width: 110px;
+      height: 110px;
+      border-radius: 50%;
+      background: radial-gradient(circle, #38bdf8 0%, #0284c7 60%, #0369a1 100%);
+      box-shadow: 0 0 35px var(--accent-glow);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.25s ease;
+      cursor: pointer;
+    }
+
+    .orb-core.ai-speaking {
+      background: radial-gradient(circle, #34d399 0%, #059669 60%, #047857 100%);
+      box-shadow: 0 0 55px rgba(52, 211, 153, 0.6);
+      transform: scale(1.08);
+    }
+
+    .orb-core.user-speaking {
+      background: radial-gradient(circle, #818cf8 0%, #4f46e5 60%, #4338ca 100%);
+      box-shadow: 0 0 55px rgba(99, 102, 241, 0.6);
+      transform: scale(1.05);
+    }
+
+    .orb-icon {
+      font-size: 2.2rem;
+      user-select: none;
+    }
+
+    @keyframes pulse-ring {
+      0% { transform: rotate(0deg) scale(0.96); opacity: 0.15; }
+      50% { transform: rotate(180deg) scale(1.04); opacity: 0.35; }
+      100% { transform: rotate(360deg) scale(0.96); opacity: 0.15; }
+    }
+
+    /* Subtitles / Real-time Transcripts */
+    .transcript-box {
+      width: 100%;
+      max-width: 440px;
+      min-height: 70px;
+      max-height: 120px;
+      overflow-y: auto;
+      text-align: center;
+      padding: 10px 16px;
+      background: rgba(22, 27, 34, 0.7);
+      border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      font-size: 0.95rem;
+      line-height: 1.45;
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+
+    .transcript-placeholder {
+      color: var(--text-muted);
+      font-style: italic;
+    }
+
+    /* Controls */
+    .controls {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      width: 100%;
+      max-width: 440px;
+    }
+
+    .btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 14px 28px;
+      border-radius: 999px;
+      font-size: 1rem;
+      font-weight: 600;
+      border: none;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      width: 100%;
+    }
+
+    .btn-connect {
+      background: #0284c7;
+      color: #fff;
+      box-shadow: 0 4px 14px rgba(2, 132, 199, 0.4);
+    }
+    .btn-connect:active { transform: scale(0.98); }
+
+    .btn-disconnect {
+      background: var(--danger);
+      color: #fff;
+      box-shadow: 0 4px 14px rgba(239, 68, 68, 0.4);
+      display: none;
+    }
+    .btn-disconnect:active { transform: scale(0.98); }
+  </style>
+</head>
+<body>
+
+  <div class="top-bar">
+    <div class="title">
+      <span>🏛️ Aethelgard Live Bridge</span>
+    </div>
+    <div class="status-badge" id="statusBadge">
+      <div class="status-dot" id="statusDot"></div>
+      <span id="statusText">Tap to start voice call</span>
+    </div>
+  </div>
+
+  <div class="orb-container">
+    <div class="orb-ring ring-1"></div>
+    <div class="orb-ring ring-2"></div>
+    <div class="orb-ring ring-3"></div>
+    <div class="orb-core" id="orbCore">
+      <div class="orb-icon" id="orbIcon">🎙️</div>
+    </div>
+  </div>
+
+  <div class="transcript-box" id="transcriptBox">
+    <span class="transcript-placeholder" id="transcriptText">"Start the call and speak naturally. Aethelgard is listening..."</span>
+  </div>
+
+  <div class="controls">
+    <button class="btn btn-connect" id="btnConnect" onclick="startCall()">
+      <span>📞 Start Hands-Free Call</span>
+    </button>
+    <button class="btn btn-disconnect" id="btnDisconnect" onclick="endCall()">
+      <span>🛑 End Call</span>
+    </button>
+  </div>
+
+  <script>
+    let ws = null;
+    let audioContext = null;
+    let micStream = null;
+    let scriptProcessor = null;
+    let isConnected = false;
+    let isAiSpeaking = false;
+    let audioQueue = [];
+    let isPlaying = false;
+    let nextScheduledTime = 0;
+
+    const orbCore = document.getElementById('orbCore');
+    const orbIcon = document.getElementById('orbIcon');
+    const statusBadge = document.getElementById('statusBadge');
+    const statusText = document.getElementById('statusText');
+    const transcriptText = document.getElementById('transcriptText');
+    const btnConnect = document.getElementById('btnConnect');
+    const btnDisconnect = document.getElementById('btnDisconnect');
+
+    function updateStatus(status, text) {
+      statusText.innerText = text;
+      statusBadge.className = 'status-badge ' + status;
+    }
+
+    async function startCall() {
+      try {
+        updateStatus('', 'Requesting microphone access...');
+        micStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            channelCount: 1,
+            sampleRate: 16000,
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          }
+        });
+
+        audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+        if (audioContext.state === 'suspended') {
+          await audioContext.resume();
+        }
+
+        // Establish WebSocket connection
+        const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${proto}//${window.location.host}/ws/call`;
+        updateStatus('', 'Connecting to Aethelgard Live API...');
+
+        ws = new WebSocket(wsUrl);
+
+        ws.onopen = () => {
+          isConnected = true;
+          updateStatus('connected', 'Live with Aethelgard');
+          btnConnect.style.display = 'none';
+          btnDisconnect.style.display = 'flex';
+          startMicCapture();
+        };
+
+        ws.onmessage = async (event) => {
+          const data = JSON.parse(event.data);
+
+          if (data.type === 'audio') {
+            // Incoming 24kHz raw PCM from Gemini Live
+            playPcmChunk(data.data);
+          } else if (data.type === 'interrupted') {
+            // User interrupted Aethelgard - stop audio playback immediately
+            stopAudioPlayback();
+          } else if (data.type === 'transcript') {
+            transcriptText.innerText = `"${data.text}"`;
+            transcriptText.classList.remove('transcript-placeholder');
+          } else if (data.type === 'ai_speaking') {
+            setAiSpeaking(data.active);
+          }
+        };
+
+        ws.onerror = (e) => {
+          console.error('WebSocket Error:', e);
+          updateStatus('', 'Connection error. Please retry.');
+          endCall();
+        };
+
+        ws.onclose = () => {
+          endCall();
+        };
+
+      } catch (err) {
+        console.error('Mic or connection error:', err);
+        updateStatus('', 'Microphone access denied or error');
+      }
+    }
+
+    function startMicCapture() {
+      const inputCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+      const source = inputCtx.createMediaStreamSource(micStream);
+      scriptProcessor = inputCtx.createScriptProcessor(4096, 1, 1);
+
+      scriptProcessor.onaudioprocess = (e) => {
+        if (!isConnected || !ws || ws.readyState !== WebSocket.OPEN) return;
+
+        const inputData = e.inputBuffer.getChannelData(0);
+        // Detect speech energy for UI orb feedback
+        let sum = 0;
+        for (let i = 0; i < inputData.length; i++) sum += inputData[i] * inputData[i];
+        const rms = Math.sqrt(sum / inputData.length);
+        if (rms > 0.05 && !isAiSpeaking) {
+          orbCore.className = 'orb-core user-speaking';
+        } else if (!isAiSpeaking) {
+          orbCore.className = 'orb-core';
+        }
+
+        // Convert Float32Array to 16-bit PCM little-endian
+        const pcm16 = new Int16Array(inputData.length);
+        for (let i = 0; i < inputData.length; i++) {
+          const s = Math.max(-1, Math.min(1, inputData[i]));
+          pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+        }
+
+        // Send base64 PCM chunk
+        const base64Chunk = btoa(String.fromCharCode.apply(null, new Uint8Array(pcm16.buffer)));
+        ws.send(JSON.stringify({ type: 'audio', data: base64Chunk }));
+      };
+
+      source.connect(scriptProcessor);
+      scriptProcessor.connect(inputCtx.destination);
+    }
+
+    function setAiSpeaking(active) {
+      isAiSpeaking = active;
+      if (active) {
+        orbCore.className = 'orb-core ai-speaking';
+        orbIcon.innerText = '🔊';
+      } else {
+        orbCore.className = 'orb-core';
+        orbIcon.innerText = '🎙️';
+      }
+    }
+
+    function playPcmChunk(base64Pcm) {
+      setAiSpeaking(true);
+      const binaryString = atob(base64Pcm);
+      const len = binaryString.length;
+      const bytes = new Uint8Array(len);
+      for (let i = 0; i < len; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+      const int16 = new Int16Array(bytes.buffer);
+      const float32 = new Float32Array(int16.length);
+      for (let i = 0; i < int16.length; i++) {
+        float32[i] = int16[i] / 32768.0;
+      }
+
+      const buffer = audioContext.createBuffer(1, float32.length, 24000);
+      buffer.copyToChannel(float32, 0);
+
+      const source = audioContext.createBufferSource();
+      source.buffer = buffer;
+      source.connect(audioContext.destination);
+
+      const now = audioContext.currentTime;
+      if (nextScheduledTime < now) {
+        nextScheduledTime = now;
+      }
+      source.start(nextScheduledTime);
+      nextScheduledTime += buffer.duration;
+
+      source.onended = () => {
+        if (audioContext.currentTime >= nextScheduledTime - 0.05) {
+          setAiSpeaking(false);
+        }
+      };
+    }
+
+    function stopAudioPlayback() {
+      nextScheduledTime = audioContext ? audioContext.currentTime : 0;
+      setAiSpeaking(false);
+    }
+
+    function endCall() {
+      isConnected = false;
+      if (ws) {
+        ws.close();
+        ws = null;
+      }
+      if (micStream) {
+        micStream.getTracks().forEach(t => t.stop());
+        micStream = null;
+      }
+      if (audioContext) {
+        audioContext.close();
+        audioContext = null;
+      }
+      setAiSpeaking(false);
+      updateStatus('', 'Call ended');
+      btnConnect.style.display = 'flex';
+      btnDisconnect.style.display = 'none';
+      transcriptText.innerText = '"Call concluded. Transcript saved to your Obsidian Vault."';
+    }
+  </script>
+</body>
+</html>

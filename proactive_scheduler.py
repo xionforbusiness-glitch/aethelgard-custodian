@@ -95,10 +95,13 @@ def trigger_morning_briefing(vault_dir):
         f"⚡ *Quick Action:* Tap below to record today's shift:"
     )
 
+    from human_mode import get_conversation_mode
+    mode_text = "🏛️ Custodian Mode" if get_conversation_mode() == "human" else "☕ Casual Mode"
+
     buttons = [
         [{"text": "🚌 Bus Sync (07:20 AM)"}, {"text": "🏢 Standard (08:15 AM)"}],
         [{"text": "✈️ Dawn Shift (03:00 AM)"}, {"text": "🏖️ Scheduled Off"}],
-        [{"text": "📊 Current Leaderboard"}, {"text": "🧬 Circadian Oracle"}]
+        [{"text": mode_text}, {"text": "📞 Call Aethelgard"}]
     ]
 
     sent = send_telegram(msg, buttons)
@@ -216,9 +219,12 @@ def trigger_wakeup_alarm(vault_dir):
         f"{airport_weather}\n\n"
         f"Get ready for your shift. Full shift briefing will trigger at 07:15 AM."
     )
+    from human_mode import get_conversation_mode
+    mode_text = "🏛️ Custodian Mode" if get_conversation_mode() == "human" else "☕ Casual Mode"
+
     buttons = [
         [{"text": "☀️ I'm Awake & Ready"}, {"text": "☕ Need 15m Snooze"}],
-        [{"text": "✈️ Damascus Runway Radar"}, {"text": "🧬 Circadian Oracle"}]
+        [{"text": mode_text}, {"text": "📞 Call Aethelgard"}]
     ]
     send_telegram(msg, buttons)
 
@@ -236,6 +242,7 @@ def proactive_scheduler_daemon(vault_dir):
     last_scout_date = None
     last_nightly_date = None
     last_weekly_date = None
+    last_curiosity_hm = None
 
     print(f"[{time.strftime('%H:%M:%S')}] ⏰ Full Proactive Autonomy Suite active (Damascus UTC+3)...")
 
@@ -282,6 +289,16 @@ def proactive_scheduler_daemon(vault_dir):
                 print(f"[Second Brain Librarian] Firing Weekly Executive Review: {today_str}")
                 trigger_weekly_review(vault_dir)
                 last_weekly_date = today_str
+
+            # 6. Spontaneous Daytime Curiosity Ping (Stochastic check-in every 15m)
+            current_hm = (hour, minute // 15)
+            if current_hm != last_curiosity_hm:
+                last_curiosity_hm = current_hm
+                try:
+                    from spontaneous_curiosity import trigger_spontaneous_ping
+                    trigger_spontaneous_ping(vault_dir, force=False)
+                except Exception as ce:
+                    pass
 
         except Exception as e:
             print(f"⚠ Proactive Scheduler notice: {e}")

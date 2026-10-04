@@ -5,3 +5,5 @@ pillow
 pyyaml
 edge-tts
 openpyxl
+google-genai
+websockets

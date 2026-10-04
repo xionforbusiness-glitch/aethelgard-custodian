@@ -314,6 +314,14 @@ def run_gateway_forever():
     except Exception as se:
         print(f"⚠ Proactive Scheduler startup notice: {se}")
 
+    # ── Launch Gemini 3.8 Live Voice Call Bridge ─────────
+    try:
+        from live_call_server import start_live_call_server_background
+        start_live_call_server_background()
+        print("📞 Gemini 3.8 Live Voice Call server active on port 20130!")
+    except Exception as ce:
+        print(f"⚠ Live Call Server startup notice: {ce}")
+
     send_telegram_startup()
 
     cmd = ["hermes", "-p", HERMES_PROFILE, "gateway", "run", "--replace", "--force", "--accept-hooks"]
