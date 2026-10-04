@@ -48,15 +48,14 @@ GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "AQ.Ab8RN6I64Bj-z2kKo2b-o6cETM
 
 HERMES_PROFILE = "llm-wiki"
 HERMES_HOME = os.path.expanduser("~/.hermes")
-HERMES_PROFILE_DIR = os.path.join(HERMES_HOME, "profiles", HERMES_PROFILE)
-MODEL_DEFAULT = os.environ.get("HERMES_MODEL", "antigravity/claude-sonnet-4-6")
-CONTEXT_LENGTH = int(os.environ.get("HERMES_CONTEXT_LENGTH", "131072"))
+MODEL_DEFAULT = os.environ.get("HERMES_MODEL", "antigravity/gemini-3.7-flash-low")
+CONTEXT_LENGTH = int(os.environ.get("HERMES_CONTEXT_LENGTH", "1048576"))
 
 print("\n" + "=" * 65)
 print("🏛️ AETHELGARD 24/7 AUTONOMOUS VAULT CUSTODIAN INITIALIZING...")
 print("=" * 65)
 print(f"🧠 Brain Model:       {MODEL_DEFAULT}")
-print(f"📏 Context Window:    {CONTEXT_LENGTH:,} tokens (128k Low Latency)")
+print(f"📏 Context Window:    {CONTEXT_LENGTH:,} tokens (1M Instant Low-Latency)")
 print(f"🌐 Antigravity Plan:  Google AI Pro Subscription (OmniRoute :{OMNIROUTE_PORT})")
 print(f"📁 Target Vault:      {VAULT_DIR} -> GitHub {GITHUB_USER}/{VAULT_REPO}")
 print(f"📱 Telegram Gateway:  @aethelgard_vault_bot")
@@ -247,14 +246,15 @@ def init_hermes():
     subprocess.run(["hermes", "config", "set", "model.context_length", str(CONTEXT_LENGTH)], check=True)
     subprocess.run(["hermes", "config", "set", "compression.enabled", "false"], check=True)
     subprocess.run(["hermes", "config", "set", "stt.provider", "local_command"], check=False)
-    subprocess.run(["hermes", "config", "set", "model.aliases.claude", "antigravity/claude-sonnet-4-6"], check=True)
-    subprocess.run(["hermes", "config", "set", "model.aliases.sonnet", "antigravity/claude-sonnet-4-6"], check=True)
-    subprocess.run(["hermes", "config", "set", "model.aliases.gemini", "antigravity/gemini-3.7-flash-low"], check=True)
     subprocess.run(["hermes", "config", "set", "model.aliases.flash", "antigravity/gemini-3.7-flash-low"], check=True)
     subprocess.run(["hermes", "config", "set", "model.aliases.flash-low", "antigravity/gemini-3.7-flash-low"], check=True)
+    subprocess.run(["hermes", "config", "set", "model.aliases.gemini", "antigravity/gemini-3.7-flash-low"], check=True)
+    subprocess.run(["hermes", "config", "set", "model.aliases.fast", "antigravity/gemini-3.7-flash-low"], check=True)
+    subprocess.run(["hermes", "config", "set", "model.aliases.chat", "antigravity/gemini-3.7-flash-low"], check=True)
+    subprocess.run(["hermes", "config", "set", "model.aliases.vault", "antigravity/gemini-3.7-flash-high"], check=True)
     subprocess.run(["hermes", "config", "set", "model.aliases.thinking", "antigravity/gemini-3.7-flash-high"], check=True)
-    subprocess.run(["hermes", "config", "set", "model.aliases.opus", "antigravity/claude-opus-4-6-thinking"], check=True)
-    print("✅ Hermes profile configured with Claude Sonnet 4.6 (instant low-latency replies) and Gemini Flash Low.")
+    subprocess.run(["hermes", "config", "set", "model.aliases.flash-high", "antigravity/gemini-3.7-flash-high"], check=True)
+    print("✅ Hermes profile configured with gemini-3.7-flash-low (instant sub-second replies) and gemini-3.7-flash-high for deep vault work.")
 
 
 # ── 5. Background Vault Auto-Sync Worker ─────────────────────────────────────

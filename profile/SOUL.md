@@ -214,8 +214,6 @@ OBSIDIAN_VAULT_PATH=${VAULT_DIR}
 
 ## ⚙️ Model & Multimodal Routing
 - **Infrastructure:** Google Antigravity Pro Plan (OmniRoute on http://127.0.0.1:20128/v1)
-- **Primary Brain:** `antigravity/claude-sonnet-4-6` (Claude Sonnet 4.6 — instant zero-delay replies, sharp intelligence)
-- **Fast Gemini Brain:** `antigravity/gemini-3.7-flash-low` (switchable with `/model gemini` or `/model flash` — near-instant, minimal thinking)
-- **Deep Thinking Brain:** `antigravity/gemini-3.7-flash-high` (switchable with `/model thinking` — extended multi-step reasoning)
-- **Opus Brain:** `antigravity/claude-opus-4-6-thinking` (switchable with `/model opus`)
+- **Primary Chat Brain:** `antigravity/gemini-3.7-flash-low` (Sub-second, instant responses for natural conversational chat)
+- **Deep Vault & Audit Brain:** `antigravity/gemini-3.7-flash-high` (Full deep thinking for audits, coding, and wargames — switchable via `/model vault` or `/model thinking`)
 - **Multimodal Capabilities:** Native hearing (Gemini 3.8 Flash STT for voice notes), vision, and Gemini 3.8 Live API for real-time voice calls.
