@@ -251,10 +251,14 @@ def init_hermes():
     subprocess.run(["hermes", "config", "set", "model.aliases.gemini", "antigravity/gemini-3.7-flash-low"], check=True)
     subprocess.run(["hermes", "config", "set", "model.aliases.fast", "antigravity/gemini-3.7-flash-low"], check=True)
     subprocess.run(["hermes", "config", "set", "model.aliases.chat", "antigravity/gemini-3.7-flash-low"], check=True)
+    subprocess.run(["hermes", "config", "set", "model.aliases.casual", "antigravity/gemini-3.7-flash-low"], check=True)
+    subprocess.run(["hermes", "config", "set", "model.aliases.low", "antigravity/gemini-3.7-flash-low"], check=True)
+    subprocess.run(["hermes", "config", "set", "model.aliases.custodian", "antigravity/gemini-3.7-flash-high"], check=True)
     subprocess.run(["hermes", "config", "set", "model.aliases.vault", "antigravity/gemini-3.7-flash-high"], check=True)
+    subprocess.run(["hermes", "config", "set", "model.aliases.high", "antigravity/gemini-3.7-flash-high"], check=True)
     subprocess.run(["hermes", "config", "set", "model.aliases.thinking", "antigravity/gemini-3.7-flash-high"], check=True)
     subprocess.run(["hermes", "config", "set", "model.aliases.flash-high", "antigravity/gemini-3.7-flash-high"], check=True)
-    print("✅ Hermes profile configured with gemini-3.7-flash-low (instant sub-second replies) and gemini-3.7-flash-high for deep vault work.")
+    print("✅ Hermes profile configured: LOW mode for Chat/Casual (sub-second) & HIGH mode for Custodian/Vault work.")
 
 
 # ── 5. Background Vault Auto-Sync Worker ─────────────────────────────────────

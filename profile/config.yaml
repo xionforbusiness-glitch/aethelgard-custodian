@@ -11,7 +11,11 @@ model:
     gemini: antigravity/gemini-3.7-flash-low
     fast: antigravity/gemini-3.7-flash-low
     chat: antigravity/gemini-3.7-flash-low
+    casual: antigravity/gemini-3.7-flash-low
+    low: antigravity/gemini-3.7-flash-low
+    custodian: antigravity/gemini-3.7-flash-high
     vault: antigravity/gemini-3.7-flash-high
+    high: antigravity/gemini-3.7-flash-high
     flash-high: antigravity/gemini-3.7-flash-high
     thinking: antigravity/gemini-3.7-flash-high
 

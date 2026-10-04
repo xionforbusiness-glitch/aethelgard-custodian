@@ -54,11 +54,25 @@ def get_conversation_mode() -> str:
 
 
 def set_conversation_mode(mode: str) -> str:
-    """Sets mode to 'custodian' or 'human'."""
-    clean_mode = "human" if "human" in mode.lower() or "casual" in mode.lower() else "custodian"
+    """
+    Sets mode:
+      - 'human' / 'casual' / 'chat': Fast Gemini Flash Low (antigravity/gemini-3.7-flash-low)
+      - 'custodian' / 'vault': Deep Thinking Gemini Flash High (antigravity/gemini-3.7-flash-high)
+    """
+    clean_mode = "human" if any(k in mode.lower() for k in ("human", "casual", "chat", "low")) else "custodian"
     state = load_conversation_state()
     state["mode"] = clean_mode
     save_conversation_state(state)
+
+    target_model = "antigravity/gemini-3.7-flash-low" if clean_mode == "human" else "antigravity/gemini-3.7-flash-high"
+    try:
+        import subprocess
+        hermes_profile = os.environ.get("HERMES_PROFILE", "llm-wiki")
+        subprocess.run(["hermes", "-p", hermes_profile, "config", "set", "model.default", target_model], check=False)
+        print(f"[Mode Switch] Active brain updated to: {target_model} ({clean_mode.upper()} MODE)")
+    except Exception as e:
+        print(f"⚠ Mode model switch notice: {e}")
+
     return clean_mode
 
 
