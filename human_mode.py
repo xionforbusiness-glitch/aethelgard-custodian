@@ -157,8 +157,11 @@ def send_human_bursts(text: str, buttons=None, chat_id=TELEGRAM_USER_ID, token=T
         # 1. Send typing indicator
         send_chat_action("typing", chat_id=chat_id, token=token)
 
-        # 2. Human typing latency: ~30-40 chars per second + reading pause
-        delay = min(max(len(burst) * 0.025, 0.8), 2.8)
+        # 2. Human typing latency: instantaneous initial burst, snappy subsequent bursts
+        if i == 0:
+            delay = 0.2
+        else:
+            delay = min(max(len(burst) * 0.012, 0.4), 1.1)
         time.sleep(delay)
 
         # 3. Construct payload

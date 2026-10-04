@@ -10,3 +10,4 @@ env/
 vault/
 staging/*
 !staging/.gitkeep
+conversation_state.json
