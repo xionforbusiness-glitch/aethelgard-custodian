@@ -48,6 +48,8 @@ GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "AQ.Ab8RN6I64Bj-z2kKo2b-o6cETM
 
 HERMES_PROFILE = "llm-wiki"
 HERMES_HOME = os.path.expanduser("~/.hermes")
+HERMES_PROFILE_DIR = os.path.join(HERMES_HOME, "profiles", HERMES_PROFILE)
+OMNIROUTE_DIR = os.path.expanduser("~/.omniroute")
 MODEL_DEFAULT = os.environ.get("HERMES_MODEL", "antigravity/gemini-3.7-flash-low")
 CONTEXT_LENGTH = int(os.environ.get("HERMES_CONTEXT_LENGTH", "1048576"))
 
