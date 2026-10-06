@@ -5,8 +5,22 @@ import json
 
 def handle(event_type, context):
     try:
-        # Determine script directory
-        script_dir = os.environ.get("AETHELGARD_DIR", os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+        # Determine script directory with robust fallbacks
+        candidates = [
+            os.environ.get("AETHELGARD_DIR"),
+            os.path.expanduser("~/aethelgard-custodian"),
+            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")),
+            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")),
+            os.path.abspath(os.path.join(os.path.dirname(__file__), "..")),
+            r"C:\Users\omara\Desktop\aethelgard-custodian"
+        ]
+        script_dir = None
+        for c in candidates:
+            if c and os.path.exists(os.path.join(c, "shift_tracker.py")):
+                script_dir = c
+                break
+        if not script_dir:
+            script_dir = os.path.expanduser("~/aethelgard-custodian")
         if script_dir not in sys.path:
             sys.path.insert(0, script_dir)
 
