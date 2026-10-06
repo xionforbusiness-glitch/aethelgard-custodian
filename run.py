@@ -60,15 +60,12 @@ HERMES_PROFILE_DIR = os.path.join(HERMES_HOME, "profiles", HERMES_PROFILE)
 OMNIROUTE_DIR = os.path.expanduser("~/.omniroute")
 MODEL_DEFAULT = os.environ.get("HERMES_MODEL", "antigravity/gemini-3.7-flash-low")
 CONTEXT_LENGTH = int(os.environ.get("HERMES_CONTEXT_LENGTH", "1048576"))
-WATCHDOG_TURN_TIMEOUT = int(os.environ.get("WATCHDOG_TURN_TIMEOUT", "900"))
-ENABLE_WATCHDOG_TURN_KILL = os.environ.get("ENABLE_WATCHDOG_TURN_KILL", "true").lower() in ("true", "1", "yes")
 
 print("\n" + "=" * 65)
 print("🏛️ AETHELGARD 24/7 AUTONOMOUS VAULT CUSTODIAN INITIALIZING...")
 print("=" * 65)
 print(f"🧠 Brain Model:       {MODEL_DEFAULT}")
 print(f"📏 Context Window:    {CONTEXT_LENGTH:,} tokens (1M Instant Low-Latency)")
-print(f"🛡️ Watchdog Timeout:  {WATCHDOG_TURN_TIMEOUT // 60} minutes ({WATCHDOG_TURN_TIMEOUT}s)")
 print(f"🌐 Antigravity Plan:  Google AI Pro Subscription (OmniRoute :{OMNIROUTE_PORT})")
 print(f"📁 Target Vault:      {VAULT_DIR} -> GitHub {GITHUB_USER}/{VAULT_REPO}")
 print(f"📱 Telegram Gateway:  @aethelgard_vault_bot")
@@ -200,6 +197,19 @@ def unlock_stale_hermes_sessions():
         except Exception as je:
             print(f"  ⚠ Notice sanitizing {jp}: {je}")
 
+    # 4. Ensure Gateway Voice Mode is configured to 'all' so voice notes generate with each message
+    voice_mode_path = os.path.join(HERMES_HOME, "gateway_voice_mode.json")
+    try:
+        os.makedirs(os.path.dirname(voice_mode_path), exist_ok=True)
+        v_data = {
+            f"{HERMES_PROFILE}:telegram:{TELEGRAM_USER_ID}": "all",
+            f"telegram:{TELEGRAM_USER_ID}": "all",
+        }
+        with open(voice_mode_path, "w", encoding="utf-8") as vf:
+            json.dump(v_data, vf, indent=2)
+    except Exception:
+        pass
+
 
 def auto_update_self():
     """Auto-pull latest codebase on boot and clear any stale lock files."""
@@ -294,7 +304,7 @@ def init_omniroute():
         env["STORAGE_ENCRYPTION_KEY"] = STORAGE_ENCRYPTION_KEY
         env["OMNIROUTE_MAX_PENDING_MIGRATIONS"] = "0"
         env["PORT"] = str(OMNIROUTE_PORT)
-        env["NODE_OPTIONS"] = "--dns-result-order=ipv4first --max-old-space-size=512"
+        env["NODE_OPTIONS"] = "--dns-result-order=ipv4first --max-old-space-size=1536"
 
         log_path = "/tmp/omniroute.log" if os.name != "nt" else os.path.join(SCRIPT_DIR, "omniroute.log")
         log_f = open(log_path, "w", encoding="utf-8")
@@ -414,9 +424,7 @@ def init_hermes():
     os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
     os.environ["HERMES_LOCAL_STT_COMMAND"] = stt_cmd
     os.environ["AETHELGARD_DIR"] = SCRIPT_DIR
-    os.environ["NODE_OPTIONS"] = "--dns-result-order=ipv4first --max-old-space-size=512"
-    os.environ["HERMES_LOCAL_STREAM_STALE_TIMEOUT"] = "45.0"
-    os.environ["HERMES_STREAM_STALE_TIMEOUT"] = "45.0"
+    os.environ["NODE_OPTIONS"] = "--dns-result-order=ipv4first --max-old-space-size=1536"
 
     # Apply hermes CLI configurations safely
     try:
@@ -425,15 +433,16 @@ def init_hermes():
             ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.provider", "first-time"],
             ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.default", MODEL_DEFAULT],
             ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.base_url", f"http://127.0.0.1:{OMNIROUTE_PORT}/v1"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.streaming", "false"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "providers.first-time.streaming", "false"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "agent.local_stream_stale_timeout", "45"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.streaming", "true"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "providers.first-time.streaming", "true"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "voice.auto_tts", "true"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "tts.provider", "edge"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "tts.voice", "en-GB-RyanNeural"],
             ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.key_env", "HERMES_CUSTOM_FIRST_TIME_API_KEY"],
             ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.context_length", str(CONTEXT_LENGTH)],
             ["hermes", "-p", HERMES_PROFILE, "config", "set", "providers.first-time.model", MODEL_DEFAULT],
             ["hermes", "-p", HERMES_PROFILE, "config", "set", "providers.first-time.discover_models", "false"],
             ["hermes", "-p", HERMES_PROFILE, "config", "set", "terminal.timeout", "300"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "agent.max_turn_duration_seconds", str(WATCHDOG_TURN_TIMEOUT)],
             ["hermes", "-p", HERMES_PROFILE, "config", "set", "slash_commands.confirm_new", "false"],
             ["hermes", "-p", HERMES_PROFILE, "config", "set", "slash_commands.confirm_reset", "false"],
             ["hermes", "-p", HERMES_PROFILE, "config", "set", "compression.enabled", "false"],
@@ -501,7 +510,7 @@ def send_telegram_startup():
             f"🏛️ Aethelgard 24/7 Vault Custodian is ONLINE!\n\n"
             f"🧠 Brain: {MODEL_DEFAULT}\n"
             f"⚡ Speed: Instantaneous Sub-Second Chat\n"
-            f"🛡️ Watchdog: {WATCHDOG_TURN_TIMEOUT // 60}-Minute Hang Protection (Long Tasks Permitted)\n"
+            f"🎙️ Voice Notes: Generating with each message (Edge TTS)\n"
             f"📊 Excel Engine: On-demand timesheet delivery ready (/excel)\n"
             f"📋 Work Tracker: Non-intrusive reminders active\n"
             f"🌐 Infrastructure: 24/7 Always-On Virtual Machine"
@@ -515,29 +524,28 @@ def send_telegram_startup():
         print(f"⚠ Telegram startup notice: {e}")
 
 
-# ── 7. Run Hermes Gateway 24/7 Loop & Watchdog ───────────────────────────────
+# ── 7. Run Hermes Gateway 24/7 Loop ──────────────────────────────────────────
 active_gateway_proc = None
 gateway_start_time = 0.0
 
-def watchdog_monitor_worker():
-    """Monitors running gateway; auto-kills turns hanging > 15m and handles remote reboot triggers."""
-    hb_path = "/tmp/hermes_turn_heartbeat.json" if os.name != "nt" else os.path.join(SCRIPT_DIR, "heartbeat.json")
+def emergency_reboot_worker():
+    """Monitors running gateway for remote /restart triggers without killing turns."""
     restart_path = "/tmp/hermes_restart_requested" if os.name != "nt" else os.path.join(SCRIPT_DIR, "restart.trigger")
 
     while True:
         time.sleep(5)
-        global active_gateway_proc, gateway_start_time
+        global active_gateway_proc
         proc = active_gateway_proc
         if not proc or proc.poll() is not None:
             continue
 
-        # 1. External Emergency Restart Trigger (from /restart or http://<IP>:20130/restart)
+        # 1. External Emergency Restart Trigger (from /restart or /reboot)
         if os.path.exists(restart_path):
             try:
                 os.remove(restart_path)
             except Exception:
                 pass
-            print("[Watchdog] 🔄 External emergency reboot trigger received! Pulling latest code & restarting Gateway...", flush=True)
+            print("[Supervisor] 🔄 Emergency restart requested (/restart)! Pulling latest code & restarting Gateway...", flush=True)
             try:
                 subprocess.run(["git", "-C", SCRIPT_DIR, "pull", "--rebase", "origin", "main"], timeout=15, check=False)
             except Exception:
@@ -551,74 +559,9 @@ def watchdog_monitor_worker():
             unlock_stale_hermes_sessions()
             continue
 
-        # Ensure the current gateway has been active for at least WATCHDOG_TURN_TIMEOUT before checking turn timeouts
-        if not ENABLE_WATCHDOG_TURN_KILL or time.time() - gateway_start_time < WATCHDOG_TURN_TIMEOUT:
-            continue
-
-        # 2. Check if a turn has been hanging for > 15 minutes (900 seconds)
-        if os.path.exists(hb_path):
-            try:
-                with open(hb_path, "r", encoding="utf-8") as f:
-                    hb = json.load(f)
-                if hb.get("active") and hb.get("start_time"):
-                    # Check if heartbeat belongs to the current gateway run
-                    if hb["start_time"] < gateway_start_time:
-                        # Stale heartbeat from a previous run; safely reset it
-                        try:
-                            with open(hb_path, "w", encoding="utf-8") as f:
-                                json.dump({"active": False, "reset_on_boot": True}, f)
-                        except Exception:
-                            pass
-                        continue
-
-                    elapsed = time.time() - hb["start_time"]
-                    if elapsed > WATCHDOG_TURN_TIMEOUT:
-                        msg_snippet = hb.get("message", "unknown query")
-                        print(f"[Watchdog] 🚨 TURN HANG DETECTED! Elapsed: {elapsed:.1f}s > {WATCHDOG_TURN_TIMEOUT}s on '{msg_snippet}'. Recovering Gateway...", flush=True)
-                        
-                        # Reset heartbeat file
-                        try:
-                            with open(hb_path, "w", encoding="utf-8") as f:
-                                json.dump({"active": False, "aborted_at": time.time()}, f)
-                        except Exception:
-                            pass
-
-                        # Alert Omar on Telegram
-                        try:
-                            tg_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-                            alert_text = (
-                                f"⚡ *Watchdog Auto-Recovery*\n\n"
-                                f"A background query was hanging for >{int(WATCHDOG_TURN_TIMEOUT // 60)} minutes. "
-                                f"Aethelgard automatically cleared session locks and rebooted.\n\n"
-                                f"✅ Gateway is fresh, clean, and ready for your orders!"
-                            )
-                            data = json.dumps({"chat_id": TELEGRAM_USER_ID, "text": alert_text, "parse_mode": "Markdown"}).encode("utf-8")
-                            req = urllib.request.Request(tg_url, data=data, headers={"Content-Type": "application/json"})
-                            urllib.request.urlopen(req, timeout=5)
-                        except Exception as te:
-                            print(f"⚠ Failed to send watchdog Telegram alert: {te}", flush=True)
-
-                        unlock_stale_hermes_sessions()
-                        try:
-                            proc.terminate()
-                            proc.wait(timeout=5)
-                        except Exception:
-                            proc.kill()
-                        unlock_stale_hermes_sessions()
-
-                        # Ensure OmniRoute is also recycled on turn hang to clear wedged sockets
-                        print("[Watchdog] 🔄 Cycling OmniRoute proxy to clear any wedged sockets...", flush=True)
-                        try:
-                            subprocess.run(f"pkill -9 -f omniroute 2>/dev/null; fuser -k {OMNIROUTE_PORT}/tcp 2>/dev/null || true", shell=True, check=False)
-                        except Exception:
-                            pass
-                        start_omniroute_if_needed()
-            except Exception:
-                pass
-
-        # 3. OmniRoute Liveness check: ensure proxy never freezes silently
+        # 2. OmniRoute proxy liveness check: restart daemon if proxy went down
         if not is_omniroute_alive():
-            print("[Watchdog] 🚨 OmniRoute proxy unresponsive! Restarting OmniRoute daemon...", flush=True)
+            print("[Supervisor] 🚨 OmniRoute proxy unresponsive! Restarting OmniRoute daemon...", flush=True)
             try:
                 subprocess.run(f"pkill -9 -f omniroute 2>/dev/null; fuser -k {OMNIROUTE_PORT}/tcp 2>/dev/null || true", shell=True, check=False)
             except Exception:
@@ -633,7 +576,7 @@ def run_gateway_forever():
     print("=" * 65)
 
     threading.Thread(target=auto_sync_worker, daemon=True).start()
-    threading.Thread(target=watchdog_monitor_worker, daemon=True).start()
+    threading.Thread(target=emergency_reboot_worker, daemon=True).start()
 
     # ── Launch Proactive Scheduler & Second Brain Librarian ──────────────
     try:
