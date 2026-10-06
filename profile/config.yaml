@@ -1,31 +1,31 @@
 model:
-  default: antigravity/gemini-3.8-flash-medium
+  default: antigravity/gemini-3.7-flash-low
   api_mode: chat_completions
   provider: first-time
   base_url: http://127.0.0.1:20128/v1
   key_env: HERMES_CUSTOM_FIRST_TIME_API_KEY
   context_length: 1048576
   aliases:
-    flash: antigravity/gemini-3.8-flash-medium
-    flash-medium: antigravity/gemini-3.8-flash-medium
-    gemini: antigravity/gemini-3.8-flash-medium
-    medium: antigravity/gemini-3.8-flash-medium
-    chat: antigravity/gemini-3.8-flash-medium
-    casual: antigravity/gemini-3.8-flash-medium
-    fast: antigravity/gemini-3.8-flash-low
-    low: antigravity/gemini-3.8-flash-low
-    flash-low: antigravity/gemini-3.8-flash-low
-    custodian: antigravity/gemini-3.8-flash-high
-    vault: antigravity/gemini-3.8-flash-high
-    high: antigravity/gemini-3.8-flash-high
-    flash-high: antigravity/gemini-3.8-flash-high
-    thinking: antigravity/gemini-3.8-flash-high
+    flash: antigravity/gemini-3.7-flash-low
+    flash-low: antigravity/gemini-3.7-flash-low
+    gemini: antigravity/gemini-3.7-flash-low
+    fast: antigravity/gemini-3.7-flash-low
+    chat: antigravity/gemini-3.7-flash-low
+    casual: antigravity/gemini-3.7-flash-low
+    low: antigravity/gemini-3.7-flash-low
+    medium: antigravity/gemini-3.7-flash-medium
+    flash-medium: antigravity/gemini-3.7-flash-medium
+    custodian: antigravity/gemini-3.7-flash-high
+    vault: antigravity/gemini-3.7-flash-high
+    high: antigravity/gemini-3.7-flash-high
+    flash-high: antigravity/gemini-3.7-flash-high
+    thinking: antigravity/gemini-3.7-flash-high
 
 providers:
   first-time:
     name: omnirouter
     base_url: http://127.0.0.1:20128/v1
-    model: antigravity/gemini-3.8-flash-medium
+    model: antigravity/gemini-3.7-flash-low
     key_env: HERMES_CUSTOM_FIRST_TIME_API_KEY
     discover_models: false
 
@@ -35,7 +35,7 @@ compression:
 auxiliary:
   vision:
     provider: first-time
-    model: antigravity/gemini-3.8-flash-medium
+    model: antigravity/gemini-3.7-flash-low
     base_url: http://127.0.0.1:20128/v1
     key_env: HERMES_CUSTOM_FIRST_TIME_API_KEY
 

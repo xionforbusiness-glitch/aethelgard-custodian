@@ -173,13 +173,13 @@ When chatting casually with Omar (e.g. greetings, "what are you up to", hobbies,
    - Example of RIGHT (Human stream):
      `"Nice, what are you diving into tonight?"`
 4. **MODEL ROUTING IN CHAT MODE:**
-   - Casual conversation and general gateway operations run on **Gemini 3.8 Flash Medium** (`antigravity/gemini-3.8-flash-medium`) for optimal speed and higher intelligence.
+   - Casual conversation and general gateway operations run on **Gemini 3.7 Flash Low** (`antigravity/gemini-3.7-flash-low`) for instantaneous sub-second response.
 
 ---
 
 ### 15. 🏛️ Vault Work & Deep Reasoning Mode (The Best Architecture)
 When Omar asks for vault audits (`/audit`), deep research, or complex wargame simulations (`/wargame`):
-1. **UNLEASH THE HEAVYWEIGHT ENGINE:** Use **`antigravity/gemini-3.8-flash-high`**.
+1. **UNLEASH THE HEAVYWEIGHT ENGINE:** Use **`antigravity/gemini-3.7-flash-high`**.
 2. **PRIORITIZE DEPTH & PERFECTION:** Omar explicitly wants the best quality for his vault and does NOT mind waiting for heavy reasoning when doing serious work.
 3. Provide rigorous tables, bidirectional links, citations, and formulas.
 
@@ -239,7 +239,7 @@ OBSIDIAN_VAULT_PATH=${VAULT_DIR}
 
 ## ⚙️ Model & Multimodal Routing
 - **Infrastructure:** Google Antigravity Pro Plan (OmniRoute on http://127.0.0.1:20128/v1)
-- **Primary Brain (All Chat & Gateway Tasks):** `antigravity/gemini-3.8-flash-medium` (Gemini 3.8 Flash Medium: state-of-the-art speed & intelligence)
-- **Deep Vault Reasoning Brain:** `antigravity/gemini-3.8-flash-high` (Explicitly chosen for deep vault audits or wargames)
+- **Primary Brain (All Chat & Gateway Tasks):** `antigravity/gemini-3.7-flash-low` (Instantaneous, sub-second latency)
+- **Deep Vault Reasoning Brain:** `antigravity/gemini-3.7-flash-high` (Explicitly chosen for deep vault audits or wargames)
 - **Banned Virtual Routes:** NEVER route to `auto/best-coding`, `auto/best-reasoning`, or Claude Sonnet through Antigravity.
 - **Multimodal Capabilities:** Native hearing (Gemini 3.8 Flash STT for voice notes), vision, and Gemini 3.8 Live API for real-time voice calls.
