@@ -76,6 +76,131 @@ print("=" * 65 + "\n")
 
 
 # ── 1. Auto-Update Custodian Codebase & Stale Locks ──────────────────────────
+def unlock_stale_hermes_sessions():
+    """
+    Guarantees 100% gateway responsiveness:
+    1. Removes all stale lock and heartbeat markers.
+    2. Clears active_turn_token, active_turn_started_at, resume_pending from gateway_routing
+       in ~/.hermes/state.db and profile state.db databases.
+    3. Clears active_turn_token and resume_pending from all sessions.json files.
+    This permanently prevents Hermes from getting stuck in an unresponsive 'resume_pending' or
+    locked state after watchdog resets or abrupt restarts.
+    """
+    print("🔓 [Session Armor] Checking & unlocking any stale session locks...")
+
+    # 1. Purge ephemeral lock files across all locations
+    hb_path = "/tmp/hermes_turn_heartbeat.json" if os.name != "nt" else os.path.join(SCRIPT_DIR, "heartbeat.json")
+    if os.path.exists(hb_path):
+        try:
+            os.remove(hb_path)
+        except Exception:
+            pass
+
+    restart_path = "/tmp/hermes_restart_requested" if os.name != "nt" else os.path.join(SCRIPT_DIR, "restart.trigger")
+    if os.path.exists(restart_path):
+        try:
+            os.remove(restart_path)
+        except Exception:
+            pass
+
+    lock_dirs = [HERMES_HOME, HERMES_PROFILE_DIR]
+    profiles_root = os.path.join(HERMES_HOME, "profiles")
+    if os.path.exists(profiles_root):
+        for p_name in os.listdir(profiles_root):
+            p_dir = os.path.join(profiles_root, p_name)
+            if os.path.isdir(p_dir) and p_dir not in lock_dirs:
+                lock_dirs.append(p_dir)
+
+    for ld in lock_dirs:
+        for lock_f in ["gateway.lock", "gateway_state.json", "gateway-dispatcher.lock",
+                       ".update_prompt.json", ".update_response", ".drain_request.json"]:
+            lp = os.path.join(ld, lock_f)
+            if os.path.exists(lp):
+                try:
+                    os.remove(lp)
+                except Exception:
+                    pass
+
+    # 2. Unlock SQLite gateway_routing table in state.db files
+    db_candidates = [
+        os.path.join(HERMES_HOME, "state.db"),
+        os.path.join(HERMES_PROFILE_DIR, "state.db"),
+    ]
+    if os.path.exists(profiles_root):
+        for p_name in os.listdir(profiles_root):
+            p_db = os.path.join(profiles_root, p_name, "state.db")
+            if os.path.exists(p_db) and p_db not in db_candidates:
+                db_candidates.append(p_db)
+
+    for db_p in db_candidates:
+        if not os.path.exists(db_p):
+            continue
+        try:
+            conn = sqlite3.connect(db_p, timeout=5)
+            cur = conn.cursor()
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='gateway_routing';")
+            if cur.fetchone():
+                cur.execute("SELECT scope, session_key, entry_json FROM gateway_routing;")
+                rows = cur.fetchall()
+                cleared = 0
+                for scope, session_key, entry_json in rows:
+                    try:
+                        entry = json.loads(entry_json)
+                        changed = False
+                        for field, default in [("active_turn_token", None), ("active_turn_started_at", None),
+                                               ("resume_pending", False), ("resume_reason", None)]:
+                            if entry.get(field) != default:
+                                entry[field] = default
+                                changed = True
+                        if changed:
+                            cur.execute(
+                                "UPDATE gateway_routing SET entry_json = ? WHERE scope = ? AND session_key = ?",
+                                (json.dumps(entry), scope, session_key)
+                            )
+                            cleared += 1
+                    except Exception:
+                        pass
+                if cleared > 0:
+                    conn.commit()
+                    print(f"  ✅ Unlocked {cleared} session(s) in {os.path.basename(db_p)}.")
+            conn.close()
+        except Exception as dbe:
+            print(f"  ⚠ Notice unlocking {db_p}: {dbe}")
+
+    # 3. Unlock JSON files (sessions.json)
+    json_candidates = [
+        os.path.join(HERMES_HOME, "sessions", "sessions.json"),
+        os.path.join(HERMES_PROFILE_DIR, "sessions", "sessions.json"),
+    ]
+    if os.path.exists(profiles_root):
+        for p_name in os.listdir(profiles_root):
+            p_json = os.path.join(profiles_root, p_name, "sessions", "sessions.json")
+            if os.path.exists(p_json) and p_json not in json_candidates:
+                json_candidates.append(p_json)
+
+    for jp in json_candidates:
+        if not os.path.exists(jp):
+            continue
+        try:
+            with open(jp, "r", encoding="utf-8") as jf:
+                data = json.load(jf)
+            changed = False
+            if isinstance(data, dict):
+                for k, entry in data.items():
+                    if isinstance(entry, dict):
+                        for field, default in [("active_turn_token", None), ("active_turn_started_at", None),
+                                               ("resume_pending", False), ("resume_reason", None)]:
+                            if entry.get(field) != default:
+                                entry[field] = default
+                                changed = True
+            if changed:
+                with open(jp, "w", encoding="utf-8") as jf:
+                    json.dump(data, jf, indent=2)
+                print(f"  ✅ Sanitized active turn tokens in {os.path.basename(jp)}.")
+        except Exception as je:
+            print(f"  ⚠ Notice sanitizing {jp}: {je}")
+
+
 def auto_update_self():
     """Auto-pull latest codebase on boot and clear any stale lock files."""
     print("🔄 Checking for Aethelgard Custodian updates from GitHub...")
@@ -89,22 +214,7 @@ def auto_update_self():
         except Exception as e:
             print(f"⚠ Auto-update notice: {e}")
 
-    # Clean up stale locks and stale heartbeats so watchdog NEVER falsely kills fresh gateway!
-    hb_path = "/tmp/hermes_turn_heartbeat.json" if os.name != "nt" else os.path.join(SCRIPT_DIR, "heartbeat.json")
-    if os.path.exists(hb_path):
-        try:
-            os.remove(hb_path)
-        except Exception:
-            pass
-
-    for lock_dir in [HERMES_HOME, HERMES_PROFILE_DIR]:
-        for lock_f in ["gateway.lock", "gateway_state.json", "gateway-dispatcher.lock"]:
-            lp = os.path.join(lock_dir, lock_f)
-            if os.path.exists(lp):
-                try:
-                    os.remove(lp)
-                except Exception:
-                    pass
+    unlock_stale_hermes_sessions()
 
 
 # ── 2. Sync Aethelgard Obsidian Vault from GitHub ────────────────────────────
@@ -413,11 +523,13 @@ def watchdog_monitor_worker():
                 subprocess.run(["git", "-C", SCRIPT_DIR, "pull", "--rebase", "origin", "main"], timeout=15, check=False)
             except Exception:
                 pass
+            unlock_stale_hermes_sessions()
             try:
                 proc.terminate()
-                proc.wait(timeout=3)
+                proc.wait(timeout=5)
             except Exception:
                 proc.kill()
+            unlock_stale_hermes_sessions()
             continue
 
         # Ensure the current gateway has been active for at least WATCHDOG_TURN_TIMEOUT before checking turn timeouts
@@ -443,7 +555,7 @@ def watchdog_monitor_worker():
                     elapsed = time.time() - hb["start_time"]
                     if elapsed > WATCHDOG_TURN_TIMEOUT:
                         msg_snippet = hb.get("message", "unknown query")
-                        print(f"[Watchdog] 🚨 TURN HANG DETECTED! Elapsed: {elapsed:.1f}s > {WATCHDOG_TURN_TIMEOUT}s on '{msg_snippet}'. Killing stuck Gateway...", flush=True)
+                        print(f"[Watchdog] 🚨 TURN HANG DETECTED! Elapsed: {elapsed:.1f}s > {WATCHDOG_TURN_TIMEOUT}s on '{msg_snippet}'. Recovering Gateway...", flush=True)
                         
                         # Reset heartbeat file
                         try:
@@ -458,7 +570,7 @@ def watchdog_monitor_worker():
                             alert_text = (
                                 f"⚡ *Watchdog Auto-Recovery*\n\n"
                                 f"A background query was hanging for >{int(WATCHDOG_TURN_TIMEOUT // 60)} minutes. "
-                                f"Aethelgard automatically aborted the stuck turn and rebooted.\n\n"
+                                f"Aethelgard automatically cleared session locks and rebooted.\n\n"
                                 f"✅ Gateway is fresh, clean, and ready for your orders!"
                             )
                             data = json.dumps({"chat_id": TELEGRAM_USER_ID, "text": alert_text, "parse_mode": "Markdown"}).encode("utf-8")
@@ -467,11 +579,13 @@ def watchdog_monitor_worker():
                         except Exception as te:
                             print(f"⚠ Failed to send watchdog Telegram alert: {te}", flush=True)
 
+                        unlock_stale_hermes_sessions()
                         try:
                             proc.terminate()
-                            proc.wait(timeout=3)
+                            proc.wait(timeout=5)
                         except Exception:
                             proc.kill()
+                        unlock_stale_hermes_sessions()
             except Exception:
                 pass
 
@@ -507,27 +621,20 @@ def run_gateway_forever():
 
     while True:
         try:
-            # Purge lingering locks and stale heartbeats before spawning
-            for lock_dir in [HERMES_HOME, HERMES_PROFILE_DIR]:
-                for lock_f in ["gateway.lock", "gateway_state.json", "gateway-dispatcher.lock"]:
-                    lp = os.path.join(lock_dir, lock_f)
-                    if os.path.exists(lp):
-                        try:
-                            os.remove(lp)
-                        except Exception:
-                            pass
-
+            unlock_stale_hermes_sessions()
             print(f"[{time.strftime('%H:%M:%S')}] Starting Hermes Gateway process...", flush=True)
             gateway_start_time = time.time()
             active_gateway_proc = subprocess.Popen(cmd, env=dict(os.environ))
             active_gateway_proc.wait()
             print(f"⚠ Hermes Gateway exited with code {active_gateway_proc.returncode}. Restarting in 5 seconds...", flush=True)
+            unlock_stale_hermes_sessions()
             time.sleep(5)
         except KeyboardInterrupt:
             print("\n🛑 Shutdown signal received. Exiting gracefully...", flush=True)
             break
         except Exception as ge:
             print(f"⚠ Gateway exception: {ge}. Restarting in 5 seconds...", flush=True)
+            unlock_stale_hermes_sessions()
             time.sleep(5)
 
 

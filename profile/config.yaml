@@ -48,6 +48,31 @@ terminal:
 
 agent:
   max_turn_duration_seconds: 900
+  disabled_toolsets:
+    - browser
+    - computer_use
+    - video
+    - video_gen
+    - image_gen
+    - delegation
+    - homeassistant
+    - spotify
+    - discord
+    - discord_admin
+    - yuanbao
+    - x_search
+    - kanban
+
+platform_toolsets:
+  telegram:
+    - terminal
+    - file
+    - code_execution
+    - web
+    - skills
+    - memory
+    - clarify
+    - todo
 
 slash_commands:
   confirm_new: false

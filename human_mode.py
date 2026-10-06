@@ -23,7 +23,7 @@ TELEGRAM_USER_ID = os.environ.get("TELEGRAM_ALLOWED_USERS", "1021125594")
 def load_conversation_state() -> dict:
     """Loads persistent conversation state (mode, timestamps, settings)."""
     default_state = {
-        "mode": "custodian",               # "custodian" or "human"
+        "mode": "human",                   # "human" (fast chat) or "custodian" (deep reasoning)
         "spontaneous_pings_enabled": True, # Stochastic curiosity check-ins
         "last_user_interaction": time.time(),
         "last_spontaneous_ping_date": "",
@@ -49,8 +49,8 @@ def save_conversation_state(state: dict) -> None:
 
 
 def get_conversation_mode() -> str:
-    """Returns current active mode ('custodian' or 'human')."""
-    return load_conversation_state().get("mode", "custodian")
+    """Returns current active mode ('human' or 'custodian')."""
+    return load_conversation_state().get("mode", "human")
 
 
 def set_conversation_mode(mode: str) -> str:
