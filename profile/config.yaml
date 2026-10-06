@@ -44,10 +44,10 @@ stt:
   provider: local_command
 
 terminal:
-  timeout: 60
+  timeout: 300
 
 agent:
-  max_turn_duration_seconds: 75
+  max_turn_duration_seconds: 900
 
 slash_commands:
   confirm_new: false

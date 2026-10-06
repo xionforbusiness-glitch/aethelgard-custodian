@@ -60,12 +60,15 @@ HERMES_PROFILE_DIR = os.path.join(HERMES_HOME, "profiles", HERMES_PROFILE)
 OMNIROUTE_DIR = os.path.expanduser("~/.omniroute")
 MODEL_DEFAULT = os.environ.get("HERMES_MODEL", "antigravity/gemini-3.7-flash-low")
 CONTEXT_LENGTH = int(os.environ.get("HERMES_CONTEXT_LENGTH", "1048576"))
+WATCHDOG_TURN_TIMEOUT = int(os.environ.get("WATCHDOG_TURN_TIMEOUT", "900"))
+ENABLE_WATCHDOG_TURN_KILL = os.environ.get("ENABLE_WATCHDOG_TURN_KILL", "true").lower() in ("true", "1", "yes")
 
 print("\n" + "=" * 65)
 print("🏛️ AETHELGARD 24/7 AUTONOMOUS VAULT CUSTODIAN INITIALIZING...")
 print("=" * 65)
 print(f"🧠 Brain Model:       {MODEL_DEFAULT}")
 print(f"📏 Context Window:    {CONTEXT_LENGTH:,} tokens (1M Instant Low-Latency)")
+print(f"🛡️ Watchdog Timeout:  {WATCHDOG_TURN_TIMEOUT // 60} minutes ({WATCHDOG_TURN_TIMEOUT}s)")
 print(f"🌐 Antigravity Plan:  Google AI Pro Subscription (OmniRoute :{OMNIROUTE_PORT})")
 print(f"📁 Target Vault:      {VAULT_DIR} -> GitHub {GITHUB_USER}/{VAULT_REPO}")
 print(f"📱 Telegram Gateway:  @aethelgard_vault_bot")
@@ -314,8 +317,8 @@ def init_hermes():
             ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.context_length", str(CONTEXT_LENGTH)],
             ["hermes", "-p", HERMES_PROFILE, "config", "set", "providers.first-time.model", MODEL_DEFAULT],
             ["hermes", "-p", HERMES_PROFILE, "config", "set", "providers.first-time.discover_models", "false"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "terminal.timeout", "60"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "agent.max_turn_duration_seconds", "75"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "terminal.timeout", "300"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "agent.max_turn_duration_seconds", str(WATCHDOG_TURN_TIMEOUT)],
             ["hermes", "-p", HERMES_PROFILE, "config", "set", "slash_commands.confirm_new", "false"],
             ["hermes", "-p", HERMES_PROFILE, "config", "set", "slash_commands.confirm_reset", "false"],
             ["hermes", "-p", HERMES_PROFILE, "config", "set", "compression.enabled", "false"],
@@ -369,7 +372,7 @@ def send_telegram_startup():
             f"🏛️ Aethelgard 24/7 Vault Custodian is ONLINE!\n\n"
             f"🧠 Brain: {MODEL_DEFAULT}\n"
             f"⚡ Speed: Instantaneous Sub-Second Chat\n"
-            f"🛡️ Watchdog: 75s Anti-Hang Auto-Recovery Active\n"
+            f"🛡️ Watchdog: {WATCHDOG_TURN_TIMEOUT // 60}-Minute Hang Protection (Long Tasks Permitted)\n"
             f"📊 Excel Engine: On-demand timesheet delivery ready (/excel)\n"
             f"📋 Work Tracker: Non-intrusive reminders active\n"
             f"🌐 Infrastructure: 24/7 Always-On Virtual Machine"
@@ -388,7 +391,7 @@ active_gateway_proc = None
 gateway_start_time = 0.0
 
 def watchdog_monitor_worker():
-    """Monitors running gateway; auto-kills turns hanging > 75s and handles remote reboot triggers."""
+    """Monitors running gateway; auto-kills turns hanging > 15m and handles remote reboot triggers."""
     hb_path = "/tmp/hermes_turn_heartbeat.json" if os.name != "nt" else os.path.join(SCRIPT_DIR, "heartbeat.json")
     restart_path = "/tmp/hermes_restart_requested" if os.name != "nt" else os.path.join(SCRIPT_DIR, "restart.trigger")
 
@@ -417,11 +420,11 @@ def watchdog_monitor_worker():
                 proc.kill()
             continue
 
-        # Ensure the current gateway has been active for at least 75 seconds before checking turn timeouts
-        if time.time() - gateway_start_time < 75:
+        # Ensure the current gateway has been active for at least WATCHDOG_TURN_TIMEOUT before checking turn timeouts
+        if not ENABLE_WATCHDOG_TURN_KILL or time.time() - gateway_start_time < WATCHDOG_TURN_TIMEOUT:
             continue
 
-        # 2. Check if a turn has been hanging for > 75 seconds
+        # 2. Check if a turn has been hanging for > 15 minutes (900 seconds)
         if os.path.exists(hb_path):
             try:
                 with open(hb_path, "r", encoding="utf-8") as f:
@@ -438,9 +441,9 @@ def watchdog_monitor_worker():
                         continue
 
                     elapsed = time.time() - hb["start_time"]
-                    if elapsed > 75:
+                    if elapsed > WATCHDOG_TURN_TIMEOUT:
                         msg_snippet = hb.get("message", "unknown query")
-                        print(f"[Watchdog] 🚨 TURN HANG DETECTED! Elapsed: {elapsed:.1f}s > 75s on '{msg_snippet}'. Killing stuck Gateway...", flush=True)
+                        print(f"[Watchdog] 🚨 TURN HANG DETECTED! Elapsed: {elapsed:.1f}s > {WATCHDOG_TURN_TIMEOUT}s on '{msg_snippet}'. Killing stuck Gateway...", flush=True)
                         
                         # Reset heartbeat file
                         try:
@@ -453,10 +456,10 @@ def watchdog_monitor_worker():
                         try:
                             tg_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
                             alert_text = (
-                                "⚡ *Watchdog Auto-Recovery*\n\n"
-                                "A background query was hanging for >75s. "
-                                "Aethelgard automatically aborted the stuck turn and rebooted.\n\n"
-                                "✅ Gateway is fresh, clean, and ready for your orders!"
+                                f"⚡ *Watchdog Auto-Recovery*\n\n"
+                                f"A background query was hanging for >{int(WATCHDOG_TURN_TIMEOUT // 60)} minutes. "
+                                f"Aethelgard automatically aborted the stuck turn and rebooted.\n\n"
+                                f"✅ Gateway is fresh, clean, and ready for your orders!"
                             )
                             data = json.dumps({"chat_id": TELEGRAM_USER_ID, "text": alert_text, "parse_mode": "Markdown"}).encode("utf-8")
                             req = urllib.request.Request(tg_url, data=data, headers={"Content-Type": "application/json"})
