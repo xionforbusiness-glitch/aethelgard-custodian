@@ -455,10 +455,24 @@ def init_hermes():
         print(f"⚠ Hermes config CLI notice: {he}")
 
 
-# ── 5. Background Vault Auto-Sync Worker ─────────────────────────────────────
+# ── 5. Background Vault Auto-Sync & Code Auto-Updater Worker ──────────────────
 def auto_sync_worker():
+    restart_path = "/tmp/hermes_restart_requested" if os.name != "nt" else os.path.join(SCRIPT_DIR, "restart.trigger")
     while True:
-        time.sleep(60)
+        time.sleep(45)
+        # 1. Codebase Auto-Updater: check if origin/main has new commits
+        try:
+            subprocess.run(["git", "-C", SCRIPT_DIR, "fetch", "origin", "main"], check=False, capture_output=True, timeout=15)
+            status = subprocess.run(["git", "-C", SCRIPT_DIR, "status", "-uno"], capture_output=True, text=True, timeout=10)
+            if "Your branch is behind" in status.stdout:
+                print("[Code Sync] 🚀 New commits detected on origin/main! Auto-pulling and triggering reload...", flush=True)
+                subprocess.run(["git", "-C", SCRIPT_DIR, "pull", "--rebase", "origin", "main"], check=False, timeout=15)
+                with open(restart_path, "w", encoding="utf-8") as rf:
+                    rf.write("code_update")
+        except Exception:
+            pass
+
+        # 2. Vault Sync
         try:
             # First, pull any new commits from local desktop / GitHub
             subprocess.run(["git", "-C", VAULT_DIR, "pull", "--rebase", "origin", VAULT_BRANCH], check=False)
