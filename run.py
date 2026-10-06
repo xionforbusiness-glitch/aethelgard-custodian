@@ -17,6 +17,14 @@ import threading
 import subprocess
 import urllib.request
 
+# Ensure UTF-8 stdout/stderr on all terminals
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # ── 1. Load Environment Configuration ─────────────────────────────────────────
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ENV_FILE = os.path.join(SCRIPT_DIR, ".env")
@@ -211,6 +219,28 @@ def init_hermes():
             shutil.rmtree(skills_dest, ignore_errors=True)
         shutil.copytree(skills_src, skills_dest)
 
+    # Sync hooks (Shift sync, Excel delivery, Watchdog heartbeat)
+    hooks_src = os.path.join(SCRIPT_DIR, "profile", "hooks")
+    if os.path.exists(hooks_src):
+        for target_dir in [os.path.join(HERMES_PROFILE_DIR, "hooks"), os.path.join(HERMES_HOME, "hooks")]:
+            os.makedirs(target_dir, exist_ok=True)
+            for h_name in os.listdir(hooks_src):
+                h_s = os.path.join(hooks_src, h_name)
+                h_d = os.path.join(target_dir, h_name)
+                if os.path.isdir(h_s):
+                    if os.path.exists(h_d):
+                        shutil.rmtree(h_d, ignore_errors=True)
+                    shutil.copytree(h_s, h_d)
+
+    # Purge stale caches (remove any auto/best-coding leaks)
+    for cache_f in ["provider_models_cache.json", "context_length_cache.yaml"]:
+        cp = os.path.join(HERMES_PROFILE_DIR, cache_f)
+        if os.path.exists(cp):
+            try:
+                os.remove(cp)
+            except Exception:
+                pass
+
     stt_script = os.path.join(SCRIPT_DIR, "transcribe_gemini.py")
     stt_cmd = f"python3 {stt_script} {{input_path}} --output_dir {{output_dir}}"
 
@@ -225,6 +255,7 @@ def init_hermes():
         f.write(f"OMNIROUTE_API_KEY={OMNIROUTE_API_KEY}\n")
         f.write(f"GOOGLE_API_KEY={GOOGLE_API_KEY}\n")
         f.write(f"HERMES_LOCAL_STT_COMMAND={stt_cmd}\n")
+        f.write(f"AETHELGARD_DIR={SCRIPT_DIR}\n")
 
     os.environ["WIKI_PATH"] = VAULT_DIR
     os.environ["OBSIDIAN_VAULT_PATH"] = VAULT_DIR
@@ -237,35 +268,42 @@ def init_hermes():
     os.environ["OMNIROUTE_API_KEY"] = OMNIROUTE_API_KEY
     os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
     os.environ["HERMES_LOCAL_STT_COMMAND"] = stt_cmd
+    os.environ["AETHELGARD_DIR"] = SCRIPT_DIR
     os.environ["NODE_OPTIONS"] = "--dns-result-order=ipv4first --max-old-space-size=1536"
 
     # Apply hermes CLI configurations safely
     try:
         commands = [
             ["hermes", "profile", "use", HERMES_PROFILE],
-            ["hermes", "config", "set", "model.provider", "first-time"],
-            ["hermes", "config", "set", "model.default", MODEL_DEFAULT],
-            ["hermes", "config", "set", "model.base_url", f"http://127.0.0.1:{OMNIROUTE_PORT}/v1"],
-            ["hermes", "config", "set", "model.key_env", "HERMES_CUSTOM_FIRST_TIME_API_KEY"],
-            ["hermes", "config", "set", "model.context_length", str(CONTEXT_LENGTH)],
-            ["hermes", "config", "set", "compression.enabled", "false"],
-            ["hermes", "config", "set", "stt.provider", "local_command"],
-            ["hermes", "config", "set", "model.aliases.flash", "antigravity/gemini-3.7-flash-low"],
-            ["hermes", "config", "set", "model.aliases.flash-low", "antigravity/gemini-3.7-flash-low"],
-            ["hermes", "config", "set", "model.aliases.gemini", "antigravity/gemini-3.7-flash-low"],
-            ["hermes", "config", "set", "model.aliases.fast", "antigravity/gemini-3.7-flash-low"],
-            ["hermes", "config", "set", "model.aliases.chat", "antigravity/gemini-3.7-flash-low"],
-            ["hermes", "config", "set", "model.aliases.casual", "antigravity/gemini-3.7-flash-low"],
-            ["hermes", "config", "set", "model.aliases.low", "antigravity/gemini-3.7-flash-low"],
-            ["hermes", "config", "set", "model.aliases.custodian", "antigravity/gemini-3.7-flash-high"],
-            ["hermes", "config", "set", "model.aliases.vault", "antigravity/gemini-3.7-flash-high"],
-            ["hermes", "config", "set", "model.aliases.high", "antigravity/gemini-3.7-flash-high"],
-            ["hermes", "config", "set", "model.aliases.thinking", "antigravity/gemini-3.7-flash-high"],
-            ["hermes", "config", "set", "model.aliases.flash-high", "antigravity/gemini-3.7-flash-high"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.provider", "first-time"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.default", MODEL_DEFAULT],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.base_url", f"http://127.0.0.1:{OMNIROUTE_PORT}/v1"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.key_env", "HERMES_CUSTOM_FIRST_TIME_API_KEY"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.context_length", str(CONTEXT_LENGTH)],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "providers.first-time.model", MODEL_DEFAULT],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "providers.first-time.discover_models", "false"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "terminal.timeout", "60"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "agent.max_turn_duration_seconds", "75"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "slash_commands.confirm_new", "false"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "slash_commands.confirm_reset", "false"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "compression.enabled", "false"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "stt.provider", "local_command"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.flash", "antigravity/gemini-3.7-flash-low"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.flash-low", "antigravity/gemini-3.7-flash-low"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.gemini", "antigravity/gemini-3.7-flash-low"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.fast", "antigravity/gemini-3.7-flash-low"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.chat", "antigravity/gemini-3.7-flash-low"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.casual", "antigravity/gemini-3.7-flash-low"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.low", "antigravity/gemini-3.7-flash-low"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.custodian", "antigravity/gemini-3.7-flash-high"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.vault", "antigravity/gemini-3.7-flash-high"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.high", "antigravity/gemini-3.7-flash-high"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.thinking", "antigravity/gemini-3.7-flash-high"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.flash-high", "antigravity/gemini-3.7-flash-high"],
         ]
         for cmd in commands:
             subprocess.run(cmd, check=False)
-        print("✅ Hermes profile configured: LOW mode for Chat/Casual (sub-second) & HIGH mode for Custodian/Vault work.")
+        print("✅ Hermes profile configured: LOW mode (sub-second) locked as default brain.")
     except Exception as he:
         print(f"⚠ Hermes config CLI notice: {he}")
 
@@ -296,10 +334,10 @@ def send_telegram_startup():
         msg = (
             f"🏛️ Aethelgard 24/7 Vault Custodian is ONLINE!\n\n"
             f"🧠 Brain: {MODEL_DEFAULT}\n"
-            f"📏 Context Window: {CONTEXT_LENGTH:,} tokens (1 Million)\n"
-            f"⚡ Speed: 150+ tokens/sec (Instantaneous)\n"
-            f"🎙️ Multimodal Hearing: Voice notes & audio translation ready\n"
-            f"📁 Obsidian Vault: Synchronized with GitHub\n"
+            f"⚡ Speed: Instantaneous Sub-Second Chat\n"
+            f"🛡️ Watchdog: 75s Anti-Hang Auto-Recovery Active\n"
+            f"📊 Excel Engine: On-demand timesheet delivery ready (/excel)\n"
+            f"📋 Work Tracker: Non-intrusive reminders active\n"
             f"🌐 Infrastructure: 24/7 Always-On Virtual Machine"
         )
         data = json.dumps({"chat_id": TELEGRAM_USER_ID, "text": msg}).encode("utf-8")
@@ -311,13 +349,85 @@ def send_telegram_startup():
         print(f"⚠ Telegram startup notice: {e}")
 
 
-# ── 7. Run Hermes Gateway 24/7 Loop ──────────────────────────────────────────
+# ── 7. Run Hermes Gateway 24/7 Loop & Watchdog ───────────────────────────────
+active_gateway_proc = None
+
+def watchdog_monitor_worker():
+    """Monitors running gateway; auto-kills turns hanging > 75s and handles remote reboot triggers."""
+    hb_path = "/tmp/hermes_turn_heartbeat.json" if os.name != "nt" else os.path.join(SCRIPT_DIR, "heartbeat.json")
+    restart_path = "/tmp/hermes_restart_requested" if os.name != "nt" else os.path.join(SCRIPT_DIR, "restart.trigger")
+
+    while True:
+        time.sleep(5)
+        global active_gateway_proc
+        proc = active_gateway_proc
+        if not proc or proc.poll() is not None:
+            continue
+
+        # 1. External Emergency Restart Trigger (from /restart or http://<IP>:20130/restart)
+        if os.path.exists(restart_path):
+            try:
+                os.remove(restart_path)
+            except Exception:
+                pass
+            print("[Watchdog] 🔄 External emergency reboot trigger received! Restarting Gateway...", flush=True)
+            try:
+                proc.terminate()
+                proc.wait(timeout=3)
+            except Exception:
+                proc.kill()
+            continue
+
+        # 2. Check if a turn has been hanging for > 75 seconds
+        if os.path.exists(hb_path):
+            try:
+                with open(hb_path, "r", encoding="utf-8") as f:
+                    hb = json.load(f)
+                if hb.get("active") and hb.get("start_time"):
+                    elapsed = time.time() - hb["start_time"]
+                    if elapsed > 75:
+                        msg_snippet = hb.get("message", "unknown query")
+                        print(f"[Watchdog] 🚨 TURN HANG DETECTED! Elapsed: {elapsed:.1f}s > 75s on '{msg_snippet}'. Killing stuck Gateway...", flush=True)
+                        
+                        # Reset heartbeat file
+                        try:
+                            with open(hb_path, "w", encoding="utf-8") as f:
+                                json.dump({"active": False, "aborted_at": time.time()}, f)
+                        except Exception:
+                            pass
+
+                        # Alert Omar on Telegram
+                        try:
+                            tg_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+                            alert_text = (
+                                "⚡ *Watchdog Auto-Recovery*\n\n"
+                                "A background query was hanging for >75s. "
+                                "Aethelgard automatically aborted the stuck turn and rebooted.\n\n"
+                                "✅ Gateway is fresh, clean, and ready for your orders!"
+                            )
+                            data = json.dumps({"chat_id": TELEGRAM_USER_ID, "text": alert_text, "parse_mode": "Markdown"}).encode("utf-8")
+                            req = urllib.request.Request(tg_url, data=data, headers={"Content-Type": "application/json"})
+                            urllib.request.urlopen(req, timeout=5)
+                        except Exception as te:
+                            print(f"⚠ Failed to send watchdog Telegram alert: {te}", flush=True)
+
+                        try:
+                            proc.terminate()
+                            proc.wait(timeout=3)
+                        except Exception:
+                            proc.kill()
+            except Exception:
+                pass
+
+
 def run_gateway_forever():
+    global active_gateway_proc
     print("\n" + "=" * 65)
     print("🚀 [4/4] LAUNCHING HERMES GATEWAY (24/7 ALWAYS-ON SUPERVISION)")
     print("=" * 65)
 
     threading.Thread(target=auto_sync_worker, daemon=True).start()
+    threading.Thread(target=watchdog_monitor_worker, daemon=True).start()
 
     # ── Launch Proactive Scheduler & Second Brain Librarian ──────────────
     try:
@@ -342,16 +452,16 @@ def run_gateway_forever():
     while True:
         try:
             print(f"[{time.strftime('%H:%M:%S')}] Starting Hermes Gateway process...", flush=True)
-            proc = subprocess.Popen(cmd, env=dict(os.environ))
-            proc.wait()
-            print(f"⚠ Hermes Gateway exited with code {proc.returncode}. Restarting in 5 seconds...", flush=True)
-            time.sleep(5)
+            active_gateway_proc = subprocess.Popen(cmd, env=dict(os.environ))
+            active_gateway_proc.wait()
+            print(f"⚠ Hermes Gateway exited with code {active_gateway_proc.returncode}. Restarting in 3 seconds...", flush=True)
+            time.sleep(3)
         except KeyboardInterrupt:
             print("\n🛑 Shutdown signal received. Exiting gracefully...", flush=True)
             break
         except Exception as ge:
-            print(f"⚠ Gateway exception: {ge}. Restarting in 10 seconds...", flush=True)
-            time.sleep(10)
+            print(f"⚠ Gateway exception: {ge}. Restarting in 5 seconds...", flush=True)
+            time.sleep(5)
 
 
 if __name__ == "__main__":

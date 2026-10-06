@@ -1,0 +1,5 @@
+name: aethelgard_sync
+description: Autonomous Shift attendance sync, instant Telegram Excel delivery, and watchdog heartbeat.
+events:
+  - agent:start
+  - agent:end

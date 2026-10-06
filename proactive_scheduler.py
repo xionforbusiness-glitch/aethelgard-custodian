@@ -77,6 +77,13 @@ def trigger_morning_briefing(vault_dir):
     airport_weather = format_damascus_flight_briefing()
     circadian = get_circadian_forecast(vault_dir)
 
+    # Log reminder in shift tracker
+    try:
+        from shift_tracker import on_morning_reminder_sent
+        on_morning_reminder_sent()
+    except Exception as ste:
+        print(f"⚠ Shift Tracker notice: {ste}", flush=True)
+
     msg = (
         f"🌅 *Good morning Omar! Aethelgard Shift Briefing*\n"
         f"📅 *{weekday}, {date_str}* (Damascus Time)\n\n"
@@ -92,50 +99,47 @@ def trigger_morning_briefing(vault_dir):
         f"• *Tarek Orfhly:* `{schedule.get('tarek', 'On duty')}`\n"
         f"• *Hanan & Joudi:* `{schedule.get('hanan', 'Flight Handling')}`\n"
         f"🏖️ *Scheduled Off:* `{schedule.get('off', 'None')}`\n\n"
-        f"⚡ *Quick Action:* Tap below to record today's shift:"
+        f"📋 *Work Reminder Status:*\n"
+        f"• Reply to this message (or text anytime today) to confirm you are *ON* duty.\n"
+        f"• If you don't reply, today will automatically be cataloged as *OFF*."
     )
 
-    from human_mode import get_conversation_mode
-    mode_text = "🏛️ Custodian Mode" if get_conversation_mode() == "human" else "☕ Casual Mode"
-
-    buttons = [
-        [{"text": "🚌 Bus Sync (07:20 AM)"}, {"text": "🏢 Standard (08:15 AM)"}],
-        [{"text": "✈️ Dawn Shift (03:00 AM)"}, {"text": "🏖️ Scheduled Off"}],
-        [{"text": mode_text}, {"text": "📞 Call Aethelgard"}]
-    ]
-
-    sent = send_telegram(msg, buttons)
+    sent = send_telegram(msg, buttons=None)
     
-    # Send natural voice memo greeting
+    # Send natural voice memo greeting (pure voice, no caption)
     voice_greeting = (
         f"Good morning Omar. Today is {weekday}. "
         f"Your shift at Damascus Airport is scheduled from {schedule['omar'].split(' ')[0]} to 4:00 PM. "
-        f"Runway operations are active. Have a productive shift."
+        f"Runway operations are active. Have a productive day."
     )
-    send_telegram_voice_sync(voice_greeting, caption="🎙️ Daily Morning Audio Briefing")
+    send_telegram_voice_sync(voice_greeting, caption=None)
 
     return sent
 
 def trigger_evening_checkout(vault_dir):
-    """Constructs and delivers the evening shift wrap-up check-out prompt."""
+    """Delivers evening shift wrap-up only if Omar confirmed duty today."""
     now = get_damascus_now()
     weekday = now.strftime("%A")
     circadian = get_circadian_forecast(vault_dir)
 
+    try:
+        from shift_tracker import on_evening_check
+        status = on_evening_check(vault_dir)
+        if status == "off":
+            print("[Shift Tracker] Today was automatically marked OFF (no reply received). Skipping evening checkout prompt.", flush=True)
+            return True
+    except Exception as e:
+        print(f"⚠ Evening check notice: {e}", flush=True)
+
     msg = (
-        f"🏁 *Evening Shift Check-Out ({weekday})*\n\n"
-        f"Omar, your shift was scheduled to wrap up at ~04:00 PM.\n"
-        f"Did your shift conclude on time, or did you stay for flight overtime?\n\n"
+        f"🏁 *Evening Shift Wrap-Up ({weekday})*\n\n"
+        f"Omar, your scheduled shift concluded at ~04:00 PM.\n"
+        f"Hope operations at Damascus Airport ran smoothly today!\n\n"
         f"🛏️ *Tonight's Circadian Sleep Anchor:* `{circadian['sleep_anchor']}`\n\n"
-        f"Tap below or send your departure time to automatically sync your timesheet & Excel sheet:"
+        f"Rest well tonight."
     )
 
-    buttons = [
-        [{"text": "✅ Out at 04:00 PM (Standard)"}, {"text": "⚡ Overtime (+1h 40m)"}],
-        [{"text": "📝 Custom Log Out Time"}, {"text": "📈 View Today's Stats"}]
-    ]
-
-    return send_telegram(msg, buttons)
+    return send_telegram(msg, buttons=None)
 
 def trigger_night_owl_scout(vault_dir):
     """Nightly autonomous collision engine that synthesizes original ideas and writes playbooks."""
@@ -209,6 +213,13 @@ def trigger_wakeup_alarm(vault_dir):
     circadian = get_circadian_forecast(vault_dir)
     airport_weather = format_damascus_flight_briefing()
 
+    # Log reminder in shift tracker
+    try:
+        from shift_tracker import on_morning_reminder_sent
+        on_morning_reminder_sent()
+    except Exception as ste:
+        print(f"⚠ Shift Tracker notice: {ste}", flush=True)
+
     msg = (
         f"⏰ *06:00 AM WAKE-UP CALL — DAMASCUS*\n"
         f"📅 *{weekday}, {date_str}*\n\n"
@@ -219,20 +230,13 @@ def trigger_wakeup_alarm(vault_dir):
         f"{airport_weather}\n\n"
         f"Get ready for your shift. Full shift briefing will trigger at 07:15 AM."
     )
-    from human_mode import get_conversation_mode
-    mode_text = "🏛️ Custodian Mode" if get_conversation_mode() == "human" else "☕ Casual Mode"
-
-    buttons = [
-        [{"text": "☀️ I'm Awake & Ready"}, {"text": "☕ Need 15m Snooze"}],
-        [{"text": mode_text}, {"text": "📞 Call Aethelgard"}]
-    ]
-    send_telegram(msg, buttons)
+    send_telegram(msg, buttons=None)
 
     voice_alarm = (
         f"Good morning Omar. It is 6:00 AM Damascus time. "
         f"Time to rise. Your flight schedule and runway radar are standing by."
     )
-    send_telegram_voice_sync(voice_alarm, caption="🎙️ 06:00 AM Neural Wake-Up Alarm")
+    send_telegram_voice_sync(voice_alarm, caption=None)
 
 def proactive_scheduler_daemon(vault_dir):
     """Continuous background loop monitoring Damascus time and firing scheduled proactive events."""

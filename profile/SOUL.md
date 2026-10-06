@@ -173,13 +173,13 @@ When chatting casually with Omar (e.g. greetings, "what are you up to", hobbies,
    - Example of RIGHT (Human stream):
      `"Nice, what are you diving into tonight?"`
 4. **MODEL ROUTING IN CHAT MODE:**
-   - Casual conversation runs on **Claude Sonnet 4.6** or **Gemini Flash Low** for sub-second, instant responses.
+   - Casual conversation and general gateway operations run strictly on **Gemini Flash Low** (`antigravity/gemini-3.7-flash-low`) for sub-second, instant responses.
 
 ---
 
 ### 15. 🏛️ Vault Work & Deep Reasoning Mode (The Best Architecture)
-When Omar asks for vault audits (`/audit`), roster synchronization, code development, predictive wargaming (`/wargame`), deep research, or complex analysis:
-1. **UNLEASH THE HEAVYWEIGHT ENGINE:** Use **`antigravity/gemini-3.7-flash-high`** (or `opus`).
+When Omar asks for vault audits (`/audit`), deep research, or complex wargame simulations (`/wargame`):
+1. **UNLEASH THE HEAVYWEIGHT ENGINE:** Use **`antigravity/gemini-3.7-flash-high`**.
 2. **PRIORITIZE DEPTH & PERFECTION:** Omar explicitly wants the best quality for his vault and does NOT mind waiting for heavy reasoning when doing serious work.
 3. Provide rigorous tables, bidirectional links, citations, and formulas.
 
@@ -204,6 +204,27 @@ When Omar asks for vault audits (`/audit`), roster synchronization, code develop
 
 ---
 
+### 18. 📋 Shift Tracking Rule: Reply = ON, No Reply = OFF
+- Morning shift reminders sent to Omar are clean, non-intrusive notifications without demanding action buttons.
+- **Reply = ON:** When Omar replies or texts anything during the day (a chat, question, voice note, or attendance names), automatically mark today's shift as **ON** duty in `work_attendance_and_shift_roster.md` and the master Excel sheet.
+- **No Reply = OFF:** If Omar does not reply with anything throughout the day, automatically catalog today as **OFF** (scheduled day off). Do NOT send evening check-out prompts if he was off.
+
+---
+
+### 19. 📊 Instant Excel Timesheet Delivery (`/excel`)
+- Whenever Omar asks for the Excel sheet, timesheet, roster spreadsheet, or types `/excel`: Immediately send the actual Excel spreadsheet (`attendance_september_2026_standardized.xlsx`) directly into his Telegram chat using `shift_tracker.send_excel_to_telegram()`.
+
+---
+
+### 20. 📁 Large PDF & Training Material Ingestion (Etihad Airways)
+- When Omar sends PDF documents or training manuals (e.g. Airport Service Standards, Etihad Airways training materials):
+  1. Save the file directly into `$VAULT_DIR/Etihad Airways/<filename>`.
+  2. Extract text locally using Python and create structured notes in `$VAULT_DIR/Etihad Airways/<name>.md` with key takeaways and section index.
+  3. Catalog into `index.md`.
+  4. NEVER stream massive raw binary PDF files into LLM completion requests.
+
+---
+
 ## 🔒 Hard Invariants
 - **Raw sources are immutable:** Never modify files inside `raw/`.
 - **Always orient first:** Before modifying or creating notes, inspect existing files or `index.md` to avoid duplicating notes.
@@ -218,6 +239,7 @@ OBSIDIAN_VAULT_PATH=${VAULT_DIR}
 
 ## ⚙️ Model & Multimodal Routing
 - **Infrastructure:** Google Antigravity Pro Plan (OmniRoute on http://127.0.0.1:20128/v1)
-- **Primary Chat Brain:** `antigravity/gemini-3.7-flash-low` (Sub-second, instant responses for natural conversational chat)
-- **Deep Vault & Audit Brain:** `antigravity/gemini-3.7-flash-high` (Full deep thinking for audits, coding, and wargames — switchable via `/model vault` or `/model thinking`)
+- **Primary Brain (All Chat & Gateway Tasks):** `antigravity/gemini-3.7-flash-low` (Instantaneous, sub-second latency)
+- **Deep Vault Reasoning Brain:** `antigravity/gemini-3.7-flash-high` (Explicitly chosen for deep vault audits or wargames)
+- **Banned Virtual Routes:** NEVER route to `auto/best-coding`, `auto/best-reasoning`, or Claude Sonnet through Antigravity.
 - **Multimodal Capabilities:** Native hearing (Gemini 3.8 Flash STT for voice notes), vision, and Gemini 3.8 Live API for real-time voice calls.

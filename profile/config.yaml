@@ -25,7 +25,7 @@ providers:
     base_url: http://127.0.0.1:20128/v1
     model: antigravity/gemini-3.7-flash-low
     key_env: HERMES_CUSTOM_FIRST_TIME_API_KEY
-    discover_models: true
+    discover_models: false
 
 compression:
   enabled: false
@@ -33,10 +33,20 @@ compression:
 auxiliary:
   vision:
     provider: first-time
-    model: antigravity/gemini-3.7-flash-high
+    model: antigravity/gemini-3.7-flash-low
     base_url: http://127.0.0.1:20128/v1
     key_env: HERMES_CUSTOM_FIRST_TIME_API_KEY
 
 stt:
   enabled: true
   provider: local_command
+
+terminal:
+  timeout: 60
+
+agent:
+  max_turn_duration_seconds: 75
+
+slash_commands:
+  confirm_new: false
+  confirm_reset: false

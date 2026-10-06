@@ -76,11 +76,17 @@ def set_conversation_mode(mode: str) -> str:
     return clean_mode
 
 
-def record_user_interaction() -> None:
-    """Updates the last user interaction timestamp to prevent unwanted spontaneous pings."""
+def record_user_interaction(message_text="") -> None:
+    """Updates the last user interaction timestamp and marks shift ON if pending."""
     state = load_conversation_state()
     state["last_user_interaction"] = time.time()
     save_conversation_state(state)
+
+    try:
+        from shift_tracker import on_user_interaction
+        on_user_interaction(message_text=message_text)
+    except Exception:
+        pass
 
 
 def send_chat_action(action: str = "typing", chat_id=TELEGRAM_USER_ID, token=TELEGRAM_BOT_TOKEN) -> bool:

@@ -7,3 +7,4 @@ edge-tts
 openpyxl
 google-genai
 websockets
+pypdf
