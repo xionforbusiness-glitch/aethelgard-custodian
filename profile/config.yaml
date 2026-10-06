@@ -1,6 +1,7 @@
 model:
   default: antigravity/gemini-3.7-flash-low
   api_mode: chat_completions
+  streaming: false
   provider: first-time
   base_url: http://127.0.0.1:20128/v1
   key_env: HERMES_CUSTOM_FIRST_TIME_API_KEY
@@ -28,6 +29,7 @@ providers:
     model: antigravity/gemini-3.7-flash-low
     key_env: HERMES_CUSTOM_FIRST_TIME_API_KEY
     discover_models: false
+    streaming: false
 
 compression:
   enabled: false

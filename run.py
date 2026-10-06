@@ -294,7 +294,7 @@ def init_omniroute():
         env["STORAGE_ENCRYPTION_KEY"] = STORAGE_ENCRYPTION_KEY
         env["OMNIROUTE_MAX_PENDING_MIGRATIONS"] = "0"
         env["PORT"] = str(OMNIROUTE_PORT)
-        env["NODE_OPTIONS"] = "--dns-result-order=ipv4first --max-old-space-size=1536"
+        env["NODE_OPTIONS"] = "--dns-result-order=ipv4first --max-old-space-size=512"
 
         log_path = "/tmp/omniroute.log" if os.name != "nt" else os.path.join(SCRIPT_DIR, "omniroute.log")
         log_f = open(log_path, "w", encoding="utf-8")
@@ -414,7 +414,9 @@ def init_hermes():
     os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
     os.environ["HERMES_LOCAL_STT_COMMAND"] = stt_cmd
     os.environ["AETHELGARD_DIR"] = SCRIPT_DIR
-    os.environ["NODE_OPTIONS"] = "--dns-result-order=ipv4first --max-old-space-size=1536"
+    os.environ["NODE_OPTIONS"] = "--dns-result-order=ipv4first --max-old-space-size=512"
+    os.environ["HERMES_LOCAL_STREAM_STALE_TIMEOUT"] = "45.0"
+    os.environ["HERMES_STREAM_STALE_TIMEOUT"] = "45.0"
 
     # Apply hermes CLI configurations safely
     try:
@@ -423,6 +425,9 @@ def init_hermes():
             ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.provider", "first-time"],
             ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.default", MODEL_DEFAULT],
             ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.base_url", f"http://127.0.0.1:{OMNIROUTE_PORT}/v1"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.streaming", "false"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "providers.first-time.streaming", "false"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "agent.local_stream_stale_timeout", "45"],
             ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.key_env", "HERMES_CUSTOM_FIRST_TIME_API_KEY"],
             ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.context_length", str(CONTEXT_LENGTH)],
             ["hermes", "-p", HERMES_PROFILE, "config", "set", "providers.first-time.model", MODEL_DEFAULT],
@@ -600,8 +605,25 @@ def watchdog_monitor_worker():
                         except Exception:
                             proc.kill()
                         unlock_stale_hermes_sessions()
+
+                        # Ensure OmniRoute is also recycled on turn hang to clear wedged sockets
+                        print("[Watchdog] 🔄 Cycling OmniRoute proxy to clear any wedged sockets...", flush=True)
+                        try:
+                            subprocess.run(f"pkill -9 -f omniroute 2>/dev/null; fuser -k {OMNIROUTE_PORT}/tcp 2>/dev/null || true", shell=True, check=False)
+                        except Exception:
+                            pass
+                        start_omniroute_if_needed()
             except Exception:
                 pass
+
+        # 3. OmniRoute Liveness check: ensure proxy never freezes silently
+        if not is_omniroute_alive():
+            print("[Watchdog] 🚨 OmniRoute proxy unresponsive! Restarting OmniRoute daemon...", flush=True)
+            try:
+                subprocess.run(f"pkill -9 -f omniroute 2>/dev/null; fuser -k {OMNIROUTE_PORT}/tcp 2>/dev/null || true", shell=True, check=False)
+            except Exception:
+                pass
+            start_omniroute_if_needed()
 
 
 def run_gateway_forever():
