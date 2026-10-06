@@ -72,6 +72,38 @@ print(f"📱 Telegram Gateway:  @aethelgard_vault_bot")
 print("=" * 65 + "\n")
 
 
+# ── 1. Auto-Update Custodian Codebase & Stale Locks ──────────────────────────
+def auto_update_self():
+    """Auto-pull latest codebase on boot and clear any stale lock files."""
+    print("🔄 Checking for Aethelgard Custodian updates from GitHub...")
+    if os.path.exists(os.path.join(SCRIPT_DIR, ".git")):
+        try:
+            res = subprocess.run(["git", "-C", SCRIPT_DIR, "pull", "--rebase", "origin", "main"], timeout=15, capture_output=True, text=True)
+            if "Already up to date" not in res.stdout:
+                print(f"✅ Aethelgard updated to latest commit: {res.stdout.strip()}")
+            else:
+                print("✅ Aethelgard is up to date.")
+        except Exception as e:
+            print(f"⚠ Auto-update notice: {e}")
+
+    # Clean up stale locks and stale heartbeats so watchdog NEVER falsely kills fresh gateway!
+    hb_path = "/tmp/hermes_turn_heartbeat.json" if os.name != "nt" else os.path.join(SCRIPT_DIR, "heartbeat.json")
+    if os.path.exists(hb_path):
+        try:
+            os.remove(hb_path)
+        except Exception:
+            pass
+
+    for lock_dir in [HERMES_HOME, HERMES_PROFILE_DIR]:
+        for lock_f in ["gateway.lock", "gateway_state.json", "gateway-dispatcher.lock"]:
+            lp = os.path.join(lock_dir, lock_f)
+            if os.path.exists(lp):
+                try:
+                    os.remove(lp)
+                except Exception:
+                    pass
+
+
 # ── 2. Sync Aethelgard Obsidian Vault from GitHub ────────────────────────────
 def init_vault():
     print("📁 [1/4] Synchronizing Aethelgard Obsidian Vault...")
@@ -353,6 +385,7 @@ def send_telegram_startup():
 
 # ── 7. Run Hermes Gateway 24/7 Loop & Watchdog ───────────────────────────────
 active_gateway_proc = None
+gateway_start_time = 0.0
 
 def watchdog_monitor_worker():
     """Monitors running gateway; auto-kills turns hanging > 75s and handles remote reboot triggers."""
@@ -361,7 +394,7 @@ def watchdog_monitor_worker():
 
     while True:
         time.sleep(5)
-        global active_gateway_proc
+        global active_gateway_proc, gateway_start_time
         proc = active_gateway_proc
         if not proc or proc.poll() is not None:
             continue
@@ -372,12 +405,20 @@ def watchdog_monitor_worker():
                 os.remove(restart_path)
             except Exception:
                 pass
-            print("[Watchdog] 🔄 External emergency reboot trigger received! Restarting Gateway...", flush=True)
+            print("[Watchdog] 🔄 External emergency reboot trigger received! Pulling latest code & restarting Gateway...", flush=True)
+            try:
+                subprocess.run(["git", "-C", SCRIPT_DIR, "pull", "--rebase", "origin", "main"], timeout=15, check=False)
+            except Exception:
+                pass
             try:
                 proc.terminate()
                 proc.wait(timeout=3)
             except Exception:
                 proc.kill()
+            continue
+
+        # Ensure the current gateway has been active for at least 75 seconds before checking turn timeouts
+        if time.time() - gateway_start_time < 75:
             continue
 
         # 2. Check if a turn has been hanging for > 75 seconds
@@ -386,6 +427,16 @@ def watchdog_monitor_worker():
                 with open(hb_path, "r", encoding="utf-8") as f:
                     hb = json.load(f)
                 if hb.get("active") and hb.get("start_time"):
+                    # Check if heartbeat belongs to the current gateway run
+                    if hb["start_time"] < gateway_start_time:
+                        # Stale heartbeat from a previous run; safely reset it
+                        try:
+                            with open(hb_path, "w", encoding="utf-8") as f:
+                                json.dump({"active": False, "reset_on_boot": True}, f)
+                        except Exception:
+                            pass
+                        continue
+
                     elapsed = time.time() - hb["start_time"]
                     if elapsed > 75:
                         msg_snippet = hb.get("message", "unknown query")
@@ -423,7 +474,7 @@ def watchdog_monitor_worker():
 
 
 def run_gateway_forever():
-    global active_gateway_proc
+    global active_gateway_proc, gateway_start_time
     print("\n" + "=" * 65)
     print("🚀 [4/4] LAUNCHING HERMES GATEWAY (24/7 ALWAYS-ON SUPERVISION)")
     print("=" * 65)
@@ -453,11 +504,22 @@ def run_gateway_forever():
 
     while True:
         try:
+            # Purge lingering locks and stale heartbeats before spawning
+            for lock_dir in [HERMES_HOME, HERMES_PROFILE_DIR]:
+                for lock_f in ["gateway.lock", "gateway_state.json", "gateway-dispatcher.lock"]:
+                    lp = os.path.join(lock_dir, lock_f)
+                    if os.path.exists(lp):
+                        try:
+                            os.remove(lp)
+                        except Exception:
+                            pass
+
             print(f"[{time.strftime('%H:%M:%S')}] Starting Hermes Gateway process...", flush=True)
+            gateway_start_time = time.time()
             active_gateway_proc = subprocess.Popen(cmd, env=dict(os.environ))
             active_gateway_proc.wait()
-            print(f"⚠ Hermes Gateway exited with code {active_gateway_proc.returncode}. Restarting in 3 seconds...", flush=True)
-            time.sleep(3)
+            print(f"⚠ Hermes Gateway exited with code {active_gateway_proc.returncode}. Restarting in 5 seconds...", flush=True)
+            time.sleep(5)
         except KeyboardInterrupt:
             print("\n🛑 Shutdown signal received. Exiting gracefully...", flush=True)
             break
@@ -467,6 +529,7 @@ def run_gateway_forever():
 
 
 if __name__ == "__main__":
+    auto_update_self()
     init_vault()
     init_omniroute()
     init_hermes()
