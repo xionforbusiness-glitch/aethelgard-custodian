@@ -248,6 +248,26 @@ def init_vault():
 
 
 # ── 3. Initialize OmniRoute & Antigravity Pro Plan Router ─────────────────────
+def is_omniroute_alive() -> bool:
+    """Checks if OmniRoute proxy is healthy and responding to requests."""
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{OMNIROUTE_PORT}/v1/models",
+            headers={"Authorization": f"Bearer {OMNIROUTE_API_KEY}"}
+        )
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
+def start_omniroute_if_needed():
+    """Starts OmniRoute daemon if it is not currently responsive."""
+    if not is_omniroute_alive():
+        print("🔄 OmniRoute is offline or stopped. Restarting OmniRoute daemon...", flush=True)
+        init_omniroute()
+
+
 def init_omniroute():
     print("\n🧠 [2/4] Initializing OmniRoute Google Antigravity Pro Plan Engine...")
     os.makedirs(OMNIROUTE_DIR, exist_ok=True)
@@ -261,18 +281,6 @@ def init_omniroute():
         f.write(f"STORAGE_ENCRYPTION_KEY={STORAGE_ENCRYPTION_KEY}\n")
         f.write(f"OMNIROUTE_MAX_PENDING_MIGRATIONS=0\n")
         f.write(f"PORT={OMNIROUTE_PORT}\n")
-
-    # Check if OmniRoute is already alive and serving requests
-    def is_omniroute_alive():
-        try:
-            req = urllib.request.Request(
-                f"http://127.0.0.1:{OMNIROUTE_PORT}/v1/models",
-                headers={"Authorization": f"Bearer {OMNIROUTE_API_KEY}"}
-            )
-            with urllib.request.urlopen(req, timeout=2) as resp:
-                return resp.status == 200
-        except Exception:
-            return False
 
     if is_omniroute_alive():
         print("✅ OmniRoute is already running and healthy on port 20128!")
@@ -539,25 +547,27 @@ def emergency_reboot_worker():
         if not proc or proc.poll() is not None:
             continue
 
-        # 1. External Emergency Restart Trigger (from /restart or /reboot)
+        # 1. External Emergency Restart Trigger (from /restart, /reboot, or auto-updater)
         if os.path.exists(restart_path):
             try:
                 os.remove(restart_path)
             except Exception:
                 pass
-            print("[Supervisor] 🔄 Emergency restart requested (/restart)! Pulling latest code & restarting Gateway...", flush=True)
+            print("[Supervisor] 🔄 Emergency restart requested! Pulling latest code & recycling service...", flush=True)
             try:
                 subprocess.run(["git", "-C", SCRIPT_DIR, "pull", "--rebase", "origin", "main"], timeout=15, check=False)
             except Exception:
                 pass
             unlock_stale_hermes_sessions()
-            try:
-                proc.terminate()
-                proc.wait(timeout=5)
-            except Exception:
-                proc.kill()
+            if proc and proc.poll() is None:
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=5)
+                except Exception:
+                    proc.kill()
             unlock_stale_hermes_sessions()
-            continue
+            print("[Supervisor] 🚀 Exiting process so systemd performs a clean 100% reload...", flush=True)
+            sys.exit(0)
 
         # 2. OmniRoute proxy liveness check: restart daemon if proxy went down
         if not is_omniroute_alive():
