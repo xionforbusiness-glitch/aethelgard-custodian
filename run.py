@@ -16,6 +16,7 @@ import sqlite3
 import threading
 import subprocess
 import urllib.request
+from antigravity_token_manager import sync_token_to_sqlite, start_token_maintainer_thread
 
 # Ensure UTF-8 stdout/stderr on all terminals
 if hasattr(sys.stdout, "reconfigure"):
@@ -282,8 +283,14 @@ def init_omniroute():
         f.write(f"OMNIROUTE_MAX_PENDING_MIGRATIONS=0\n")
         f.write(f"PORT={OMNIROUTE_PORT}\n")
 
+    db_dest = os.path.join(OMNIROUTE_DIR, "storage.sqlite")
     if is_omniroute_alive():
         print("✅ OmniRoute is already running and healthy on port 20128!")
+        try:
+            sync_token_to_sqlite(db_dest)
+        except Exception as te:
+            print(f"⚠ Token refresh notice: {te}", flush=True)
+        start_token_maintainer_thread(db_dest, interval_sec=1200)
     else:
         # Stop any conflicting process on port 20128 first
         subprocess.run(f"omniroute stop 2>/dev/null; pkill -9 -f omniroute 2>/dev/null; fuser -k {OMNIROUTE_PORT}/tcp 2>/dev/null || true", shell=True)
@@ -299,13 +306,20 @@ def init_omniroute():
                     pass
 
         # Restore pre-verified SQLite database containing Antigravity Pro credentials
-        db_dest = os.path.join(OMNIROUTE_DIR, "storage.sqlite")
         db_gz = os.path.join(SCRIPT_DIR, "omniroute", "storage.sqlite.gz")
         if os.path.exists(db_gz):
             print(f"📦 Decompressing Antigravity Pro credentials database from {db_gz}...")
             with gzip.open(db_gz, "rb") as f_in, open(db_dest, "wb") as f_out:
                 shutil.copyfileobj(f_in, f_out)
             print("✅ Database restored.")
+
+        # Proactively ensure Antigravity OAuth access token is fresh BEFORE starting daemon
+        try:
+            sync_token_to_sqlite(db_dest)
+        except Exception as te:
+            print(f"⚠ Token refresh notice: {te}", flush=True)
+
+        start_token_maintainer_thread(db_dest, interval_sec=1200)
 
         # Start OmniRoute daemon via 'omniroute serve'
         env = dict(os.environ)
@@ -417,8 +431,17 @@ def init_hermes():
         f.write(f"HERMES_CUSTOM_FIRST_TIME_API_KEY={OMNIROUTE_API_KEY}\n")
         f.write(f"OMNIROUTE_API_KEY={OMNIROUTE_API_KEY}\n")
         f.write(f"GOOGLE_API_KEY={GOOGLE_API_KEY}\n")
+        f.write(f"GEMINI_API_KEY={GOOGLE_API_KEY}\n")
         f.write(f"HERMES_LOCAL_STT_COMMAND={stt_cmd}\n")
         f.write(f"AETHELGARD_DIR={SCRIPT_DIR}\n")
+
+    home_env = os.path.join(HERMES_HOME, ".env")
+    try:
+        os.makedirs(HERMES_HOME, exist_ok=True)
+        with open(home_env, "a", encoding="utf-8") as hef:
+            hef.write(f"\nGOOGLE_API_KEY={GOOGLE_API_KEY}\nGEMINI_API_KEY={GOOGLE_API_KEY}\n")
+    except Exception:
+        pass
 
     os.environ["WIKI_PATH"] = VAULT_DIR
     os.environ["OBSIDIAN_VAULT_PATH"] = VAULT_DIR
@@ -430,6 +453,7 @@ def init_hermes():
     os.environ["HERMES_CUSTOM_FIRST_TIME_API_KEY"] = OMNIROUTE_API_KEY
     os.environ["OMNIROUTE_API_KEY"] = OMNIROUTE_API_KEY
     os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
+    os.environ["GEMINI_API_KEY"] = GOOGLE_API_KEY
     os.environ["HERMES_LOCAL_STT_COMMAND"] = stt_cmd
     os.environ["AETHELGARD_DIR"] = SCRIPT_DIR
     os.environ["NODE_OPTIONS"] = "--dns-result-order=ipv4first --max-old-space-size=1536"
@@ -472,6 +496,12 @@ def init_hermes():
         ]
         for cmd in commands:
             subprocess.run(cmd, check=False)
+
+        # Authoritative sync of profile/config.yaml (preserves fallback_providers & google-direct)
+        if os.path.exists(cfg_src):
+            shutil.copy2(cfg_src, os.path.join(HERMES_PROFILE_DIR, "config.yaml"))
+            print("✅ Hermes config.yaml authoritative sync complete (with fallback redundancy).")
+
         print("✅ Hermes profile configured: LOW mode (sub-second) locked as default brain.")
     except Exception as he:
         print(f"⚠ Hermes config CLI notice: {he}")
@@ -540,6 +570,7 @@ def emergency_reboot_worker():
     """Monitors running gateway for remote /restart triggers without killing turns."""
     restart_path = "/tmp/hermes_restart_requested" if os.name != "nt" else os.path.join(SCRIPT_DIR, "restart.trigger")
 
+    omniroute_fail_count = 0
     while True:
         time.sleep(5)
         global active_gateway_proc
@@ -569,14 +600,20 @@ def emergency_reboot_worker():
             print("[Supervisor] 🚀 Exiting process so systemd performs a clean 100% reload...", flush=True)
             sys.exit(0)
 
-        # 2. OmniRoute proxy liveness check: restart daemon if proxy went down
+        # 2. OmniRoute proxy liveness check: restart daemon if proxy went down (3 consecutive failures)
         if not is_omniroute_alive():
-            print("[Supervisor] 🚨 OmniRoute proxy unresponsive! Restarting OmniRoute daemon...", flush=True)
-            try:
-                subprocess.run(f"pkill -9 -f omniroute 2>/dev/null; fuser -k {OMNIROUTE_PORT}/tcp 2>/dev/null || true", shell=True, check=False)
-            except Exception:
-                pass
-            start_omniroute_if_needed()
+            omniroute_fail_count += 1
+            if omniroute_fail_count >= 3:
+                print("[Supervisor] 🚨 OmniRoute proxy unresponsive (3 checks)! Restarting OmniRoute daemon...", flush=True)
+                try:
+                    subprocess.run(f"pkill -9 -f omniroute 2>/dev/null; fuser -k {OMNIROUTE_PORT}/tcp 2>/dev/null || true", shell=True, check=False)
+                except Exception:
+                    pass
+                start_omniroute_if_needed()
+                omniroute_fail_count = 0
+        else:
+            omniroute_fail_count = 0
+
 
 
 def run_gateway_forever():

@@ -18,6 +18,7 @@ GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "AQ.Ab8RN6I64Bj-z2kKo2b-o6cETM
 
 # Priority list of models with proven audio transcription capability
 STT_MODELS = [
+    "gemini-3.5-flash",
     "gemini-3.1-flash-lite",
     "gemini-3.5-flash-lite",
     "gemini-3.8-flash",

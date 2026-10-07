@@ -28,6 +28,34 @@ providers:
     model: antigravity/gemini-3.7-flash-low
     key_env: HERMES_CUSTOM_FIRST_TIME_API_KEY
     discover_models: false
+  google-direct:
+    name: google-direct
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai
+    api_mode: chat_completions
+    key_env: GOOGLE_API_KEY
+    api_key: AQ.Ab8RN6I64Bj-z2kKo2b-o6cETMuJgQ0LySbUjAMqgraCrYKPzQ
+    model: gemini-3.5-flash
+    discover_models: false
+  google-direct-lite:
+    name: google-direct-lite
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai
+    api_mode: chat_completions
+    key_env: GOOGLE_API_KEY
+    api_key: AQ.Ab8RN6I64Bj-z2kKo2b-o6cETMuJgQ0LySbUjAMqgraCrYKPzQ
+    model: gemini-3.1-flash-lite
+    discover_models: false
+
+fallback_providers:
+  - provider: google-direct
+    model: gemini-3.5-flash
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai
+    api_key: AQ.Ab8RN6I64Bj-z2kKo2b-o6cETMuJgQ0LySbUjAMqgraCrYKPzQ
+    context_length: 1048576
+  - provider: google-direct-lite
+    model: gemini-3.1-flash-lite
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai
+    api_key: AQ.Ab8RN6I64Bj-z2kKo2b-o6cETMuJgQ0LySbUjAMqgraCrYKPzQ
+    context_length: 1048576
 
 compression:
   enabled: false
