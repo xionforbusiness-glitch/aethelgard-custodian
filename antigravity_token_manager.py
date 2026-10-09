@@ -27,7 +27,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 REFRESH_TOKEN = os.environ.get(
     "ANTIGRAVITY_REFRESH_TOKEN",
-    "1//09LVvmEt9o7BzCgYIARAAGAkSNgF-L9IrTGV5HzlX1Aun-eVnScYhZG1D21hHUC5cdLlgsduEIQL2LJEIBDw8TEIenG_RqnI8Rw"
+    "1//01_REDACTED_REFRESH_TOKEN"
 )
 CLIENT_ID = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
 CLIENT_SECRET = "GOCSPX-REDACTED_CLIENT_SECRET"
@@ -38,12 +38,13 @@ STORAGE_ENCRYPTION_KEY = os.environ.get(
 STATIC_SALT = b"omniroute-field-encryption-v1"
 
 
-def fetch_fresh_google_token() -> tuple[str | None, int]:
+def fetch_fresh_google_token(refresh_token: str | None = None) -> tuple[str | None, int]:
     """Calls Google's OAuth endpoint to exchange refresh_token for a fresh access_token."""
+    active_refresh = refresh_token or REFRESH_TOKEN
     url = "https://oauth2.googleapis.com/token"
     payload = urllib.parse.urlencode({
         "grant_type": "refresh_token",
-        "refresh_token": REFRESH_TOKEN,
+        "refresh_token": active_refresh,
         "client_id": CLIENT_ID,
         "client_secret": CLIENT_SECRET
     }).encode("utf-8")
@@ -98,16 +99,18 @@ def encrypt_for_omniroute(plaintext: str) -> str:
         return res.stdout.strip()
 
 
-def sync_token_to_sqlite(db_path: str) -> bool:
-    """Refreshes the token and writes it directly to OmniRoute's storage.sqlite."""
+def sync_token_to_sqlite(db_path: str, refresh_token: str | None = None) -> bool:
+    """Refreshes the token and writes both access_token and refresh_token (encrypted) directly to OmniRoute's storage.sqlite."""
     if not os.path.exists(db_path):
         return False
 
-    token, expires_in = fetch_fresh_google_token()
+    active_refresh = refresh_token or REFRESH_TOKEN
+    token, expires_in = fetch_fresh_google_token(active_refresh)
     if not token:
         return False
 
-    enc_token = encrypt_for_omniroute(token)
+    enc_access_token = encrypt_for_omniroute(token)
+    enc_refresh_token = encrypt_for_omniroute(active_refresh)
     now_utc = datetime.now(timezone.utc)
     expires_at = (now_utc + timedelta(seconds=expires_in)).isoformat().replace("+00:00", "Z")
     updated_at = now_utc.isoformat().replace("+00:00", "Z")
@@ -118,6 +121,7 @@ def sync_token_to_sqlite(db_path: str) -> bool:
         cur.execute("""
             UPDATE provider_connections
             SET access_token = ?,
+                refresh_token = ?,
                 expires_at = ?,
                 token_expires_at = ?,
                 test_status = 'active',
@@ -128,12 +132,12 @@ def sync_token_to_sqlite(db_path: str) -> bool:
                 error_code = NULL,
                 updated_at = ?
             WHERE provider = 'antigravity'
-        """, (enc_token, expires_at, expires_at, updated_at))
+        """, (enc_access_token, enc_refresh_token, expires_at, expires_at, updated_at))
         rows = cur.rowcount
         conn.commit()
         conn.close()
         if rows > 0:
-            print(f"[Token Maintainer] ✅ OmniRoute Antigravity token refreshed in {os.path.basename(db_path)} (valid for {expires_in}s)", flush=True)
+            print(f"[Token Maintainer] ✅ OmniRoute Antigravity access & refresh tokens refreshed in {os.path.basename(db_path)} (valid for {expires_in}s)", flush=True)
             return True
         else:
             return False

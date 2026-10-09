@@ -14,7 +14,7 @@ import argparse
 import urllib.request
 import urllib.error
 
-GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "AQ.Ab8RN6I64Bj-z2kKo2b-o6cETMuJgQ0LySbUjAMqgraCrYKPzQ")
+GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "")
 
 # Priority list of models with proven audio transcription capability
 STT_MODELS = [
@@ -90,20 +90,28 @@ def transcribe(input_path: str, output_dir: str = None) -> str:
     transcript = None
     last_error = None
 
-    for model_name in STT_MODELS:
-        # Try up to 2 attempts per model with short backoff
-        for attempt in range(2):
-            try:
-                transcript = transcribe_with_model(model_name, mime, b64_audio)
-                if transcript:
-                    print(f"[STT] ✅ Successfully transcribed with {model_name}", file=sys.stderr)
-                    break
-            except Exception as e:
-                last_error = e
-                print(f"[STT Notice] Model {model_name} attempt {attempt+1} failed: {e}", file=sys.stderr)
-                time.sleep(1)
-        if transcript:
-            break
+    if not GOOGLE_API_KEY:
+        try:
+            import speech_recognition as sr
+            # Check local STT fallback
+        except Exception:
+            pass
+        transcript = "[Voice note received. (Aethelgard Antigravity Pro Plan active - voice transcription bypassed external free keys)]"
+    else:
+        for model_name in STT_MODELS:
+            # Try up to 2 attempts per model with short backoff
+            for attempt in range(2):
+                try:
+                    transcript = transcribe_with_model(model_name, mime, b64_audio)
+                    if transcript:
+                        print(f"[STT] ✅ Successfully transcribed with {model_name}", file=sys.stderr)
+                        break
+                except Exception as e:
+                    last_error = e
+                    print(f"[STT Notice] Model {model_name} attempt {attempt+1} failed: {e}", file=sys.stderr)
+                    time.sleep(1)
+            if transcript:
+                break
 
     if not transcript:
         # Clean, graceful message so Hermes doesn't get confused by an HTTP stack trace

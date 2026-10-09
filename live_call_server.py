@@ -29,7 +29,7 @@ HTML_PATH = os.path.join(SCRIPT_DIR, "call_interface.html")
 HTTP_PORT = int(os.environ.get("PORT_LIVE_CALL", 20130))
 WS_PORT = int(os.environ.get("PORT_LIVE_WS", 20131))
 
-GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "AQ.Ab8RN6I64Bj-z2kKo2b-o6cETMuJgQ0LySbUjAMqgraCrYKPzQ")
+GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "")
 VAULT_DIR = os.path.abspath(os.path.expanduser(os.environ.get("VAULT_DIR", "~/vault")))
 
 

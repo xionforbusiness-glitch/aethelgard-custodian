@@ -19,7 +19,9 @@ from circadian_oracle import get_circadian_forecast
 from airport_radar import fetch_damascus_airport_metar
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "AQ.Ab8RN6I64Bj-z2kKo2b-o6cETMuJgQ0LySbUjAMqgraCrYKPzQ")
+OMNIROUTE_PORT = os.environ.get("OMNIROUTE_PORT", "20128")
+OMNIROUTE_API_KEY = os.environ.get("OMNIROUTE_API_KEY", os.environ.get("HERMES_CUSTOM_FIRST_TIME_API_KEY", "sk-omniroute-redacted"))
+HERMES_MODEL = os.environ.get("HERMES_MODEL", "antigravity/gemini-3.7-flash-low")
 
 
 def get_damascus_now():
@@ -117,7 +119,7 @@ def pick_curiosity_topic(vault_dir: str) -> dict:
 
 
 def generate_spontaneous_thought(vault_dir: str) -> str:
-    """Uses Gemini 3.8 Flash to synthesize a casual, natural, spontaneous curiosity thought."""
+    """Uses Google Antigravity Pro Plan via OmniRoute to synthesize a casual, natural, spontaneous curiosity thought."""
     topic = pick_curiosity_topic(vault_dir)
 
     prompt = (
@@ -132,22 +134,32 @@ def generate_spontaneous_thought(vault_dir: str) -> str:
         f"Output ONLY the text to send Omar."
     )
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={GOOGLE_API_KEY}"
+    url = f"http://127.0.0.1:{OMNIROUTE_PORT}/v1/chat/completions"
     payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.8, "maxOutputTokens": 256}
+        "model": HERMES_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.8,
+        "max_tokens": 256
     }
 
     try:
         data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+        req = urllib.request.Request(
+            url,
+            data=data,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {OMNIROUTE_API_KEY}"
+            },
+            method="POST"
+        )
         with urllib.request.urlopen(req, timeout=15) as resp:
             res = json.loads(resp.read().decode("utf-8"))
-            thought = res.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "").strip()
+            thought = res.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
             if thought:
                 return thought
     except Exception as e:
-        print(f"⚠ Gemini API curiosity generation notice: {e}")
+        print(f"⚠ Antigravity Pro curiosity generation notice: {e}")
 
     # Fallback thoughts if offline
     fallbacks = [

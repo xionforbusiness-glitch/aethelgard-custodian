@@ -53,7 +53,7 @@ VAULT_DIR = os.path.abspath(os.path.expanduser(raw_vault))
 STORAGE_ENCRYPTION_KEY = os.environ.get("STORAGE_ENCRYPTION_KEY", "0000000000000000000000000000000000000000000000000000000000000000")
 OMNIROUTE_PORT = os.environ.get("OMNIROUTE_PORT", "20128")
 OMNIROUTE_API_KEY = os.environ.get("OMNIROUTE_API_KEY", "sk-omniroute-redacted")
-GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "AQ.Ab8RN6I64Bj-z2kKo2b-o6cETMuJgQ0LySbUjAMqgraCrYKPzQ")
+GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "")
 
 HERMES_PROFILE = "llm-wiki"
 HERMES_HOME = os.path.expanduser("~/.hermes")
@@ -430,18 +430,20 @@ def init_hermes():
         f.write(f"OBSIDIAN_VAULT_PATH={VAULT_DIR}\n")
         f.write(f"HERMES_CUSTOM_FIRST_TIME_API_KEY={OMNIROUTE_API_KEY}\n")
         f.write(f"OMNIROUTE_API_KEY={OMNIROUTE_API_KEY}\n")
-        f.write(f"GOOGLE_API_KEY={GOOGLE_API_KEY}\n")
-        f.write(f"GEMINI_API_KEY={GOOGLE_API_KEY}\n")
+        if GOOGLE_API_KEY:
+            f.write(f"GOOGLE_API_KEY={GOOGLE_API_KEY}\n")
+            f.write(f"GEMINI_API_KEY={GOOGLE_API_KEY}\n")
         f.write(f"HERMES_LOCAL_STT_COMMAND={stt_cmd}\n")
         f.write(f"AETHELGARD_DIR={SCRIPT_DIR}\n")
 
-    home_env = os.path.join(HERMES_HOME, ".env")
-    try:
-        os.makedirs(HERMES_HOME, exist_ok=True)
-        with open(home_env, "a", encoding="utf-8") as hef:
-            hef.write(f"\nGOOGLE_API_KEY={GOOGLE_API_KEY}\nGEMINI_API_KEY={GOOGLE_API_KEY}\n")
-    except Exception:
-        pass
+    if GOOGLE_API_KEY:
+        home_env = os.path.join(HERMES_HOME, ".env")
+        try:
+            os.makedirs(HERMES_HOME, exist_ok=True)
+            with open(home_env, "a", encoding="utf-8") as hef:
+                hef.write(f"\nGOOGLE_API_KEY={GOOGLE_API_KEY}\nGEMINI_API_KEY={GOOGLE_API_KEY}\n")
+        except Exception:
+            pass
 
     os.environ["WIKI_PATH"] = VAULT_DIR
     os.environ["OBSIDIAN_VAULT_PATH"] = VAULT_DIR
@@ -452,8 +454,12 @@ def init_hermes():
     os.environ["HERMES_HOME"] = HERMES_HOME
     os.environ["HERMES_CUSTOM_FIRST_TIME_API_KEY"] = OMNIROUTE_API_KEY
     os.environ["OMNIROUTE_API_KEY"] = OMNIROUTE_API_KEY
-    os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
-    os.environ["GEMINI_API_KEY"] = GOOGLE_API_KEY
+    if GOOGLE_API_KEY:
+        os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
+        os.environ["GEMINI_API_KEY"] = GOOGLE_API_KEY
+    else:
+        os.environ.pop("GOOGLE_API_KEY", None)
+        os.environ.pop("GEMINI_API_KEY", None)
     os.environ["HERMES_LOCAL_STT_COMMAND"] = stt_cmd
     os.environ["AETHELGARD_DIR"] = SCRIPT_DIR
     os.environ["NODE_OPTIONS"] = "--dns-result-order=ipv4first --max-old-space-size=1536"
@@ -493,14 +499,15 @@ def init_hermes():
             ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.high", "antigravity/gemini-3.7-flash-high"],
             ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.thinking", "antigravity/gemini-3.7-flash-high"],
             ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.flash-high", "antigravity/gemini-3.7-flash-high"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.pro", "antigravity/gemini-3.7-flash-high"],
         ]
         for cmd in commands:
             subprocess.run(cmd, check=False)
 
-        # Authoritative sync of profile/config.yaml (preserves fallback_providers & google-direct)
+        # Authoritative sync of profile/config.yaml (pure Antigravity Pro configuration)
         if os.path.exists(cfg_src):
             shutil.copy2(cfg_src, os.path.join(HERMES_PROFILE_DIR, "config.yaml"))
-            print("✅ Hermes config.yaml authoritative sync complete (with fallback redundancy).")
+            print("✅ Hermes config.yaml authoritative sync complete (pure Antigravity Pro configuration).")
 
         print("✅ Hermes profile configured: LOW mode (sub-second) locked as default brain.")
     except Exception as he:
@@ -615,6 +622,89 @@ def emergency_reboot_worker():
             omniroute_fail_count = 0
 
 
+def test_antigravity_liveness(timeout_sec: int = 30) -> bool:
+    """Sends a test chat completion request to OmniRoute to verify Antigravity Pro liveness."""
+    try:
+        test_payload = json.dumps({
+            "model": MODEL_DEFAULT,
+            "messages": [{"role": "user", "content": "Antigravity health ping. Respond with 'OK'."}],
+            "max_tokens": 10
+        }).encode("utf-8")
+        test_req = urllib.request.Request(
+            f"http://127.0.0.1:{OMNIROUTE_PORT}/v1/chat/completions",
+            data=test_payload,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {OMNIROUTE_API_KEY}"}
+        )
+        with urllib.request.urlopen(test_req, timeout=timeout_sec) as resp:
+            if resp.status == 200:
+                res_json = json.loads(resp.read().decode("utf-8"))
+                choice = res_json.get("choices", [{}])[0].get("message", {}).get("content", "")
+                return bool(choice)
+            return False
+    except Exception as e:
+        print(f"[Health Check] ⚠ Antigravity liveness check failed: {e}", flush=True)
+        return False
+
+
+def heal_antigravity_service() -> bool:
+    """
+    Auto-healing procedure for Antigravity:
+    1. Refreshes OAuth access & refresh tokens and commits directly into SQLite.
+    2. Restarts OmniRoute daemon so fresh tokens and connection pools are loaded.
+    3. Re-tests liveness; if still failing, triggers emergency service reload.
+    """
+    print("🚑 [Auto-Heal] Starting Antigravity auto-healing routine...", flush=True)
+    db_dest = os.path.join(OMNIROUTE_DIR, "storage.sqlite")
+
+    # 1. Refresh OAuth token in SQLite
+    token_ok = False
+    try:
+        token_ok = sync_token_to_sqlite(db_dest)
+        print(f"[Auto-Heal] Token refresh result: {'SUCCESS' if token_ok else 'FAILED'}", flush=True)
+    except Exception as te:
+        print(f"[Auto-Heal] ⚠ Token refresh exception: {te}", flush=True)
+
+    # 2. Restart OmniRoute daemon
+    try:
+        print("[Auto-Heal] Recycling OmniRoute daemon...", flush=True)
+        if os.name != "nt":
+            subprocess.run(f"omniroute stop 2>/dev/null; pkill -9 -f omniroute 2>/dev/null; fuser -k {OMNIROUTE_PORT}/tcp 2>/dev/null || true", shell=True, check=False)
+        else:
+            subprocess.run(["taskkill", "/F", "/IM", "omniroute.exe"], capture_output=True)
+        time.sleep(2)
+        start_omniroute_if_needed()
+    except Exception as oe:
+        print(f"[Auto-Heal] ⚠ OmniRoute reload exception: {oe}", flush=True)
+
+    # 3. Verify liveness post-heal
+    time.sleep(3)
+    if test_antigravity_liveness(timeout_sec=30):
+        print("🎉 [Auto-Heal] Antigravity Pro service restored and healthy!", flush=True)
+        return True
+    else:
+        print("🚨 [Auto-Heal] Liveness check still failing after reload. Triggering full service restart...", flush=True)
+        restart_path = "/tmp/hermes_restart_requested" if os.name != "nt" else os.path.join(SCRIPT_DIR, "restart.trigger")
+        with open(restart_path, "w", encoding="utf-8") as rf:
+            rf.write("antigravity_health_check_auto_heal")
+        return False
+
+
+def antigravity_health_check_worker(interval_sec: int = 7200):
+    """
+    Persistent 2-hour automated health check worker.
+    Tests Antigravity liveness every 2 hours and automatically heals
+    (refreshes token + reloads service) if any error occurs.
+    """
+    print(f"🛡️ [Health Supervisor] Antigravity 2-hour automated health check worker active (interval: {interval_sec}s).", flush=True)
+    while True:
+        time.sleep(interval_sec)
+        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 🩺 Running scheduled 2-hour Antigravity health check...", flush=True)
+        if test_antigravity_liveness():
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] ✅ Antigravity 2-hour health check PASSED. System fully operational.", flush=True)
+        else:
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 🚨 Antigravity health check FAILED! Auto-healing initiated...", flush=True)
+            heal_antigravity_service()
+
 
 def run_gateway_forever():
     global active_gateway_proc, gateway_start_time
@@ -624,6 +714,7 @@ def run_gateway_forever():
 
     threading.Thread(target=auto_sync_worker, daemon=True).start()
     threading.Thread(target=emergency_reboot_worker, daemon=True).start()
+    threading.Thread(target=antigravity_health_check_worker, daemon=True, name="AntigravityHealthCheck").start()
 
     # ── Launch Proactive Scheduler & Second Brain Librarian ──────────────
     try:
