@@ -21,6 +21,10 @@ from antigravity_token_manager import (
     start_token_maintainer_thread,
     patch_omniroute_antigravity_catalog,
 )
+from antigravity_proxy import (
+    start_antigravity_proxy_background,
+    get_valid_access_token,
+)
 
 # Ensure UTF-8 stdout/stderr on all terminals
 if hasattr(sys.stdout, "reconfigure"):
@@ -71,7 +75,7 @@ print("🏛️ AETHELGARD 24/7 AUTONOMOUS VAULT CUSTODIAN INITIALIZING...")
 print("=" * 65)
 print(f"🧠 Brain Model:       {MODEL_DEFAULT}")
 print(f"📏 Context Window:    {CONTEXT_LENGTH:,} tokens (1M Instant Low-Latency)")
-print(f"🌐 Antigravity Plan:  Google AI Pro Subscription (OmniRoute :{OMNIROUTE_PORT})")
+print(f"🌐 Antigravity Plan:  Google AI Pro Native Gateway (Port :{OMNIROUTE_PORT})")
 print(f"📁 Target Vault:      {VAULT_DIR} -> GitHub {GITHUB_USER}/{VAULT_REPO}")
 print(f"📱 Telegram Gateway:  @aethelgard_vault_bot")
 print("=" * 65 + "\n")
@@ -82,13 +86,11 @@ def unlock_stale_hermes_sessions():
     """
     Guarantees 100% gateway responsiveness:
     1. Removes all stale lock and heartbeat markers.
-    2. Clears active_turn_token, active_turn_started_at, resume_pending from gateway_routing
-       in ~/.hermes/state.db and profile state.db databases.
-    3. Clears active_turn_token and resume_pending from all sessions.json files.
-    This permanently prevents Hermes from getting stuck in an unresponsive 'resume_pending' or
-    locked state after watchdog resets or abrupt restarts.
+    2. Clears active_turn_token, active_turn_started_at, resume_pending, AND stale model_override
+       from gateway_routing and sessions tables in ~/.hermes/state.db and profile state.db.
+    3. Clears active_turn_token, resume_pending, and stale model_override from all sessions.json files.
     """
-    print("🔓 [Session Armor] Checking & unlocking any stale session locks...")
+    print("🔓 [Session Armor] Checking & unlocking any stale session locks & legacy model overrides...")
 
     # 1. Purge ephemeral lock files across all locations
     hb_path = "/tmp/hermes_turn_heartbeat.json" if os.name != "nt" else os.path.join(SCRIPT_DIR, "heartbeat.json")
@@ -123,7 +125,7 @@ def unlock_stale_hermes_sessions():
                 except Exception:
                     pass
 
-    # 2. Unlock SQLite gateway_routing table in state.db files
+    # 2. Unlock SQLite gateway_routing & sessions tables in state.db files
     db_candidates = [
         os.path.join(HERMES_HOME, "state.db"),
         os.path.join(HERMES_PROFILE_DIR, "state.db"),
@@ -149,11 +151,19 @@ def unlock_stale_hermes_sessions():
                     try:
                         entry = json.loads(entry_json)
                         changed = False
-                        for field, default in [("active_turn_token", None), ("active_turn_started_at", None),
-                                               ("resume_pending", False), ("resume_reason", None)]:
+                        for field, default in [
+                            ("active_turn_token", None),
+                            ("active_turn_started_at", None),
+                            ("resume_pending", False),
+                            ("resume_reason", None),
+                            ("model_override", None),
+                        ]:
                             if entry.get(field) != default:
                                 entry[field] = default
                                 changed = True
+                        if isinstance(entry.get("model"), str) and entry["model"] != MODEL_DEFAULT:
+                            entry["model"] = MODEL_DEFAULT
+                            changed = True
                         if changed:
                             cur.execute(
                                 "UPDATE gateway_routing SET entry_json = ? WHERE scope = ? AND session_key = ?",
@@ -164,7 +174,15 @@ def unlock_stale_hermes_sessions():
                         pass
                 if cleared > 0:
                     conn.commit()
-                    print(f"  ✅ Unlocked {cleared} session(s) in {os.path.basename(db_p)}.")
+                    print(f"  ✅ Unlocked & sanitized {cleared} session(s) in {os.path.basename(db_p)}.")
+
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='sessions';")
+            if cur.fetchone():
+                try:
+                    cur.execute("UPDATE sessions SET model = ? WHERE model != ? OR model IS NULL;", (MODEL_DEFAULT, MODEL_DEFAULT))
+                    conn.commit()
+                except Exception:
+                    pass
             conn.close()
         except Exception as dbe:
             print(f"  ⚠ Notice unlocking {db_p}: {dbe}")
@@ -190,15 +208,23 @@ def unlock_stale_hermes_sessions():
             if isinstance(data, dict):
                 for k, entry in data.items():
                     if isinstance(entry, dict):
-                        for field, default in [("active_turn_token", None), ("active_turn_started_at", None),
-                                               ("resume_pending", False), ("resume_reason", None)]:
+                        for field, default in [
+                            ("active_turn_token", None),
+                            ("active_turn_started_at", None),
+                            ("resume_pending", False),
+                            ("resume_reason", None),
+                            ("model_override", None),
+                        ]:
                             if entry.get(field) != default:
                                 entry[field] = default
                                 changed = True
+                        if isinstance(entry.get("model"), str) and entry["model"] != MODEL_DEFAULT:
+                            entry["model"] = MODEL_DEFAULT
+                            changed = True
             if changed:
                 with open(jp, "w", encoding="utf-8") as jf:
                     json.dump(data, jf, indent=2)
-                print(f"  ✅ Sanitized active turn tokens in {os.path.basename(jp)}.")
+                print(f"  ✅ Sanitized active turn tokens & model overrides in {os.path.basename(jp)}.")
         except Exception as je:
             print(f"  ⚠ Notice sanitizing {jp}: {je}")
 
@@ -217,12 +243,15 @@ def unlock_stale_hermes_sessions():
 
 
 def auto_update_self():
-    """Auto-pull latest codebase on boot and clear any stale lock files."""
+    """Auto-pull latest codebase on boot using git reset --hard origin/main so dirty files never block updates."""
     print("🔄 Checking for Aethelgard Custodian updates from GitHub...")
     if os.path.exists(os.path.join(SCRIPT_DIR, ".git")):
         try:
-            res = subprocess.run(["git", "-C", SCRIPT_DIR, "pull", "--rebase", "origin", "main"], timeout=15, capture_output=True, text=True)
-            if "Already up to date" not in res.stdout:
+            subprocess.run(["git", "-C", SCRIPT_DIR, "fetch", "origin", "main"], timeout=15, capture_output=True, text=True)
+            local_rev = subprocess.run(["git", "-C", SCRIPT_DIR, "rev-parse", "HEAD"], timeout=5, capture_output=True, text=True).stdout.strip()
+            remote_rev = subprocess.run(["git", "-C", SCRIPT_DIR, "rev-parse", "origin/main"], timeout=5, capture_output=True, text=True).stdout.strip()
+            if local_rev and remote_rev and local_rev != remote_rev:
+                res = subprocess.run(["git", "-C", SCRIPT_DIR, "reset", "--hard", "origin/main"], timeout=15, capture_output=True, text=True)
                 print(f"✅ Aethelgard updated to latest commit: {res.stdout.strip()}")
             else:
                 print("✅ Aethelgard is up to date.")
@@ -252,121 +281,49 @@ def init_vault():
     subprocess.run(["git", "-C", VAULT_DIR, "config", "user.email", "custodian@aethelgard.internal"], check=True)
 
 
-# ── 3. Initialize OmniRoute & Antigravity Pro Plan Router ─────────────────────
+# ── 3. Initialize Native Antigravity Pro OpenAI Gateway (Port 20128) ─────────
 def is_omniroute_alive() -> bool:
-    """Checks if OmniRoute proxy is healthy and responding to requests."""
+    """Checks if our Native Antigravity Proxy on port 20128 is healthy."""
     try:
         req = urllib.request.Request(
-            f"http://127.0.0.1:{OMNIROUTE_PORT}/v1/models",
+            f"http://127.0.0.1:{OMNIROUTE_PORT}/health",
             headers={"Authorization": f"Bearer {OMNIROUTE_API_KEY}"}
         )
-        with urllib.request.urlopen(req, timeout=2) as resp:
-            return resp.status == 200
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            if resp.status == 200:
+                data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+                return data.get("engine") == "aethelgard-antigravity-native-proxy"
+        return False
     except Exception:
         return False
 
 
 def start_omniroute_if_needed():
-    """Starts OmniRoute daemon if it is not currently responsive."""
+    """Starts the Native Antigravity Proxy if it is not currently responsive."""
     if not is_omniroute_alive():
-        print("🔄 OmniRoute is offline or stopped. Restarting OmniRoute daemon...", flush=True)
+        print("🔄 Starting Native Antigravity Gateway on port 20128...", flush=True)
         init_omniroute()
 
 
 def init_omniroute():
-    print("\n🧠 [2/4] Initializing OmniRoute Google Antigravity Pro Plan Engine...")
-    os.makedirs(OMNIROUTE_DIR, exist_ok=True)
+    print("\n🧠 [2/4] Initializing Native Google Antigravity Pro Plan Gateway (Zero-Lockout Engine)...")
+    if not is_omniroute_alive():
+        # Terminate any legacy Node.js omniroute process holding port 20128
+        if os.name != "nt":
+            subprocess.run(
+                f"omniroute stop 2>/dev/null; pkill -9 -f omniroute 2>/dev/null; fuser -k {OMNIROUTE_PORT}/tcp 2>/dev/null || true",
+                shell=True,
+                check=False,
+            )
+            time.sleep(1)
 
-    os.environ["STORAGE_ENCRYPTION_KEY"] = STORAGE_ENCRYPTION_KEY
-    os.environ["OMNIROUTE_MAX_PENDING_MIGRATIONS"] = "0"
-    os.environ["PORT"] = str(OMNIROUTE_PORT)
+        # Warm up OAuth token cache and start in-process multi-threaded proxy server
+        get_valid_access_token(force_refresh=True)
+        start_antigravity_proxy_background(int(OMNIROUTE_PORT))
+        time.sleep(0.5)
 
-    # Write OmniRoute .env
-    with open(os.path.join(OMNIROUTE_DIR, ".env"), "w", encoding="utf-8") as f:
-        f.write(f"STORAGE_ENCRYPTION_KEY={STORAGE_ENCRYPTION_KEY}\n")
-        f.write(f"OMNIROUTE_MAX_PENDING_MIGRATIONS=0\n")
-        f.write(f"PORT={OMNIROUTE_PORT}\n")
-
-    # Apply OmniRoute v3.8.52 Antigravity catalog & Claude 5.5 hot-patches before starting/using OmniRoute
-    try:
-        patch_omniroute_antigravity_catalog()
-    except Exception as pe:
-        print(f"⚠ OmniRoute catalog patch notice: {pe}", flush=True)
-
-    db_dest = os.path.join(OMNIROUTE_DIR, "storage.sqlite")
-    if is_omniroute_alive():
-        print("✅ OmniRoute is already running and healthy on port 20128!")
-        try:
-            sync_token_to_sqlite(db_dest)
-        except Exception as te:
-            print(f"⚠ Token refresh notice: {te}", flush=True)
-        start_token_maintainer_thread(db_dest, interval_sec=1200)
-    else:
-        # Stop any conflicting process on port 20128 first
-        subprocess.run(f"omniroute stop 2>/dev/null; pkill -9 -f omniroute 2>/dev/null; fuser -k {OMNIROUTE_PORT}/tcp 2>/dev/null || true", shell=True)
-        time.sleep(2)
-
-        # Clean stale SQLite WAL/SHM files to prevent corruption
-        for extra in ["storage.sqlite-wal", "storage.sqlite-shm", "storage.sqlite-journal"]:
-            p = os.path.join(OMNIROUTE_DIR, extra)
-            if os.path.exists(p):
-                try:
-                    os.remove(p)
-                except Exception:
-                    pass
-
-        # Restore pre-verified SQLite database containing Antigravity Pro credentials
-        db_gz = os.path.join(SCRIPT_DIR, "omniroute", "storage.sqlite.gz")
-        if os.path.exists(db_gz):
-            print(f"📦 Decompressing Antigravity Pro credentials database from {db_gz}...")
-            with gzip.open(db_gz, "rb") as f_in, open(db_dest, "wb") as f_out:
-                shutil.copyfileobj(f_in, f_out)
-            print("✅ Database restored.")
-
-        # Proactively ensure Antigravity OAuth access token is fresh BEFORE starting daemon
-        try:
-            sync_token_to_sqlite(db_dest)
-        except Exception as te:
-            print(f"⚠ Token refresh notice: {te}", flush=True)
-
-        start_token_maintainer_thread(db_dest, interval_sec=1200)
-
-        # Start OmniRoute daemon via 'omniroute serve'
-        env = dict(os.environ)
-        env["STORAGE_ENCRYPTION_KEY"] = STORAGE_ENCRYPTION_KEY
-        env["OMNIROUTE_MAX_PENDING_MIGRATIONS"] = "0"
-        env["PORT"] = str(OMNIROUTE_PORT)
-        env["NODE_OPTIONS"] = "--dns-result-order=ipv4first --max-old-space-size=1536"
-
-        log_path = "/tmp/omniroute.log" if os.name != "nt" else os.path.join(SCRIPT_DIR, "omniroute.log")
-        log_f = open(log_path, "w", encoding="utf-8")
-        subprocess.Popen(["omniroute", "serve"], env=env, stdout=log_f, stderr=subprocess.STDOUT, start_new_session=True)
-
-        # Health check: wait up to 180 seconds on e2-micro (CPU throttled cold boot)
-        print(f"⏳ Waiting for OmniRoute on http://127.0.0.1:{OMNIROUTE_PORT} (up to 3 min for cold boot)...")
-        ready = False
-        start_wait = time.time()
-        for i in range(90):
-            if is_omniroute_alive():
-                ready = True
-                break
-            time.sleep(2)
-            elapsed = int(time.time() - start_wait)
-            if (i + 1) % 10 == 0:
-                print(f"   ...still initializing OmniRoute ({elapsed}s elapsed)...", flush=True)
-
-        if not ready:
-            print(f"❌ Failed to connect to OmniRoute after {int(time.time() - start_wait)}s. Recent log from {log_path}:")
-            if os.path.exists(log_path):
-                with open(log_path, "r", encoding="utf-8", errors="ignore") as lf:
-                    for line in lf.readlines()[-25:]:
-                        print(f"  [OmniRoute] {line.strip()}")
-            sys.exit(1)
-
-        print("✅ OmniRoute is active!")
-
-    # Smoke test Antigravity Pro Gemini Flash High
-    print(f"🧪 Smoke testing {MODEL_DEFAULT} via Antigravity Pro Plan...")
+    # Smoke test Antigravity Pro Gemini 3.8 Flash Low
+    print(f"🧪 Smoke testing {MODEL_DEFAULT} via Native Antigravity Pro Gateway...")
     try:
         test_payload = json.dumps({
             "model": MODEL_DEFAULT,
@@ -535,10 +492,11 @@ def auto_sync_worker():
         # 1. Codebase Auto-Updater: check if origin/main has new commits
         try:
             subprocess.run(["git", "-C", SCRIPT_DIR, "fetch", "origin", "main"], check=False, capture_output=True, timeout=15)
-            status = subprocess.run(["git", "-C", SCRIPT_DIR, "status", "-uno"], capture_output=True, text=True, timeout=10)
-            if "Your branch is behind" in status.stdout:
-                print("[Code Sync] 🚀 New commits detected on origin/main! Auto-pulling and triggering reload...", flush=True)
-                subprocess.run(["git", "-C", SCRIPT_DIR, "pull", "--rebase", "origin", "main"], check=False, timeout=15)
+            local_rev = subprocess.run(["git", "-C", SCRIPT_DIR, "rev-parse", "HEAD"], capture_output=True, text=True, timeout=10).stdout.strip()
+            remote_rev = subprocess.run(["git", "-C", SCRIPT_DIR, "rev-parse", "origin/main"], capture_output=True, text=True, timeout=10).stdout.strip()
+            if local_rev and remote_rev and local_rev != remote_rev:
+                print(f"[Code Sync] 🚀 New commits detected on origin/main ({local_rev[:7]} -> {remote_rev[:7]})! Force-syncing and triggering reload...", flush=True)
+                subprocess.run(["git", "-C", SCRIPT_DIR, "reset", "--hard", "origin/main"], check=False, timeout=15)
                 with open(restart_path, "w", encoding="utf-8") as rf:
                     rf.write("code_update")
         except Exception:
@@ -566,7 +524,7 @@ def send_telegram_startup():
         tg_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         msg = (
             f"🏛️ Aethelgard 24/7 Vault Custodian is ONLINE!\n\n"
-            f"🧠 Brain: {MODEL_DEFAULT}\n"
+            f"🧠 Brain: {MODEL_DEFAULT} (Native Python Antigravity Gateway)\n"
             f"⚡ Speed: Instantaneous Sub-Second Chat\n"
             f"🎙️ Voice Notes: Generating with each message (Edge TTS)\n"
             f"📊 Excel Engine: On-demand timesheet delivery ready (/excel)\n"
@@ -606,7 +564,8 @@ def emergency_reboot_worker():
                 pass
             print("[Supervisor] 🔄 Emergency restart requested! Pulling latest code & recycling service...", flush=True)
             try:
-                subprocess.run(["git", "-C", SCRIPT_DIR, "pull", "--rebase", "origin", "main"], timeout=15, check=False)
+                subprocess.run(["git", "-C", SCRIPT_DIR, "fetch", "origin", "main"], timeout=15, check=False)
+                subprocess.run(["git", "-C", SCRIPT_DIR, "reset", "--hard", "origin/main"], timeout=15, check=False)
             except Exception:
                 pass
             unlock_stale_hermes_sessions()
@@ -620,15 +579,11 @@ def emergency_reboot_worker():
             print("[Supervisor] 🚀 Exiting process so systemd performs a clean 100% reload...", flush=True)
             sys.exit(0)
 
-        # 2. OmniRoute proxy liveness check: restart daemon if proxy went down (3 consecutive failures)
+        # 2. Antigravity proxy liveness check: restart thread if proxy went down (3 consecutive failures)
         if not is_omniroute_alive():
             omniroute_fail_count += 1
             if omniroute_fail_count >= 3:
-                print("[Supervisor] 🚨 OmniRoute proxy unresponsive (3 checks)! Restarting OmniRoute daemon...", flush=True)
-                try:
-                    subprocess.run(f"pkill -9 -f omniroute 2>/dev/null; fuser -k {OMNIROUTE_PORT}/tcp 2>/dev/null || true", shell=True, check=False)
-                except Exception:
-                    pass
+                print("[Supervisor] 🚨 Antigravity proxy unresponsive (3 checks)! Restarting native proxy...", flush=True)
                 start_omniroute_if_needed()
                 omniroute_fail_count = 0
         else:
@@ -636,7 +591,7 @@ def emergency_reboot_worker():
 
 
 def test_antigravity_liveness(timeout_sec: int = 30) -> bool:
-    """Sends a test chat completion request to OmniRoute to verify Antigravity Pro liveness."""
+    """Sends a test chat completion request to local Antigravity Gateway to verify Antigravity Pro liveness."""
     try:
         test_payload = json.dumps({
             "model": MODEL_DEFAULT,
@@ -662,35 +617,29 @@ def test_antigravity_liveness(timeout_sec: int = 30) -> bool:
 def heal_antigravity_service() -> bool:
     """
     Auto-healing procedure for Antigravity:
-    1. Refreshes OAuth access & refresh tokens and commits directly into SQLite.
-    2. Restarts OmniRoute daemon so fresh tokens and connection pools are loaded.
+    1. Force-refreshes OAuth access token directly via antigravity_proxy.
+    2. Ensures native Python Antigravity Gateway is listening on port 20128.
     3. Re-tests liveness; if still failing, triggers emergency service reload.
     """
     print("🚑 [Auto-Heal] Starting Antigravity auto-healing routine...", flush=True)
-    db_dest = os.path.join(OMNIROUTE_DIR, "storage.sqlite")
 
-    # 1. Refresh OAuth token in SQLite
+    # 1. Force-refresh OAuth token
     token_ok = False
     try:
-        token_ok = sync_token_to_sqlite(db_dest)
+        token = get_valid_access_token(force_refresh=True)
+        token_ok = bool(token)
         print(f"[Auto-Heal] Token refresh result: {'SUCCESS' if token_ok else 'FAILED'}", flush=True)
     except Exception as te:
         print(f"[Auto-Heal] ⚠ Token refresh exception: {te}", flush=True)
 
-    # 2. Restart OmniRoute daemon
+    # 2. Ensure native proxy is running
     try:
-        print("[Auto-Heal] Recycling OmniRoute daemon...", flush=True)
-        if os.name != "nt":
-            subprocess.run(f"omniroute stop 2>/dev/null; pkill -9 -f omniroute 2>/dev/null; fuser -k {OMNIROUTE_PORT}/tcp 2>/dev/null || true", shell=True, check=False)
-        else:
-            subprocess.run(["taskkill", "/F", "/IM", "omniroute.exe"], capture_output=True)
-        time.sleep(2)
         start_omniroute_if_needed()
     except Exception as oe:
-        print(f"[Auto-Heal] ⚠ OmniRoute reload exception: {oe}", flush=True)
+        print(f"[Auto-Heal] ⚠ Proxy reload exception: {oe}", flush=True)
 
     # 3. Verify liveness post-heal
-    time.sleep(3)
+    time.sleep(2)
     if test_antigravity_liveness(timeout_sec=30):
         print("🎉 [Auto-Heal] Antigravity Pro service restored and healthy!", flush=True)
         return True
