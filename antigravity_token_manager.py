@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 """
-🛡️ Aethelgard Antigravity OAuth Token Maintainer
-Guarantees OmniRoute's Google Antigravity OAuth token is perpetually valid.
-Runs proactively every 20 minutes (before the 60-minute Google token expiration).
+🛡️ Aethelgard Antigravity OAuth Token & Live Model Catalog Maintainer
+1. Guarantees OmniRoute's Google Antigravity OAuth token is perpetually valid (refreshed every 20m).
+2. Dynamically queries Google Antigravity's v1internal:fetchAvailableModels catalog.
+3. Hot-patches OmniRoute's Antigravity catalog & Claude 5.5 effort-variant handling (v3.8.52 fixes)
+   so gemini-3.8-flash-{low,medium,high} and claude-sonnet-5-5-{low,medium,high} work with 0 errors.
+4. Clears any transient 503/429 backoff or circuit-breaker lockouts in OmniRoute's storage.sqlite.
 """
 
 import os
+import re
 import sys
 import json
 import time
+import shutil
 import hashlib
 import sqlite3
 import threading
@@ -37,6 +42,20 @@ STORAGE_ENCRYPTION_KEY = os.environ.get(
 )
 STATIC_SALT = b"omniroute-field-encryption-v1"
 
+# Built-in forward map from retired Antigravity models to current live Antigravity models
+DEPRECATED_MODEL_FORWARD_MAP = {
+    "gemini-3.7-flash": "gemini-3.8-flash-low",
+    "gemini-3.7-flash-low": "gemini-3.8-flash-low",
+    "gemini-3.7-flash-medium": "gemini-3.8-flash-medium",
+    "gemini-3.7-flash-high": "gemini-3.8-flash-high",
+    "gemini-3.7-flash-tiered": "gemini-3.8-flash-tiered",
+    "antigravity/gemini-3.7-flash": "antigravity/gemini-3.8-flash-low",
+    "antigravity/gemini-3.7-flash-low": "antigravity/gemini-3.8-flash-low",
+    "antigravity/gemini-3.7-flash-medium": "antigravity/gemini-3.8-flash-medium",
+    "antigravity/gemini-3.7-flash-high": "antigravity/gemini-3.8-flash-high",
+    "antigravity/gemini-3.7-flash-tiered": "antigravity/gemini-3.8-flash-tiered",
+}
+
 
 def fetch_fresh_google_token(refresh_token: str | None = None) -> tuple[str | None, int]:
     """Calls Google's OAuth endpoint to exchange refresh_token for a fresh access_token."""
@@ -63,6 +82,120 @@ def fetch_fresh_google_token(refresh_token: str | None = None) -> tuple[str | No
     except Exception as e:
         print(f"[Token Maintainer] ⚠ Google OAuth refresh failed: {e}", flush=True)
         return None, 0
+
+
+def discover_live_antigravity_models(access_token: str | None = None) -> list[str]:
+    """Queries daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels for live model IDs."""
+    token = access_token
+    if not token:
+        token, _ = fetch_fresh_google_token()
+    if not token:
+        return []
+
+    url = "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}",
+        "User-Agent": "antigravity/ide/2.21.1 darwin/arm64"
+    }
+    try:
+        req = urllib.request.Request(url, data=b"{}", headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            models = list(data.get("models", {}).keys())
+            return models
+    except Exception as e:
+        print(f"[Token Maintainer] ⚠ Live model catalog probe notice: {e}", flush=True)
+        return []
+
+
+def find_omniroute_root() -> str | None:
+    """Locates the installed omniroute npm package directory across Linux and Windows."""
+    candidates = [
+        os.path.expanduser("~/AppData/Roaming/npm/node_modules/omniroute"),
+        "/usr/local/lib/node_modules/omniroute",
+        "/usr/lib/node_modules/omniroute",
+        os.path.expanduser("~/.npm-global/lib/node_modules/omniroute"),
+    ]
+    # Check nvm directories if present
+    nvm_dir = os.path.expanduser("~/.nvm/versions/node")
+    if os.path.exists(nvm_dir):
+        try:
+            for ver in os.listdir(nvm_dir):
+                candidates.append(os.path.join(nvm_dir, ver, "lib", "node_modules", "omniroute"))
+        except Exception:
+            pass
+
+    which_omni = shutil.which("omniroute")
+    if which_omni:
+        real_bin = os.path.realpath(which_omni)
+        pkg_dir = os.path.dirname(os.path.dirname(real_bin))
+        if os.path.exists(os.path.join(pkg_dir, "package.json")):
+            candidates.insert(0, pkg_dir)
+
+    for c in candidates:
+        if c and os.path.exists(os.path.join(c, "package.json")):
+            return c
+    return None
+
+
+def patch_omniroute_antigravity_catalog() -> bool:
+    """
+    Applies the OmniRoute v3.8.52 Antigravity fixes to the installed OmniRoute package:
+    1. Remaps retired gemini-3.7-flash-tiered -> gemini-3.8-flash-tiered so legacy aliases work.
+    2. Prevents applyClaudeEffortVariant from stripping -low/-medium/-high off Antigravity Claude 5.5 models.
+    """
+    omni_root = find_omniroute_root()
+    if not omni_root:
+        return False
+
+    patched_files = 0
+    target_subdirs = [
+        os.path.join(omni_root, "src"),
+        os.path.join(omni_root, "open-sse"),
+        os.path.join(omni_root, "dist", ".build", "next", "server", "chunks"),
+    ]
+    for sub in target_subdirs:
+        if not os.path.exists(sub):
+            continue
+        for root, dirs, files in os.walk(sub):
+            dirs[:] = [d for d in dirs if d not in ("node_modules", ".git")]
+            for fname in files:
+                if not fname.endswith((".js", ".mjs", ".ts")):
+                    continue
+                fpath = os.path.join(root, fname)
+                try:
+                    with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
+                        content = f.read()
+
+                    original = content
+
+                    # 1. Forward retired gemini-3.7-flash-tiered target in ANTIGRAVITY_MODEL_ALIASES to gemini-3.8-flash-tiered
+                    if "gemini-3.7-flash-tiered" in content:
+                        content = content.replace('"gemini-3.7-flash-tiered"', '"gemini-3.8-flash-tiered"')
+
+                    # 2. Keep Claude 5.5 tiered IDs literal when provider is antigravity/agy (OmniRoute PR #15566)
+                    old_claude_cond = "if (effort && (isDirectClaudeLane || isKnownClaudeEffortBaseModel(baseModel)))"
+                    new_claude_cond = 'if (effort && provider !== "antigravity" && provider !== "agy" && (isDirectClaudeLane || isKnownClaudeEffortBaseModel(baseModel)))'
+                    if old_claude_cond in content:
+                        content = content.replace(old_claude_cond, new_claude_cond)
+
+                    # Also patch compiled Next.js server chunks where variables are minified
+                    old_minified_claude = "if(d&&(p||(0,s.isKnownClaudeEffortBaseModel)(e)))"
+                    new_minified_claude = 'if(d&&"antigravity"!==t&&"agy"!==t&&(p||(0,s.isKnownClaudeEffortBaseModel)(e)))'
+                    if old_minified_claude in content:
+                        content = content.replace(old_minified_claude, new_minified_claude)
+
+                    if content != original:
+                        with open(fpath, "w", encoding="utf-8") as f:
+                            f.write(content)
+                        patched_files += 1
+                except Exception:
+                    pass
+
+    if patched_files > 0:
+        print(f"[Token Maintainer] 🔧 Hot-patched {patched_files} OmniRoute file(s) with Gemini 3.8 Flash & Claude 5.5 support.", flush=True)
+    return True
 
 
 def encrypt_for_omniroute(plaintext: str) -> str:
@@ -100,7 +233,10 @@ def encrypt_for_omniroute(plaintext: str) -> str:
 
 
 def sync_token_to_sqlite(db_path: str, refresh_token: str | None = None) -> bool:
-    """Refreshes the token and writes both access_token and refresh_token (encrypted) directly to OmniRoute's storage.sqlite."""
+    """
+    Refreshes the token, clears any provider backoff/lockout state, configures deprecation aliases,
+    and writes both access_token and refresh_token (encrypted) directly to OmniRoute's storage.sqlite.
+    """
     if not os.path.exists(db_path):
         return False
 
@@ -124,7 +260,10 @@ def sync_token_to_sqlite(db_path: str, refresh_token: str | None = None) -> bool
                 refresh_token = ?,
                 expires_at = ?,
                 token_expires_at = ?,
+                default_model = 'gemini-3.8-flash-low',
                 test_status = 'active',
+                backoff_level = 0,
+                rate_limited_until = NULL,
                 last_error = NULL,
                 last_error_at = NULL,
                 last_error_type = NULL,
@@ -134,6 +273,27 @@ def sync_token_to_sqlite(db_path: str, refresh_token: str | None = None) -> bool
             WHERE provider = 'antigravity'
         """, (enc_access_token, enc_refresh_token, expires_at, expires_at, updated_at))
         rows = cur.rowcount
+
+        # Clear any transient domain lockouts or circuit breakers so 503 spikes never lock out Antigravity
+        for lock_table in ("domain_lockout_state", "domain_circuit_breakers", "connection_runtime_state"):
+            try:
+                cur.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{lock_table}';")
+                if cur.fetchone():
+                    cur.execute(f"DELETE FROM {lock_table};")
+            except Exception:
+                pass
+
+        # Persist custom model deprecation aliases in key_value table
+        try:
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='key_value';")
+            if cur.fetchone():
+                cur.execute(
+                    "INSERT OR REPLACE INTO key_value (namespace, key, value) VALUES (?, ?, ?)",
+                    ("settings", "customAliases", json.dumps(DEPRECATED_MODEL_FORWARD_MAP))
+                )
+        except Exception:
+            pass
+
         conn.commit()
         conn.close()
         if rows > 0:
@@ -162,6 +322,7 @@ def start_token_maintainer_thread(db_path: str, interval_sec: int = 1200):
 
 
 if __name__ == "__main__":
+    patch_omniroute_antigravity_catalog()
     if len(sys.argv) > 1:
         target_db = sys.argv[1]
     else:

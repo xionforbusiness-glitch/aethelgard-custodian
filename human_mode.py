@@ -56,15 +56,15 @@ def get_conversation_mode() -> str:
 def set_conversation_mode(mode: str) -> str:
     """
     Sets mode:
-      - 'human' / 'casual' / 'chat': Ultra-Fast Gemini 3.7 Flash Low (antigravity/gemini-3.7-flash-low)
-      - 'custodian' / 'vault': Deep Thinking Gemini 3.7 Flash High (antigravity/gemini-3.7-flash-high)
+      - 'human' / 'casual' / 'chat': Ultra-Fast Gemini 3.8 Flash Low (antigravity/gemini-3.8-flash-low)
+      - 'custodian' / 'vault': Deep Thinking Gemini 3.8 Flash High (antigravity/gemini-3.8-flash-high)
     """
     clean_mode = "human" if any(k in mode.lower() for k in ("human", "casual", "chat", "low", "fast")) else "custodian"
     state = load_conversation_state()
     state["mode"] = clean_mode
     save_conversation_state(state)
 
-    target_model = "antigravity/gemini-3.7-flash-low" if clean_mode == "human" else "antigravity/gemini-3.7-flash-high"
+    target_model = "antigravity/gemini-3.8-flash-low" if clean_mode == "human" else "antigravity/gemini-3.8-flash-high"
     try:
         import subprocess
         hermes_profile = os.environ.get("HERMES_PROFILE", "llm-wiki")

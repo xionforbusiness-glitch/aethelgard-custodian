@@ -7,12 +7,12 @@ import urllib.request
 
 OMNIROUTE_PORT = os.environ.get("OMNIROUTE_PORT", "20128")
 OMNIROUTE_API_KEY = os.environ.get("OMNIROUTE_API_KEY", "sk-omniroute-redacted")
-MODEL_NAME = os.environ.get("HERMES_MODEL", "antigravity/gemini-3.7-flash-high")
+MODEL_NAME = os.environ.get("HERMES_MODEL", "antigravity/gemini-3.8-flash-high")
 
 DEFAULT_SYP_PER_USD = 14800.0
 
 def parse_expense_with_ai(text: str) -> dict:
-    """Uses Gemini 3.7 Flash High to extract financial amounts, categories, and items from messy text/speech."""
+    """Uses Gemini 3.8 Flash High to extract financial amounts, categories, and items from messy text/speech."""
     sys_prompt = (
         "You are an expert financial ledger accountant for Omar Elnemr living in Damascus, Syria. "
         "Extract financial transactions from natural language (English or Syrian Arabic dialect). "

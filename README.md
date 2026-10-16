@@ -11,7 +11,7 @@
 
 ## ⚡ Core Capabilities
 
-* 🧠 **Google Antigravity Pro Plan Engine:** Powered by **Gemini 3.7 / 3.8 Flash High** via local OmniRoute proxy. Delivers **150+ to 250+ tokens per second** with a **1,000,000-token context window** (zero bottlenecks, zero KV cache quantization degradation).
+* 🧠 **Google Antigravity Pro Plan Engine:** Powered by **Gemini 3.8 Flash Low / High** and **Claude Sonnet 5.5** via local OmniRoute proxy. Delivers **150+ to 250+ tokens per second** with a **1,000,000-token context window** (zero bottlenecks, zero KV cache quantization degradation).
 * 🎙️ **Native Multimodal Hearing & Voice:** Send voice notes directly on Telegram in Arabic or English—the agent transcribes, translates, and synthesizes responses immediately.
 * 🎥 **YouTube & Web Ingestion:** Paste any YouTube, Shorts, or article link to download transcripts, summarize takeaways, and save formatted notes directly into the vault.
 * 📸 **Vision & Document Analysis:** Ingests architecture diagrams, cubing patterns, hardware wiring diagrams, and handwritten notes.
@@ -82,7 +82,7 @@ flowchart TD
     
     subgraph Antigravity ["🧠 Google Antigravity Pro Plan"]
         Hermes <--> OmniRoute[OmniRoute Router\n127.0.0.1:20128]
-        OmniRoute <--> CloudLLM[Gemini 3.7 Flash High\n1M Context | 200+ t/s]
+        OmniRoute <--> CloudLLM[Gemini 3.8 Flash & Claude 5.5\n1M Context | 200+ t/s]
     end
     
     subgraph Storage ["💾 Persistent Obsidian Vault"]

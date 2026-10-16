@@ -5,16 +5,25 @@ Implements Omar's exact attendance rules:
 1. Morning reminders are non-intrusive notices (no action buttons).
 2. If Omar replies to the bot during the day -> Today is marked ON duty.
 3. If Omar does not reply at all -> Today is automatically marked OFF (scheduled day off).
-4. Direct Excel sheet delivery on request to Telegram via sendDocument.
+4. Direct Excel sheet delivery on request to Telegram via sendDocument, using the standardized
+   table style (omar_elnemr_attendance_october_2026.xlsx).
 """
 
 import os
+import re
 import sys
 import json
 import uuid
 import datetime
 import urllib.request
 import subprocess
+
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.path.join(SCRIPT_DIR, "shift_attendance_tracker.json")
@@ -28,6 +37,45 @@ def get_damascus_now():
     """Returns current datetime in Damascus (UTC+3)."""
     utc_now = datetime.datetime.now(datetime.timezone.utc)
     return utc_now + datetime.timedelta(hours=3)
+
+
+def parse_shift_times_from_text(text: str):
+    """
+    Parses natural-language shift logs like:
+      'Logged in 8am and logged off 5:05pm'
+      'logged in 7:55am and logged out 4:30 pm'
+    Returns (log_in_str, log_out_str, dur_fmt, dec_hrs) or None.
+    """
+    if not text:
+        return None
+    pattern = re.compile(
+        r"logged\s+in\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?.*?"
+        r"logged\s+(?:out|off)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?",
+        re.IGNORECASE | re.DOTALL
+    )
+    m = pattern.search(text)
+    if not m:
+        return None
+
+    h1, m1, ap1, h2, m2, ap2 = m.groups()
+    h1, m1 = int(h1), int(m1 or 0)
+    h2, m2 = int(h2), int(m2 or 0)
+    ap1 = (ap1 or "am").upper()
+    ap2 = (ap2 or "pm").upper()
+
+    log_in_str = f"{h1:02d}:{m1:02d} {ap1}"
+    log_out_str = f"{h2:02d}:{m2:02d} {ap2}"
+
+    h1_24 = (h1 % 12) + (12 if ap1 == "PM" else 0)
+    h2_24 = (h2 % 12) + (12 if ap2 == "PM" else 0)
+    total_mins = (h2_24 * 60 + m2) - (h1_24 * 60 + m1)
+    if total_mins <= 0:
+        total_mins += 24 * 60
+
+    dh, dm = divmod(total_mins, 60)
+    dur_fmt = f"{dh}h {dm:02d}m"
+    dec_hrs = round(total_mins / 60.0, 2)
+    return log_in_str, log_out_str, dur_fmt, dec_hrs
 
 
 def load_tracker_state() -> dict:
@@ -47,7 +95,6 @@ def load_tracker_state() -> dict:
                 if data.get("date") == today_str:
                     default_state.update(data)
                 else:
-                    # New day, reset
                     save_tracker_state(default_state)
         except Exception:
             pass
@@ -77,16 +124,28 @@ def on_user_interaction(vault_dir=VAULT_DIR, message_text=""):
     """
     Called whenever Omar sends any message to Telegram.
     If status is 'pending', transitions to 'on' and records duty.
+    Also parses explicit 'logged in ... logged out/off ...' timestamps if provided.
     """
     state = load_tracker_state()
-    if state.get("status") == "pending":
+    parsed = parse_shift_times_from_text(message_text)
+    if state.get("status") == "pending" or parsed:
         now = get_damascus_now()
-        now_str = now.strftime("%I:%M %p")
+        now_str = parsed[0] if parsed else now.strftime("%I:%M %p")
+        log_out_str = parsed[1] if parsed else "04:00 PM"
+        dur_fmt = parsed[2] if parsed else "8h 00m"
+        dec_hrs = parsed[3] if parsed else 8.0
         state["status"] = "on"
         state["first_reply_at"] = now_str
         save_tracker_state(state)
-        print(f"[Shift Tracker] 🌟 Omar replied at {now_str}! Marking today as ON duty.", flush=True)
-        sync_shift_to_vault(vault_dir=vault_dir, status="ON", check_in_time=now_str)
+        print(f"[Shift Tracker] 🌟 Omar replied ({now_str} -> {log_out_str})! Marking today as ON duty.", flush=True)
+        sync_shift_to_vault(
+            vault_dir=vault_dir,
+            status="ON",
+            check_in_time=now_str,
+            check_out_time=log_out_str,
+            dur_fmt=dur_fmt,
+            dec_hrs=dec_hrs
+        )
         return True
     return False
 
@@ -107,90 +166,130 @@ def on_evening_check(vault_dir=VAULT_DIR) -> str:
     return state.get("status", "off")
 
 
-def sync_shift_to_vault(vault_dir=VAULT_DIR, status="ON", check_in_time=None):
+def sync_shift_to_vault(
+    vault_dir=VAULT_DIR,
+    status="ON",
+    check_in_time=None,
+    check_out_time="04:00 PM",
+    dur_fmt="8h 00m",
+    dec_hrs=8.0
+):
     """
-    Updates work_attendance_and_shift_roster.md and the Excel file in the Obsidian vault.
+    Updates raw/attendance_october_2026.csv and omar_elnemr_attendance_october_2026.xlsx in the Obsidian vault.
     """
     now = get_damascus_now()
     date_str = now.strftime("%Y-%m-%d")
     weekday = now.strftime("%A")
-    roster_md = os.path.join(vault_dir, "work_attendance_and_shift_roster.md")
 
     if not os.path.exists(vault_dir):
         return
 
-    # Update Markdown Roster
-    if os.path.exists(roster_md):
-        try:
-            with open(roster_md, "r", encoding="utf-8") as f:
-                content = f.read()
-
-            row_entry = (
-                f"| {date_str} | {weekday} | Omar Elnemr | {check_in_time or '-'} | 04:00 PM | "
-                f"{'7h 45m' if status == 'ON' else '0h 00m'} | {'7.75' if status == 'ON' else '0.0'} | "
-                f"{'Standard' if status == 'ON' else 'Scheduled Off'} | "
-                f"{'Confirmed via Telegram' if status == 'ON' else 'No reply recorded - marked off'} |\n"
-            )
-
-            # If date already in content, avoid duplicate appending
-            if f"| {date_str} |" not in content:
-                with open(roster_md, "a", encoding="utf-8") as f:
-                    f.write(row_entry)
-                print(f"[Shift Tracker] Appended {date_str} ({status}) to {roster_md}", flush=True)
-        except Exception as e:
-            print(f"⚠ Failed to update markdown roster: {e}", flush=True)
-
-    # Sync Excel File
-    sync_excel_file(vault_dir, date_str, weekday, status, check_in_time)
+    sync_excel_file(vault_dir, date_str, weekday, status, check_in_time, check_out_time, dur_fmt, dec_hrs)
 
 
-def sync_excel_file(vault_dir, date_str, weekday, status, check_in_time):
-    """Appends the record to the standardized Excel spreadsheet."""
-    excel_path = os.path.join(vault_dir, "attendance_september_2026_standardized.xlsx")
-    if not os.path.exists(excel_path):
-        excel_path = os.path.join(vault_dir, "attendance_september_2026.xlsx")
-    if not os.path.exists(excel_path):
+def sync_excel_file(
+    vault_dir,
+    date_str,
+    weekday,
+    status,
+    check_in_time,
+    check_out_time="04:00 PM",
+    dur_fmt="8h 00m",
+    dec_hrs=8.0
+):
+    """Appends or updates the record in omar_elnemr_attendance_october_2026.xlsx with standardized styling."""
+    candidates = [
+        os.path.join(vault_dir, "omar_elnemr_attendance_october_2026.xlsx"),
+        os.path.join(vault_dir, "omar_elnemr_attendance_2026.xlsx"),
+        os.path.join(SCRIPT_DIR, "omar_elnemr_attendance_october_2026.xlsx"),
+    ]
+    target_paths = [p for p in candidates if os.path.exists(p)]
+    if not target_paths:
         return
 
     try:
         import openpyxl
-        wb = openpyxl.load_workbook(excel_path)
-        ws = wb["Detailed Timesheet"] if "Detailed Timesheet" in wb.sheetnames else wb.active
-        
-        # Check if today already exists
-        exists = False
-        for row in ws.iter_rows(min_row=2, values_only=True):
-            if row and row[0] == date_str and row[2] == "Omar Elnemr":
-                exists = True
-                break
-        
-        if not exists:
-            log_in = check_in_time or "-"
-            log_out = "04:00 PM" if status == "ON" else "-"
-            dur_fmt = "7h 45m" if status == "ON" else "0h 00m"
-            dec_hrs = 7.75 if status == "ON" else 0.0
-            stat_lbl = "Standard" if status == "ON" else "Off"
-            notes = "Confirmed via Telegram reply" if status == "ON" else "Automatic: No reply recorded (Day Off)"
-            
-            ws.append([date_str, weekday, "Omar Elnemr", log_in, log_out, dur_fmt, dec_hrs, stat_lbl, notes])
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+        thin_side = Side(style="thin", color="00D9D9D9")
+        border_data = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
+        font_body = Font(name="Segoe UI", size=10, bold=False)
+        zebra_fill = PatternFill(start_color="00F2F4F7", end_color="00F2F4F7", fill_type="solid")
+        align_map = {
+            1: Alignment(horizontal="center", vertical="center"),
+            2: Alignment(horizontal="center", vertical="center"),
+            3: Alignment(horizontal="left", vertical="center"),
+            4: Alignment(horizontal="center", vertical="center"),
+            5: Alignment(horizontal="center", vertical="center"),
+            6: Alignment(horizontal="center", vertical="center"),
+            7: Alignment(horizontal="center", vertical="center"),
+            8: Alignment(horizontal="center", vertical="center"),
+            9: Alignment(horizontal="left", vertical="center"),
+        }
+
+        log_in = check_in_time or ("08:00 AM" if status == "ON" else "OFF")
+        log_out = check_out_time if status == "ON" else "OFF"
+        d_fmt = dur_fmt if status == "ON" else "0h 00m"
+        d_hrs = float(dec_hrs) if status == "ON" else 0.0
+        stat_lbl = "Official Duty" if status == "ON" else "Day Off"
+        notes = (
+            f"✈️ Live Airport Ground Station Duty (Logged in {log_in} / Logged out {log_out})"
+            if status == "ON"
+            else "🌴 Scheduled Rest Day (No reply recorded)"
+        )
+        new_vals = [date_str, weekday, "Omar Elnemr", log_in, log_out, d_fmt, d_hrs, stat_lbl, notes]
+
+        for excel_path in target_paths:
+            wb = openpyxl.load_workbook(excel_path)
+            ws = wb["Detailed Timesheet"] if "Detailed Timesheet" in wb.sheetnames else wb.active
+
+            target_row = None
+            total_row = None
+            for r_idx in range(2, ws.max_row + 1):
+                c1 = str(ws.cell(r_idx, 1).value or "")
+                if c1 == date_str:
+                    target_row = r_idx
+                    break
+                if c1.lower().startswith("total"):
+                    total_row = r_idx
+
+            if target_row is None:
+                if total_row is not None:
+                    ws.insert_rows(total_row, 1)
+                    target_row = total_row
+                else:
+                    target_row = ws.max_row + 1
+
+            is_even = (target_row % 2 == 0)
+            for col_idx, val in enumerate(new_vals, start=1):
+                c = ws.cell(target_row, col_idx, value=val)
+                c.font = font_body
+                if is_even:
+                    c.fill = zebra_fill
+                c.alignment = align_map[col_idx]
+                c.border = border_data
+                if col_idx == 7:
+                    c.number_format = "0.00"
+            ws.row_dimensions[target_row].height = 20
+
             wb.save(excel_path)
-            print(f"[Shift Tracker] Appended {date_str} to Excel sheet: {excel_path}", flush=True)
+            print(f"[Shift Tracker] Synced {date_str} to standardized Excel sheet: {excel_path}", flush=True)
     except Exception as e:
         print(f"⚠ Failed to sync Excel sheet: {e}", flush=True)
 
 
 def find_latest_excel_sheet(vault_dir=VAULT_DIR) -> str:
-    """Finds the primary attendance or financial Excel sheet in the vault or current repo."""
+    """Finds the primary standardized October attendance Excel sheet in the vault or current repo."""
     candidates = [
+        os.path.join(vault_dir, "omar_elnemr_attendance_october_2026.xlsx"),
+        os.path.join(SCRIPT_DIR, "omar_elnemr_attendance_october_2026.xlsx"),
+        os.path.join(vault_dir, "omar_elnemr_attendance_2026.xlsx"),
         os.path.join(vault_dir, "attendance_september_2026_standardized.xlsx"),
-        os.path.join(vault_dir, "attendance_september_2026.xlsx"),
-        os.path.join(SCRIPT_DIR, "attendance_september_2026_standardized.xlsx")
     ]
     for c in candidates:
         if os.path.exists(c):
             return c
 
-    # Search vault directory
     if os.path.exists(vault_dir):
         for root, dirs, files in os.walk(vault_dir):
             for f in files:
@@ -200,7 +299,7 @@ def find_latest_excel_sheet(vault_dir=VAULT_DIR) -> str:
 
 
 def send_excel_to_telegram(chat_id=TELEGRAM_USER_ID, token=TELEGRAM_BOT_TOKEN, vault_dir=VAULT_DIR, caption=None) -> bool:
-    """Delivers the master Excel sheet directly to Omar's Telegram chat via sendDocument."""
+    """Delivers the standardized October Excel sheet directly to Omar's Telegram chat via sendDocument."""
     file_path = find_latest_excel_sheet(vault_dir)
     if not file_path or not os.path.exists(file_path):
         print("⚠ No Excel sheet found to send.", flush=True)
@@ -208,7 +307,7 @@ def send_excel_to_telegram(chat_id=TELEGRAM_USER_ID, token=TELEGRAM_BOT_TOKEN, v
 
     boundary = uuid.uuid4().hex
     filename = os.path.basename(file_path)
-    cap = caption or "📊 Aethelgard Master Attendance & Shift Roster (Excel Spreadsheet)"
+    cap = caption or "📊 Aethelgard Master Attendance & Shift Roster — October 2026 (Standardized Table Style)"
 
     try:
         with open(file_path, "rb") as f:

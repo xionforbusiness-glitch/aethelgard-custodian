@@ -16,7 +16,11 @@ import sqlite3
 import threading
 import subprocess
 import urllib.request
-from antigravity_token_manager import sync_token_to_sqlite, start_token_maintainer_thread
+from antigravity_token_manager import (
+    sync_token_to_sqlite,
+    start_token_maintainer_thread,
+    patch_omniroute_antigravity_catalog,
+)
 
 # Ensure UTF-8 stdout/stderr on all terminals
 if hasattr(sys.stdout, "reconfigure"):
@@ -59,7 +63,7 @@ HERMES_PROFILE = "llm-wiki"
 HERMES_HOME = os.path.expanduser("~/.hermes")
 HERMES_PROFILE_DIR = os.path.join(HERMES_HOME, "profiles", HERMES_PROFILE)
 OMNIROUTE_DIR = os.path.expanduser("~/.omniroute")
-MODEL_DEFAULT = os.environ.get("HERMES_MODEL", "antigravity/gemini-3.7-flash-low")
+MODEL_DEFAULT = os.environ.get("HERMES_MODEL", "antigravity/gemini-3.8-flash-low")
 CONTEXT_LENGTH = int(os.environ.get("HERMES_CONTEXT_LENGTH", "1048576"))
 
 print("\n" + "=" * 65)
@@ -283,6 +287,12 @@ def init_omniroute():
         f.write(f"OMNIROUTE_MAX_PENDING_MIGRATIONS=0\n")
         f.write(f"PORT={OMNIROUTE_PORT}\n")
 
+    # Apply OmniRoute v3.8.52 Antigravity catalog & Claude 5.5 hot-patches before starting/using OmniRoute
+    try:
+        patch_omniroute_antigravity_catalog()
+    except Exception as pe:
+        print(f"⚠ OmniRoute catalog patch notice: {pe}", flush=True)
+
     db_dest = os.path.join(OMNIROUTE_DIR, "storage.sqlite")
     if is_omniroute_alive():
         print("✅ OmniRoute is already running and healthy on port 20128!")
@@ -485,21 +495,24 @@ def init_hermes():
             ["hermes", "-p", HERMES_PROFILE, "config", "set", "slash_commands.confirm_reset", "false"],
             ["hermes", "-p", HERMES_PROFILE, "config", "set", "compression.enabled", "false"],
             ["hermes", "-p", HERMES_PROFILE, "config", "set", "stt.provider", "local_command"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.flash", "antigravity/gemini-3.7-flash-low"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.flash-low", "antigravity/gemini-3.7-flash-low"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.gemini", "antigravity/gemini-3.7-flash-low"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.fast", "antigravity/gemini-3.7-flash-low"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.chat", "antigravity/gemini-3.7-flash-low"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.casual", "antigravity/gemini-3.7-flash-low"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.low", "antigravity/gemini-3.7-flash-low"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.medium", "antigravity/gemini-3.7-flash-medium"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.flash-medium", "antigravity/gemini-3.7-flash-medium"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.custodian", "antigravity/gemini-3.7-flash-high"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.vault", "antigravity/gemini-3.7-flash-high"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.high", "antigravity/gemini-3.7-flash-high"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.thinking", "antigravity/gemini-3.7-flash-high"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.flash-high", "antigravity/gemini-3.7-flash-high"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.pro", "antigravity/gemini-3.7-flash-high"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.flash", "antigravity/gemini-3.8-flash-low"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.flash-low", "antigravity/gemini-3.8-flash-low"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.gemini", "antigravity/gemini-3.8-flash-low"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.fast", "antigravity/gemini-3.8-flash-low"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.chat", "antigravity/gemini-3.8-flash-low"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.casual", "antigravity/gemini-3.8-flash-low"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.low", "antigravity/gemini-3.8-flash-low"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.medium", "antigravity/gemini-3.8-flash-medium"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.flash-medium", "antigravity/gemini-3.8-flash-medium"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.custodian", "antigravity/gemini-3.8-flash-high"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.vault", "antigravity/gemini-3.8-flash-high"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.high", "antigravity/gemini-3.8-flash-high"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.thinking", "antigravity/gemini-3.8-flash-high"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.flash-high", "antigravity/gemini-3.8-flash-high"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.pro", "antigravity/gemini-3.8-flash-high"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.claude", "antigravity/claude-sonnet-5-5-high"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.sonnet", "antigravity/claude-sonnet-5-5-high"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.opus", "antigravity/claude-opus-5-5-high"],
         ]
         for cmd in commands:
             subprocess.run(cmd, check=False)

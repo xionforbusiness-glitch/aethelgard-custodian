@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-⚡ Aethelgard Gemini Speech-To-Text Engine
-Uses Google Gemini API for ultra-fast, zero-RAM voice note transcription.
-Features multi-model failover, automatic retries, and bilingual (Arabic/English) support.
+⚡ Aethelgard Antigravity Pro Speech-To-Text Engine
+Uses Google Antigravity Pro Plan (daily-cloudcode-pa.googleapis.com) with Gemini 3.8 Flash
+for ultra-fast, zero-RAM voice note transcription with multi-model failover and bilingual
+(Arabic/English) support. Zero external AI Studio free keys required.
 """
 
 import os
@@ -14,65 +15,94 @@ import argparse
 import urllib.request
 import urllib.error
 
-GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "")
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
 
-# Priority list of models with proven audio transcription capability
-STT_MODELS = [
-    "gemini-3.5-flash",
+from antigravity_token_manager import fetch_fresh_google_token
+
+# Priority list of live Antigravity Pro models with native audio transcription capability
+ANTIGRAVITY_STT_MODELS = [
+    "gemini-3.8-flash-low",
+    "gemini-3.8-flash-medium",
+    "gemini-3.5-flash-low",
     "gemini-3.1-flash-lite",
-    "gemini-3.5-flash-lite",
-    "gemini-3.8-flash",
 ]
 
-def transcribe_with_model(model_name: str, mime: str, b64_audio: str) -> str:
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GOOGLE_API_KEY}"
-    payload = {
-        "contents": [{
-            "parts": [
-                {
-                    "text": (
-                        "You are an expert audio transcription system. "
-                        "Transcribe the spoken audio verbatim in its original language (Arabic, English, or mixed). "
-                        "Do not translate, summarize, or add explanations. "
-                        "Output ONLY the verbatim text spoken in the audio."
-                    )
-                },
-                {
-                    "inline_data": {
-                        "mime_type": mime,
-                        "data": b64_audio
+
+def transcribe_via_antigravity(model_name: str, mime: str, b64_audio: str, access_token: str) -> str:
+    """Transcribes audio directly via Google Antigravity Cloud Code SSE endpoint."""
+    url = "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse"
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+        "Authorization": f"Bearer {access_token}",
+        "User-Agent": "antigravity/ide/2.21.1 darwin/arm64"
+    }
+    body = {
+        "model": model_name,
+        "project": "aicode-consumers",
+        "userAgent": "antigravity",
+        "requestType": "agent",
+        "requestId": f"stt/{int(time.time() * 1000)}",
+        "request": {
+            "sessionId": f"-{int(time.time() * 1000)}",
+            "contents": [{
+                "role": "user",
+                "parts": [
+                    {
+                        "text": (
+                            "You are an expert audio transcription system. "
+                            "Transcribe the spoken audio verbatim in its original language (Arabic, English, or mixed). "
+                            "Do not translate, summarize, or add explanations. "
+                            "Output ONLY the verbatim text spoken in the audio."
+                        )
+                    },
+                    {
+                        "inlineData": {
+                            "mimeType": mime,
+                            "data": b64_audio
+                        }
                     }
-                }
-            ]
-        }]
+                ]
+            }],
+            "generationConfig": {
+                "maxOutputTokens": 2048,
+                "thinkingConfig": {"thinkingBudget": 128}
+            }
+        }
     }
 
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+    req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST")
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        raw_sse = resp.read().decode("utf-8", errors="replace")
 
-    with urllib.request.urlopen(req, timeout=90) as resp:
-        res = json.loads(resp.read().decode("utf-8"))
-        candidates = res.get("candidates", [])
-        if not candidates:
-            raise ValueError(f"No candidates returned by {model_name}")
-        parts = candidates[0].get("content", {}).get("parts", [])
-        if not parts:
-            raise ValueError(f"No content parts returned by {model_name}")
-        text = parts[0].get("text", "").strip()
-        if not text:
-            raise ValueError(f"Empty transcript returned by {model_name}")
-        return text
+    reply_text = ""
+    for line in raw_sse.splitlines():
+        if line.startswith("data: "):
+            try:
+                j = json.loads(line[6:])
+                candidates = j.get("response", {}).get("candidates", [])
+                for c in candidates:
+                    for p in c.get("content", {}).get("parts", []):
+                        if "text" in p and not p.get("thought"):
+                            reply_text += p["text"]
+            except Exception:
+                pass
+
+    text = reply_text.strip()
+    if not text:
+        raise ValueError(f"Empty transcript returned by Antigravity model {model_name}")
+    return text
 
 
 def transcribe(input_path: str, output_dir: str = None) -> str:
     if not os.path.exists(input_path):
         raise FileNotFoundError(f"Audio file not found: {input_path}")
 
-    # Read audio bytes
     with open(input_path, "rb") as f:
         audio_bytes = f.read()
 
-    # Determine mime type
     ext = os.path.splitext(input_path)[1].lower()
     if ext in (".ogg", ".oga", ".opus"):
         mime = "audio/ogg"
@@ -87,62 +117,48 @@ def transcribe(input_path: str, output_dir: str = None) -> str:
 
     b64_audio = base64.b64encode(audio_bytes).decode("utf-8")
 
+    access_token, _ = fetch_fresh_google_token()
     transcript = None
     last_error = None
 
-    if not GOOGLE_API_KEY:
-        try:
-            import speech_recognition as sr
-            # Check local STT fallback
-        except Exception:
-            pass
-        transcript = "[Voice note received. (Aethelgard Antigravity Pro Plan active - voice transcription bypassed external free keys)]"
-    else:
-        for model_name in STT_MODELS:
-            # Try up to 2 attempts per model with short backoff
+    if access_token:
+        for model_name in ANTIGRAVITY_STT_MODELS:
             for attempt in range(2):
                 try:
-                    transcript = transcribe_with_model(model_name, mime, b64_audio)
+                    transcript = transcribe_via_antigravity(model_name, mime, b64_audio, access_token)
                     if transcript:
-                        print(f"[STT] ✅ Successfully transcribed with {model_name}", file=sys.stderr)
                         break
+                except urllib.error.HTTPError as he:
+                    last_error = f"HTTP {he.code} on {model_name}"
+                    time.sleep(1)
                 except Exception as e:
-                    last_error = e
-                    print(f"[STT Notice] Model {model_name} attempt {attempt+1} failed: {e}", file=sys.stderr)
+                    last_error = f"{type(e).__name__}: {e} on {model_name}"
                     time.sleep(1)
             if transcript:
                 break
 
     if not transcript:
-        # Clean, graceful message so Hermes doesn't get confused by an HTTP stack trace
-        transcript = f"[Voice note received, but transcription failed: {last_error}]"
+        raise RuntimeError(f"All Antigravity STT models failed. Last error: {last_error}")
 
-    # If output_dir is specified, write transcript.txt for Hermes local_command
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
-        out_file = os.path.join(output_dir, "transcript.txt")
-        with open(out_file, "w", encoding="utf-8") as out_f:
+        base_name = os.path.splitext(os.path.basename(input_path))[0]
+        txt_path = os.path.join(output_dir, f"{base_name}.txt")
+        with open(txt_path, "w", encoding="utf-8") as out_f:
             out_f.write(transcript)
 
     return transcript
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Gemini STT for Hermes Agent")
-    parser.add_argument("input_path", help="Path to input audio file")
-    parser.add_argument("--output_dir", "-o", default=None, help="Directory to save transcript.txt")
-    parser.add_argument("--model", default=None, help="Ignored")
-    parser.add_argument("--language", default=None, help="Ignored")
-    parser.add_argument("--output_format", default="txt", help="Ignored")
-    args, unknown = parser.parse_known_args()
-
-    output_dir = args.output_dir
-    if not output_dir and len(sys.argv) > 2 and not sys.argv[2].startswith("-"):
-        output_dir = sys.argv[2]
-
-    transcript = transcribe(args.input_path, output_dir)
-    print(transcript)
-
-
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Transcribe audio using Google Antigravity Pro Gemini 3.8 Flash")
+    parser.add_argument("input_path", help="Path to input audio file")
+    parser.add_argument("--output_dir", default=None, help="Optional directory to write .txt output")
+    args = parser.parse_args()
+
+    try:
+        result = transcribe(args.input_path, args.output_dir)
+        print(result)
+    except Exception as exc:
+        sys.stderr.write(f"Transcription error: {exc}\n")
+        sys.exit(1)
