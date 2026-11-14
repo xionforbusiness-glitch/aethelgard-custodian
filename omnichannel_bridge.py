@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import html
 import json
 import time
 import base64
@@ -40,6 +41,54 @@ from typing import Any, Dict, List, Optional, Tuple
 import approval_gatekeeper
 
 MAX_EMAIL_BODY_CHARS = 50000  # Strict memory ceiling for 1GB VM
+
+
+def _html_to_clean_text(raw_html: str) -> str:
+    """Converts HTML email bodies into compact, readable plain text."""
+    if not raw_html or not isinstance(raw_html, str):
+        return ""
+    text = re.sub(r"(?is)<(head|style|script|noscript)\b[^>]*>.*?</\1>", " ", raw_html)
+    text = re.sub(r"(?s)<!--.*?-->", " ", text)
+    text = re.sub(r"(?i)<br\s*/?>", "\n", text)
+    text = re.sub(r"(?i)</(p|div|tr|li|h[1-6]|table|blockquote)>", "\n", text)
+    text = re.sub(r"(?i)<li\b[^>]*>", "\n- ", text)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = html.unescape(text)
+    lines = [re.sub(r"[ \t\r\f\v]+", " ", line).strip() for line in text.splitlines()]
+    cleaned = "\n".join(line for line in lines if line)
+    return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+
+def _looks_like_html(text: str) -> bool:
+    """Detects whether an email body contains raw HTML markup."""
+    if not text or not isinstance(text, str):
+        return False
+    return bool(re.search(r"(?i)<(?:!doctype|html|head|body|style|script|table|div|p|br|span)\b", text))
+
+
+def _is_dummy_plain_text(text: str) -> bool:
+    """Detects placeholder text/plain parts that hide the real text/html content."""
+    stripped = (text or "").strip().lower()
+    if not stripped:
+        return True
+    return len(stripped) < 120 and (
+        "plain text version not available" in stripped
+        or "view this email in your browser" in stripped
+        or "enable html" in stripped
+    )
+
+
+def _select_and_clean_email_body(plain_text: str, html_text: str = "") -> str:
+    """Chooses the best body representation and strips raw HTML markup."""
+    if _is_dummy_plain_text(plain_text) and html_text and html_text.strip():
+        candidate = _html_to_clean_text(html_text)
+    else:
+        candidate = plain_text or _html_to_clean_text(html_text)
+    if _looks_like_html(candidate):
+        cleaned = _html_to_clean_text(candidate)
+        if cleaned:
+            candidate = cleaned
+    return candidate
 
 
 def get_credentials_dir() -> Path:
@@ -304,28 +353,31 @@ class GoogleAdapter:
         sender = str(parsed.get("From", "unknown@example.com"))
         date_str = str(parsed.get("Date", ""))
 
-        body_text = ""
+        plain_part = ""
+        html_part = ""
         if parsed.is_multipart():
             for part in parsed.walk():
-                if part.get_content_maintype() == "text" and part.get_content_subtype() == "plain" and not part.get_filename():
-                    try:
-                        body_text = str(part.get_content())
-                        break
-                    except Exception:
-                        pass
-            if not body_text:
-                for part in parsed.walk():
-                    if part.get_content_maintype() == "text" and not part.get_filename():
-                        try:
-                            body_text = str(part.get_content())
-                            break
-                        except Exception:
-                            pass
+                if part.get_content_maintype() != "text" or part.get_filename():
+                    continue
+                subtype = part.get_content_subtype()
+                try:
+                    content = str(part.get_content())
+                except Exception:
+                    continue
+                if subtype == "plain" and not plain_part:
+                    plain_part = content
+                elif subtype == "html" and not html_part:
+                    html_part = content
+            body_text = _select_and_clean_email_body(plain_part, html_part)
         else:
             try:
-                body_text = str(parsed.get_content())
+                raw_content = str(parsed.get_content())
             except Exception:
-                body_text = ""
+                raw_content = ""
+            if parsed.get_content_subtype() == "html":
+                body_text = _select_and_clean_email_body("", raw_content)
+            else:
+                body_text = _select_and_clean_email_body(raw_content)
 
         truncated = False
         if len(body_text) > max_body_chars:
@@ -345,10 +397,7 @@ class GoogleAdapter:
 
     def search_emails(self, query: str = "", max_results: int = 10) -> List[Dict[str, Any]]:
         """Searches Gmail messages via REST API or IMAP4_SSL App Password fallback without launching any browser."""
-        has_oauth, _, app_pw = self._has_oauth_and_app_pw()
-        if app_pw and not has_oauth:
-            return self._imap_search_emails(query=query, max_results=max_results)
-
+        _, _, app_pw = self._has_oauth_and_app_pw()
         res = self._execute_api_call("messages", params={"q": query, "maxResults": max_results})
         if isinstance(res, dict) and (res.get("status") == "needs_auth" or "error" in res) and app_pw:
             return self._imap_search_emails(query=query, max_results=max_results)
@@ -365,10 +414,7 @@ class GoogleAdapter:
         Fetches a single email by ID (REST API or IMAP4_SSL fallback) and safely truncates
         large bodies to protect the 1GB VM RAM.
         """
-        has_oauth, _, app_pw = self._has_oauth_and_app_pw()
-        if app_pw and not has_oauth:
-            return self._imap_read_email(msg_id, max_body_chars=max_body_chars)
-
+        _, _, app_pw = self._has_oauth_and_app_pw()
         raw = self._execute_api_call(f"messages/{msg_id}", params={"format": "full"})
         if isinstance(raw, dict) and (raw.get("status") == "needs_auth" or "error" in raw) and app_pw:
             return self._imap_read_email(msg_id, max_body_chars=max_body_chars)
@@ -386,6 +432,8 @@ class GoogleAdapter:
         body_text = raw.get("body", "")
         if not body_text and "payload" in raw:
             body_text = self._extract_mime_body(raw["payload"])
+        if isinstance(body_text, str):
+            body_text = _select_and_clean_email_body(body_text)
         if not body_text:
             body_text = raw.get("snippet", "")
 

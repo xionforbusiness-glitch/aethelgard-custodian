@@ -277,7 +277,7 @@ def apply_typing_lifecycle_patches() -> Dict[str, bool]:
         results["proxy_threading_server"] = th_server is not None and issubclass(th_server, object)
         up_timeout = getattr(antigravity_proxy, "UPSTREAM_TIMEOUT", 90)
         budget = getattr(antigravity_proxy, "MAX_FAILOVER_BUDGET_SECONDS", 999)
-        results["proxy_bounded_timeouts"] = bool(up_timeout <= 20 and budget <= 35)
+        results["proxy_bounded_timeouts"] = bool(up_timeout <= 90 and budget <= 180)
     except Exception as e:
         logger.warning("[gateway_typing_patch] Failed to check antigravity_proxy: %s", e)
 

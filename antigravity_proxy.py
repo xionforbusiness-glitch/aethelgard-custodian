@@ -42,9 +42,9 @@ UPSTREAM_URLS = [
     "https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
 ]
 
-UPSTREAM_TIMEOUT = int(os.environ.get("ANTIGRAVITY_UPSTREAM_TIMEOUT", "12"))
-MAX_FAILOVER_BUDGET_SECONDS = int(os.environ.get("ANTIGRAVITY_FAILOVER_BUDGET", "30"))
-MAX_FAILOVER_MODELS = int(os.environ.get("ANTIGRAVITY_MAX_FAILOVER_MODELS", "3"))
+UPSTREAM_TIMEOUT = int(os.environ.get("ANTIGRAVITY_UPSTREAM_TIMEOUT", "75"))
+MAX_FAILOVER_BUDGET_SECONDS = int(os.environ.get("ANTIGRAVITY_FAILOVER_BUDGET", "150"))
+MAX_FAILOVER_MODELS = int(os.environ.get("ANTIGRAVITY_MAX_FAILOVER_MODELS", "6"))
 
 
 ANTIGRAVITY_DEFAULT_SYSTEM = (

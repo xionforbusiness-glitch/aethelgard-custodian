@@ -265,6 +265,21 @@ def ingest_vip_email_to_vault(
     }
 
 
+def _load_seen_ids(sf_path: Path) -> List[str]:
+    """Loads persisted processed message IDs from the deduplication state file."""
+    if not sf_path.exists():
+        return []
+    try:
+        loaded = json.loads(sf_path.read_text(encoding="utf-8"))
+        if isinstance(loaded, list):
+            return [str(x) for x in loaded]
+        if isinstance(loaded, dict):
+            return [str(x) for x in loaded.get("seen_ids", [])]
+    except Exception:
+        return []
+    return []
+
+
 def process_incoming_email(
     email_data: Dict[str, Any],
     state_file: Optional[str] = None,
@@ -285,16 +300,7 @@ def process_incoming_email(
     sf_path = Path(state_file) if state_file else get_default_state_file()
     sf_path.parent.mkdir(parents=True, exist_ok=True)
 
-    seen_ids: List[str] = []
-    if sf_path.exists():
-        try:
-            loaded = json.loads(sf_path.read_text(encoding="utf-8"))
-            if isinstance(loaded, list):
-                seen_ids = [str(x) for x in loaded]
-            elif isinstance(loaded, dict):
-                seen_ids = [str(x) for x in loaded.get("seen_ids", [])]
-        except Exception:
-            seen_ids = []
+    seen_ids = _load_seen_ids(sf_path)
 
     if msg_id in seen_ids:
         return {
@@ -352,16 +358,23 @@ def run_vip_triage_cycle(
         return {"checked": 0, "vip_ingested": 0, "status": "needs_auth"}
 
     messages = adapter.search_emails(query="is:unread", max_results=max_results)
+    sf_path = Path(state_file) if state_file else get_default_state_file()
+    seen_ids = set(_load_seen_ids(sf_path))
     vip_count = 0
     checked_count = 0
 
     for msg_stub in messages:
-        msg_id = msg_stub.get("id")
-        if not msg_id:
+        msg_id = str(msg_stub.get("id") or "").strip()
+        if not msg_id or msg_id in seen_ids:
+            continue
+        stub_sender = str(msg_stub.get("sender") or "").strip()
+        stub_subject = str(msg_stub.get("subject") or "").strip()
+        if stub_sender and not classify_vip_sender(stub_sender, stub_subject).get("is_vip"):
+            checked_count += 1
             continue
         checked_count += 1
         full_email = adapter.read_email(msg_id)
-        if not is_vip_sender(full_email.get("sender", "")):
+        if not classify_vip_sender(full_email.get("sender", ""), full_email.get("subject", "")).get("is_vip"):
             continue
         res = process_incoming_email(
             full_email,
@@ -371,6 +384,7 @@ def run_vip_triage_cycle(
         )
         if res.get("processed") and res.get("is_vip"):
             vip_count += 1
+            seen_ids.add(msg_id)
 
     return {
         "checked": checked_count,

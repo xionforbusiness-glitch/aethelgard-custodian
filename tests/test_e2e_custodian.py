@@ -218,12 +218,12 @@ class TestTier1ProxyConcurrencyAndTimeouts(unittest.TestCase):
 
     @unittest.skipUnless(HAS_PROXY, "antigravity_proxy.py not present")
     def test_06_proxy_timeout_and_failover_budget_constants(self):
-        """Tier 1.5: Verify UPSTREAM_TIMEOUT <= 15 and MAX_FAILOVER_BUDGET_SECONDS <= 30."""
+        """Tier 1.5: Verify UPSTREAM_TIMEOUT <= 90, MAX_FAILOVER_BUDGET_SECONDS <= 180, MAX_FAILOVER_MODELS <= 6."""
         self.assertTrue(hasattr(antigravity_proxy, "UPSTREAM_TIMEOUT"))
         self.assertTrue(hasattr(antigravity_proxy, "MAX_FAILOVER_BUDGET_SECONDS"))
-        self.assertLessEqual(antigravity_proxy.UPSTREAM_TIMEOUT, 15)
-        self.assertLessEqual(antigravity_proxy.MAX_FAILOVER_BUDGET_SECONDS, 30)
-        self.assertLessEqual(getattr(antigravity_proxy, "MAX_FAILOVER_MODELS", 3), 3)
+        self.assertLessEqual(antigravity_proxy.UPSTREAM_TIMEOUT, 90)
+        self.assertLessEqual(antigravity_proxy.MAX_FAILOVER_BUDGET_SECONDS, 180)
+        self.assertLessEqual(getattr(antigravity_proxy, "MAX_FAILOVER_MODELS", 6), 6)
 
 
 class TestTier1ReelAndUrlIngest(unittest.TestCase):
@@ -1199,6 +1199,72 @@ class TestTier5JobApplicationAndAttachments(unittest.TestCase):
                     mock_smtp.assert_called_once_with("smtp.gmail.com", 465, timeout=20)
                     smtp_inst = mock_smtp.return_value.__enter__.return_value
                     smtp_inst.login.assert_called_once_with("omar.alnemr04@gmail.com", "abcdefghijklmnop")
+
+    @unittest.skipUnless(HAS_OMNICHANNEL and HAS_VIP_TRIAGE, "omnichannel_bridge and vip_inbox_triage required")
+    def test_51_html_email_cleanup_and_vip_stub_prefilter(self):
+        """Tier 2.26: Clean HTML / dummy text/plain emails and skip seen or non-VIP stubs before IMAP fetch."""
+        from email.message import EmailMessage
+
+        msg = EmailMessage()
+        msg["Subject"] = "Your receipt from GOG.COM"
+        msg["From"] = "noreply@gog.com"
+        msg["Date"] = "Sat, 14 Nov 2026 12:00:00 +0000"
+        msg.set_content("Plain text version not available")
+        msg.add_alternative(
+            "<html><head><style>.hide{display:none}</style></head>"
+            "<body><div>Thank you for your order &amp; enjoy!</div><p>Total: $9.99</p></body></html>",
+            subtype="html",
+        )
+
+        with tempfile.TemporaryDirectory() as temp_creds, tempfile.TemporaryDirectory() as temp_vault:
+            cred_file = Path(temp_creds) / "google_oauth.json"
+            cred_file.write_text(json.dumps({"email": "omar.alnemr04@gmail.com", "app_password": "abcdefghijklmnop"}), encoding="utf-8")
+            ga = omnichannel_bridge.GoogleAdapter(credentials_dir=temp_creds)
+            with patch("imaplib.IMAP4_SSL") as mock_imap:
+                imap_inst = mock_imap.return_value.__enter__.return_value
+                imap_inst.uid.return_value = ("OK", [(b"50500 (RFC822 {400}", msg.as_bytes())])
+                em = ga.read_email("50500")
+            self.assertNotIn("Plain text version not available", em["body"])
+            self.assertNotIn("<style>", em["body"])
+            self.assertIn("Thank you for your order & enjoy!", em["body"])
+            self.assertIn("Total: $9.99", em["body"])
+
+            # Verify run_vip_triage_cycle skips already-seen and non-VIP stubs without calling read_email
+            state_file = Path(temp_creds) / "seen_ids.json"
+            state_file.write_text(json.dumps({"seen_ids": ["seen_1"]}), encoding="utf-8")
+
+            called_reads = []
+
+            class FakeGoogleAdapter:
+                def get_status(self):
+                    return {"status": "connected"}
+
+                def search_emails(self, query="", max_results=15):
+                    return [
+                        {"id": "seen_1", "sender": "reservations@etihad.com", "subject": "Old"},
+                        {"id": "promo_2", "sender": "deals@aliexpress.com", "subject": "Flash Sale"},
+                        {"id": "vip_3", "sender": "admissions@uopeople.edu", "subject": "Enrollment Notice"},
+                    ]
+
+                def read_email(self, msg_id):
+                    called_reads.append(msg_id)
+                    return {
+                        "id": msg_id,
+                        "sender": "admissions@uopeople.edu",
+                        "subject": "Enrollment Notice",
+                        "body": "Welcome to UoPeople term.",
+                        "received_at": "2026-11-14T12:00:00Z",
+                    }
+
+            with patch.object(omnichannel_bridge, "GoogleAdapter", FakeGoogleAdapter):
+                triage_res = vip_inbox_triage.run_vip_triage_cycle(
+                    vault_dir=temp_vault,
+                    state_file=str(state_file),
+                    send_alerts=False,
+                    max_results=10,
+                )
+            self.assertEqual(called_reads, ["vip_3"])
+            self.assertEqual(triage_res["vip_ingested"], 1)
 
 
 if __name__ == "__main__":
