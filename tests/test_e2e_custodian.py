@@ -1159,6 +1159,47 @@ class TestTier5JobApplicationAndAttachments(unittest.TestCase):
         self.assertIn("omar.alnemr04@gmail.com", soul_text)
         self.assertTrue((REPO_ROOT / "profile" / "skills" / "omnichannel" / "job-application" / "SKILL.md").is_file())
 
+    def test_50_connect_wizard_app_password_and_imap_fallback(self):
+        with tempfile.TemporaryDirectory() as temp_creds, tempfile.TemporaryDirectory() as temp_drafts:
+            with patch.dict(os.environ, {"AETHELGARD_CREDENTIALS_DIR": temp_creds}), \
+                 patch("approval_gatekeeper.get_drafts_dir", return_value=Path(temp_drafts)):
+                reply = connect_wizard.handle_connect_command("/connect google abcd efgh ijkl mnop")
+                self.assertIn("App Password", reply)
+
+                token_path = Path(temp_creds) / "google_oauth.json"
+                self.assertTrue(token_path.is_file())
+                saved = json.loads(token_path.read_text(encoding="utf-8"))
+                self.assertEqual(saved["email"], "omar.alnemr04@gmail.com")
+                self.assertEqual(saved["app_password"], "abcdefghijklmnop")
+                self.assertNotIn("access_token", saved)
+
+                ga = omnichannel_bridge.GoogleAdapter(credentials_dir=temp_creds)
+
+                # Verify IMAP4_SSL search path for App Password credentials
+                with patch("imaplib.IMAP4_SSL") as mock_imap:
+                    imap_inst = mock_imap.return_value.__enter__.return_value
+                    imap_inst.uid.side_effect = [
+                        ("OK", [b"42"]),
+                        ("OK", [(b"42 (BODY[HEADER.FIELDS (FROM SUBJECT DATE)] {60}", b"From: ops@etihad.com\r\nSubject: Etihad Roster Update\r\nDate: Fri, 14 Nov 2026 10:00:00 +0000\r\n")]),
+                    ]
+                    found = ga.search_emails("Etihad", max_results=5)
+                    mock_imap.assert_called_once_with("imap.gmail.com", 993)
+                    imap_inst.login.assert_called_once_with("omar.alnemr04@gmail.com", "abcdefghijklmnop")
+                    self.assertEqual(len(found), 1)
+                    self.assertEqual(found[0]["id"], "42")
+                    self.assertEqual(found[0]["subject"], "Etihad Roster Update")
+
+                # Verify SMTP_SSL send path for App Password credentials
+                d = ga.stage_email("hr@airline.example", "Follow Up", "Checking status.")
+                approval_gatekeeper.approve_draft(d["draft_id"], execute=False)
+                with patch("smtplib.SMTP_SSL") as mock_smtp:
+                    out = ga.send_email_approved(d["draft_id"])
+                    self.assertTrue(out["success"])
+                    self.assertEqual(out.get("transport"), "smtp_ssl")
+                    mock_smtp.assert_called_once_with("smtp.gmail.com", 465, timeout=20)
+                    smtp_inst = mock_smtp.return_value.__enter__.return_value
+                    smtp_inst.login.assert_called_once_with("omar.alnemr04@gmail.com", "abcdefghijklmnop")
+
 
 if __name__ == "__main__":
     unittest.main()

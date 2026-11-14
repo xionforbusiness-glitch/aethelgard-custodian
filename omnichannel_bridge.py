@@ -31,9 +31,11 @@ import datetime
 import urllib.parse
 import urllib.request
 import urllib.error
+from email import policy
 from email.message import EmailMessage
+from email.parser import BytesParser
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import approval_gatekeeper
 
@@ -220,9 +222,136 @@ class GoogleAdapter:
         except Exception as e:
             return {"error": str(e), "messages": []}
 
+    def _has_oauth_and_app_pw(self) -> Tuple[bool, str, str]:
+        """Returns (has_oauth, sender_email, clean_app_password)."""
+        creds = self._get_creds()
+        has_oauth = bool(creds.get("access_token") or creds.get("refresh_token"))
+        sender_email = creds.get("email") or os.environ.get("GMAIL_ADDRESS", "omar.alnemr04@gmail.com")
+        raw_pw = creds.get("app_password") or os.environ.get("GMAIL_APP_PASSWORD", "")
+        app_pw = str(raw_pw).replace(" ", "").strip()
+        return has_oauth, sender_email, app_pw
+
+    def _imap_search_emails(self, query: str = "", max_results: int = 10) -> List[Dict[str, Any]]:
+        """Searches Gmail INBOX via IMAP4_SSL using App Password credentials."""
+        _, sender_email, app_pw = self._has_oauth_and_app_pw()
+        if not app_pw:
+            return []
+        results: List[Dict[str, Any]] = []
+        with imaplib.IMAP4_SSL("imap.gmail.com", 993) as imap:
+            imap.login(sender_email, app_pw)
+            imap.select("INBOX", readonly=True)
+            uid_bytes = b""
+            clean_q = (query or "").strip()
+            if clean_q:
+                try:
+                    escaped_q = clean_q.replace('"', '\\"')
+                    status, data = imap.uid("search", None, "X-GM-RAW", f'"{escaped_q}"')
+                    if status == "OK" and data and data[0]:
+                        uid_bytes = data[0]
+                except Exception:
+                    uid_bytes = b""
+            if not uid_bytes:
+                status, data = imap.uid("search", None, "ALL")
+                if status == "OK" and data and data[0]:
+                    uid_bytes = data[0]
+
+            uids = uid_bytes.split()[-max_results:][::-1]
+            for uid in uids:
+                uid_str = uid.decode("ascii", errors="ignore")
+                try:
+                    f_status, f_data = imap.uid("fetch", uid, "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])")
+                    raw_hdr = b""
+                    if f_status == "OK" and f_data:
+                        for item in f_data:
+                            if isinstance(item, tuple) and len(item) >= 2 and isinstance(item[1], (bytes, bytearray)):
+                                raw_hdr = bytes(item[1])
+                                break
+                    parsed = BytesParser(policy=policy.default).parsebytes(raw_hdr) if raw_hdr else None
+                    subject = str(parsed.get("Subject", "(No Subject)")) if parsed else "(No Subject)"
+                    sender = str(parsed.get("From", "unknown@example.com")) if parsed else "unknown@example.com"
+                    date_str = str(parsed.get("Date", "")) if parsed else ""
+                    results.append({
+                        "id": uid_str,
+                        "sender": sender,
+                        "subject": subject,
+                        "received_at": date_str,
+                        "snippet": f"{subject} — {sender}",
+                    })
+                except Exception:
+                    continue
+        return results
+
+    def _imap_read_email(self, msg_id: str, max_body_chars: int = MAX_EMAIL_BODY_CHARS) -> Dict[str, Any]:
+        """Reads a single Gmail message by UID via IMAP4_SSL using App Password credentials."""
+        _, sender_email, app_pw = self._has_oauth_and_app_pw()
+        if not app_pw:
+            return {"id": msg_id, "body": "", "subject": "", "sender": ""}
+        raw_bytes = b""
+        with imaplib.IMAP4_SSL("imap.gmail.com", 993) as imap:
+            imap.login(sender_email, app_pw)
+            imap.select("INBOX", readonly=True)
+            status, data = imap.uid("fetch", str(msg_id), "(RFC822)")
+            if status == "OK" and data:
+                for item in data:
+                    if isinstance(item, tuple) and len(item) >= 2 and isinstance(item[1], (bytes, bytearray)):
+                        raw_bytes = bytes(item[1])
+                        break
+        if not raw_bytes:
+            return {"id": str(msg_id), "threadId": "", "sender": "", "subject": "", "received_at": "", "snippet": "", "body": "", "truncated": False}
+
+        parsed = BytesParser(policy=policy.default).parsebytes(raw_bytes)
+        subject = str(parsed.get("Subject", "(No Subject)"))
+        sender = str(parsed.get("From", "unknown@example.com"))
+        date_str = str(parsed.get("Date", ""))
+
+        body_text = ""
+        if parsed.is_multipart():
+            for part in parsed.walk():
+                if part.get_content_maintype() == "text" and part.get_content_subtype() == "plain" and not part.get_filename():
+                    try:
+                        body_text = str(part.get_content())
+                        break
+                    except Exception:
+                        pass
+            if not body_text:
+                for part in parsed.walk():
+                    if part.get_content_maintype() == "text" and not part.get_filename():
+                        try:
+                            body_text = str(part.get_content())
+                            break
+                        except Exception:
+                            pass
+        else:
+            try:
+                body_text = str(parsed.get_content())
+            except Exception:
+                body_text = ""
+
+        truncated = False
+        if len(body_text) > max_body_chars:
+            body_text = body_text[:max_body_chars]
+            truncated = True
+
+        return {
+            "id": str(msg_id),
+            "threadId": "",
+            "sender": sender,
+            "subject": subject,
+            "received_at": date_str,
+            "snippet": body_text[:240],
+            "body": body_text,
+            "truncated": truncated,
+        }
+
     def search_emails(self, query: str = "", max_results: int = 10) -> List[Dict[str, Any]]:
-        """Searches Gmail messages matching the query without launching any browser."""
+        """Searches Gmail messages via REST API or IMAP4_SSL App Password fallback without launching any browser."""
+        has_oauth, _, app_pw = self._has_oauth_and_app_pw()
+        if app_pw and not has_oauth:
+            return self._imap_search_emails(query=query, max_results=max_results)
+
         res = self._execute_api_call("messages", params={"q": query, "maxResults": max_results})
+        if isinstance(res, dict) and (res.get("status") == "needs_auth" or "error" in res) and app_pw:
+            return self._imap_search_emails(query=query, max_results=max_results)
         if isinstance(res, list):
             return res[:max_results]
         if isinstance(res, dict):
@@ -233,9 +362,16 @@ class GoogleAdapter:
 
     def read_email(self, msg_id: str, max_body_chars: int = MAX_EMAIL_BODY_CHARS) -> Dict[str, Any]:
         """
-        Fetches a single email by ID and safely truncates large bodies to protect the 1GB VM RAM.
+        Fetches a single email by ID (REST API or IMAP4_SSL fallback) and safely truncates
+        large bodies to protect the 1GB VM RAM.
         """
+        has_oauth, _, app_pw = self._has_oauth_and_app_pw()
+        if app_pw and not has_oauth:
+            return self._imap_read_email(msg_id, max_body_chars=max_body_chars)
+
         raw = self._execute_api_call(f"messages/{msg_id}", params={"format": "full"})
+        if isinstance(raw, dict) and (raw.get("status") == "needs_auth" or "error" in raw) and app_pw:
+            return self._imap_read_email(msg_id, max_body_chars=max_body_chars)
         if not isinstance(raw, dict):
             return {"id": msg_id, "body": "", "subject": "", "sender": ""}
 
@@ -339,8 +475,7 @@ class GoogleAdapter:
         subject = draft.get("subject") or meta.get("subject", "Message from Omar Elnemr")
         body = draft["content"]
 
-        creds = self._get_creds()
-        sender_email = creds.get("email") or os.environ.get("GMAIL_ADDRESS", "omar.alnemr04@gmail.com")
+        has_oauth, sender_email, app_pw = self._has_oauth_and_app_pw()
 
         msg = EmailMessage()
         msg["From"] = sender_email
@@ -368,9 +503,6 @@ class GoogleAdapter:
                     )
                 attached_files.append(str(att_p))
 
-        has_oauth = bool(creds.get("access_token") or creds.get("refresh_token"))
-        app_pw = creds.get("app_password") or os.environ.get("GMAIL_APP_PASSWORD")
-
         def _send_via_smtp(transport_label: str) -> Dict[str, Any]:
             with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=20) as server:
                 server.login(sender_email, app_pw)
@@ -391,7 +523,7 @@ class GoogleAdapter:
 
         raw_b64 = base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii")
         api_res = self._execute_api_call("messages/send", method="POST", payload={"raw": raw_b64})
-        if isinstance(api_res, dict) and api_res.get("status") == "needs_auth" and app_pw:
+        if isinstance(api_res, dict) and (api_res.get("status") == "needs_auth" or "error" in api_res) and app_pw:
             return _send_via_smtp("smtp_ssl_fallback")
 
         return {

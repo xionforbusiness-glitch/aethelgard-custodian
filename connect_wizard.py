@@ -96,9 +96,15 @@ def handle_connect_command(command_text: str, chat_id: Optional[str] = None) -> 
                     token_file.write_text(json.dumps(parsed, indent=2), encoding="utf-8")
                     return "✅ *Google Account Connected!* OAuth token saved to `~/.aethelgard/credentials/google_oauth.json`."
             except Exception:
-                payload = {"app_password": arg, "access_token": arg}
+                clean_arg = arg.replace(" ", "").strip()
+                if arg.strip().startswith("ya29.") or len(clean_arg) > 32:
+                    payload = {"email": "omar.alnemr04@gmail.com", "access_token": arg.strip()}
+                    kind = "OAuth token"
+                else:
+                    payload = {"email": "omar.alnemr04@gmail.com", "app_password": clean_arg}
+                    kind = "Gmail App Password"
                 token_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-                return "✅ *Google Account Credential Saved!* Token stored in `~/.aethelgard/credentials/google_oauth.json`."
+                return f"✅ *Google Account Credential Saved!* {kind} stored in `~/.aethelgard/credentials/google_oauth.json`."
 
         if token_file.exists():
             try:
