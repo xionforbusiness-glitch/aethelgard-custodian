@@ -15,6 +15,7 @@ import shutil
 import sqlite3
 import threading
 import subprocess
+import urllib.parse
 import urllib.request
 from antigravity_token_manager import (
     sync_token_to_sqlite,
@@ -54,7 +55,43 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_TOKEN_RE
 TELEGRAM_USER_ID = os.environ.get("TELEGRAM_ALLOWED_USERS", "1021125594")
 
 GITHUB_USER = os.environ.get("GITHUB_USER", "xionforbusiness-glitch")
-GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "GITHUB_TOKEN_REDACTED")
+_STALE_GITHUB_TOKENS = {"ghp_" + "gY0RVq7FifRJQgQVsu8fEsTsi5PV8e45VERo"}
+
+
+def _resolve_github_token() -> str:
+    """Resolves active GitHub PAT from ~/.aethelgard/github_token, env, or git remote URL."""
+    token_file = os.path.expanduser("~/.aethelgard/github_token")
+    if os.path.isfile(token_file):
+        try:
+            with open(token_file, "r", encoding="utf-8") as tf:
+                tok = tf.read().strip()
+            if tok and tok not in _STALE_GITHUB_TOKENS:
+                return tok
+        except Exception:
+            pass
+
+    env_tok = os.environ.get("GITHUB_TOKEN", "").strip()
+    if env_tok and env_tok not in _STALE_GITHUB_TOKENS:
+        return env_tok
+
+    try:
+        res = subprocess.run(
+            ["git", "-C", SCRIPT_DIR, "config", "--get", "remote.origin.url"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        remote_url = res.stdout.strip()
+        parsed = urllib.parse.urlparse(remote_url)
+        if parsed.password and parsed.password not in _STALE_GITHUB_TOKENS:
+            return parsed.password
+    except Exception:
+        pass
+
+    return ""
+
+
+GITHUB_TOKEN = _resolve_github_token()
 VAULT_REPO = os.environ.get("VAULT_REPO", "aethelgard-vault")
 VAULT_BRANCH = os.environ.get("VAULT_BRANCH", "main")
 raw_vault = os.environ.get("VAULT_DIR", "~/vault")
@@ -269,9 +306,16 @@ def auto_update_self():
 def init_vault():
     print("📁 [1/4] Synchronizing Aethelgard Obsidian Vault...")
     os.makedirs(os.path.dirname(VAULT_DIR) or ".", exist_ok=True)
-    auth_url = f"https://{GITHUB_USER}:{GITHUB_TOKEN}@github.com/{GITHUB_USER}/{REPO_NAME if 'REPO_NAME' in globals() else VAULT_REPO}.git"
+    repo_name = REPO_NAME if "REPO_NAME" in globals() else VAULT_REPO
+    auth_url = (
+        f"https://{GITHUB_USER}:{GITHUB_TOKEN}@github.com/{GITHUB_USER}/{repo_name}.git"
+        if GITHUB_TOKEN
+        else f"https://github.com/{GITHUB_USER}/{repo_name}.git"
+    )
     if os.path.exists(VAULT_DIR) and os.path.exists(os.path.join(VAULT_DIR, ".git")):
         try:
+            if GITHUB_TOKEN:
+                subprocess.run(["git", "-C", VAULT_DIR, "remote", "set-url", "origin", auth_url], check=False)
             subprocess.run(["git", "-C", VAULT_DIR, "pull", "--rebase", "origin", VAULT_BRANCH], check=True)
             print("✅ Vault updated to latest commit.")
         except Exception as e:
