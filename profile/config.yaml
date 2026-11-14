@@ -75,7 +75,6 @@ agent:
   disabled_toolsets:
     - browser
     - computer_use
-    - video
     - video_gen
     - image_gen
     - delegation
@@ -93,6 +92,7 @@ platform_toolsets:
     - file
     - code_execution
     - web
+    - video
     - skills
     - memory
     - clarify

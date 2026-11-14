@@ -24,6 +24,13 @@ def handle(event_type, context):
         if script_dir not in sys.path:
             sys.path.insert(0, script_dir)
 
+        # Apply typing indicator lifecycle patches on startup if available
+        try:
+            import gateway_typing_patch
+            gateway_typing_patch.apply_typing_lifecycle_patches()
+        except Exception:
+            pass
+
         import shift_tracker
 
         vault_dir = os.environ.get("VAULT_DIR", os.path.expanduser("~/vault"))
@@ -31,7 +38,8 @@ def handle(event_type, context):
         allowed_user = os.environ.get("TELEGRAM_ALLOWED_USERS", "1021125594")
 
         if event_type == "agent:start":
-            msg = str(context.get("message", "")).strip().lower()
+            raw_msg = str(context.get("message", "")).strip()
+            msg = raw_msg.lower()
             chat_id = str(context.get("chat_id") or allowed_user)
 
             # 1. Mark shift ON on user reply
@@ -47,7 +55,41 @@ def handle(event_type, context):
                 print(f"[Hook] 📊 Explicit Excel request '{msg}'. Delivering document to Telegram...", flush=True)
                 shift_tracker.send_excel_to_telegram(chat_id=chat_id, token=token, vault_dir=vault_dir)
 
-            # 3. Immediate restart command if requested
+            # 3. Omnichannel /connect Wizard Interception
+            if msg == "/connect" or msg.startswith("/connect "):
+                try:
+                    import connect_wizard
+                    from proactive_scheduler import send_telegram
+                    reply_text = connect_wizard.handle_connect_command(raw_msg, chat_id=chat_id)
+                    send_telegram(reply_text, chat_id=chat_id, token=token)
+                except Exception as ce:
+                    print(f"⚠ [Hook /connect Notice] {ce}", flush=True)
+
+            # 4. Strict Two-Phase Outbound Approval Gatekeeper Interception
+            try:
+                import approval_gatekeeper
+                approval_res = approval_gatekeeper.handle_approval_reply(raw_msg)
+                if approval_res is not None:
+                    from proactive_scheduler import send_telegram
+                    d_id = approval_res.get("draft_id", "")
+                    st = approval_res.get("status", "")
+                    plat = str(approval_res.get("platform", "")).upper()
+                    if st == "approved" and approval_res.get("success"):
+                        send_telegram(
+                            f"✅ *Authorized & Dispatched!*\n• *Draft ID:* `{d_id}`\n• *Platform:* `{plat}`",
+                            chat_id=chat_id,
+                            token=token,
+                        )
+                    elif st == "rejected":
+                        send_telegram(
+                            f"❌ *Draft Discarded*\n• *Draft ID:* `{d_id}`\n• *Platform:* `{plat}`\n• Zero network packets transmitted.",
+                            chat_id=chat_id,
+                            token=token,
+                        )
+            except Exception as ae:
+                print(f"⚠ [Hook Approval Gatekeeper Notice] {ae}", flush=True)
+
+            # 5. Immediate restart command if requested
             if msg in ("/restart", "/reboot"):
                 print("[Hook] 🔄 Emergency restart requested via Telegram message.", flush=True)
                 trigger_path = "/tmp/hermes_restart_requested" if os.name != "nt" else os.path.join(script_dir, "restart.trigger")

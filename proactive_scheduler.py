@@ -247,6 +247,7 @@ def proactive_scheduler_daemon(vault_dir):
     last_nightly_date = None
     last_weekly_date = None
     last_curiosity_hm = None
+    last_vip_triage_slot = None
 
     print(f"[{time.strftime('%H:%M:%S')}] ⏰ Full Proactive Autonomy Suite active (Damascus UTC+3)...")
 
@@ -303,6 +304,16 @@ def proactive_scheduler_daemon(vault_dir):
                     trigger_spontaneous_ping(vault_dir, force=False)
                 except Exception as ce:
                     pass
+
+            # 7. Proactive VIP Inbox Triage & Vault Auto-Ingest (Every 5 minutes)
+            current_vip_slot = (today_str, hour, minute // 5)
+            if current_vip_slot != last_vip_triage_slot:
+                last_vip_triage_slot = current_vip_slot
+                try:
+                    from vip_inbox_triage import run_vip_triage_cycle
+                    run_vip_triage_cycle(vault_dir=vault_dir, send_alerts=True)
+                except Exception as ve:
+                    print(f"⚠ VIP Inbox Triage notice: {ve}")
 
         except Exception as e:
             print(f"⚠ Proactive Scheduler notice: {e}")

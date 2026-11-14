@@ -12,7 +12,7 @@ import base64
 import asyncio
 import datetime
 import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
 
 try:
     import websockets
@@ -125,8 +125,9 @@ class CallHttpHandler(BaseHTTPRequestHandler):
 
 
 def start_http_server():
-    """Runs lightweight HTTP server on daemon thread."""
-    server = HTTPServer(("0.0.0.0", HTTP_PORT), CallHttpHandler)
+    """Runs lightweight Threading HTTP server on daemon thread."""
+    ThreadingHTTPServer.allow_reuse_address = True
+    server = ThreadingHTTPServer(("0.0.0.0", HTTP_PORT), CallHttpHandler)
     print(f"📞 Live Voice Call Web UI listening on http://0.0.0.0:{HTTP_PORT}/call")
     server.serve_forever()
 

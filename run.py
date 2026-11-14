@@ -25,6 +25,10 @@ from antigravity_proxy import (
     start_antigravity_proxy_background,
     get_valid_access_token,
 )
+from gateway_typing_patch import (
+    apply_typing_lifecycle_patches,
+    patch_hermes_gateway_typing,
+)
 
 # Ensure UTF-8 stdout/stderr on all terminals
 if hasattr(sys.stdout, "reconfigure"):
@@ -345,6 +349,9 @@ def init_omniroute():
 # ── 4. Configure Hermes Agent Profile ─────────────────────────────────────────
 def init_hermes():
     print(f"\n⚙️ [3/4] Configuring Hermes Profile '{HERMES_PROFILE}'...")
+    # Apply Hermes typing lifecycle hotfix & proxy hardening
+    patch_results = patch_hermes_gateway_typing()
+    print(f"⚡ [Hotfix 1] Applied Hermes Gateway typing lifecycle patches: {patch_results}", flush=True)
     os.makedirs(HERMES_PROFILE_DIR, exist_ok=True)
 
     # Sync config.yaml, SOUL.md & skills
@@ -375,6 +382,14 @@ def init_hermes():
                     if os.path.exists(h_d):
                         shutil.rmtree(h_d, ignore_errors=True)
                     shutil.copytree(h_s, h_d)
+
+    # Sync career assets (CVs & Etihad certificates) to ~/.aethelgard/career_assets/
+    assets_src = os.path.join(SCRIPT_DIR, "profile", "career_assets")
+    if os.path.exists(assets_src):
+        assets_dest = os.path.expanduser("~/.aethelgard/career_assets")
+        if os.path.exists(assets_dest):
+            shutil.rmtree(assets_dest, ignore_errors=True)
+        shutil.copytree(assets_src, assets_dest)
 
     # Purge stale caches (remove any auto/best-coding leaks)
     for cache_f in ["provider_models_cache.json", "context_length_cache.yaml"]:
@@ -695,6 +710,14 @@ def run_gateway_forever():
         print(f"⚠ Live Call Server startup notice: {ce}")
 
     send_telegram_startup()
+
+    # Apply typing lifecycle patches and ensure PYTHONPATH includes SCRIPT_DIR
+    patch_hermes_gateway_typing()
+    cur_pythonpath = os.environ.get("PYTHONPATH", "")
+    pythonpath_parts = cur_pythonpath.split(os.pathsep) if cur_pythonpath else []
+    if SCRIPT_DIR not in pythonpath_parts:
+        pythonpath_parts.insert(0, SCRIPT_DIR)
+        os.environ["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
 
     cmd = ["hermes", "-p", HERMES_PROFILE, "gateway", "run", "--replace", "--force", "--accept-hooks"]
 

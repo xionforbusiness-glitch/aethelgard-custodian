@@ -42,6 +42,11 @@ UPSTREAM_URLS = [
     "https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
 ]
 
+UPSTREAM_TIMEOUT = int(os.environ.get("ANTIGRAVITY_UPSTREAM_TIMEOUT", "12"))
+MAX_FAILOVER_BUDGET_SECONDS = int(os.environ.get("ANTIGRAVITY_FAILOVER_BUDGET", "30"))
+MAX_FAILOVER_MODELS = int(os.environ.get("ANTIGRAVITY_MAX_FAILOVER_MODELS", "3"))
+
+
 ANTIGRAVITY_DEFAULT_SYSTEM = (
     "You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.\n"
     "You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.\n"
@@ -487,7 +492,7 @@ def execute_antigravity_request(body: dict, requested_model: str) -> dict:
         "usage": dict,
       }
     """
-    chain = build_failover_chain(requested_model)
+    chain = build_failover_chain(requested_model)[:MAX_FAILOVER_MODELS]
     token = get_valid_access_token(force_refresh=False)
     if not token:
         token = get_valid_access_token(force_refresh=True)
@@ -496,15 +501,25 @@ def execute_antigravity_request(body: dict, requested_model: str) -> dict:
 
     last_error = "Unknown upstream error"
     last_status = 503
+    start_time = time.monotonic()
 
     for candidate_model in chain:
+        if time.monotonic() - start_time > MAX_FAILOVER_BUDGET_SECONDS:
+            last_error = f"Failover budget ({MAX_FAILOVER_BUDGET_SECONDS}s) exceeded"
+            break
         # Try with tools first; if upstream returns 400 on tool schema, retry once with textual tool fallback
         tool_attempts = [True, False] if body.get("tools") else [False]
         for include_tools in tool_attempts:
+            if time.monotonic() - start_time > MAX_FAILOVER_BUDGET_SECONDS:
+                last_error = f"Failover budget ({MAX_FAILOVER_BUDGET_SECONDS}s) exceeded"
+                break
             envelope = build_antigravity_envelope(body, candidate_model, include_tools=include_tools)
             payload_bytes = json.dumps(envelope).encode("utf-8")
 
             for url_idx, upstream_url in enumerate(UPSTREAM_URLS):
+                if time.monotonic() - start_time > MAX_FAILOVER_BUDGET_SECONDS:
+                    last_error = f"Failover budget ({MAX_FAILOVER_BUDGET_SECONDS}s) exceeded"
+                    break
                 headers = {
                     "Content-Type": "application/json",
                     "Accept": "text/event-stream",
@@ -513,7 +528,7 @@ def execute_antigravity_request(body: dict, requested_model: str) -> dict:
                 }
                 req = urllib.request.Request(upstream_url, data=payload_bytes, headers=headers)
                 try:
-                    with urllib.request.urlopen(req, timeout=90) as resp:
+                    with urllib.request.urlopen(req, timeout=UPSTREAM_TIMEOUT) as resp:
                         raw_sse = resp.read().decode("utf-8", errors="replace")
 
                     text_chunks = []
