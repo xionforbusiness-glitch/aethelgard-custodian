@@ -270,7 +270,11 @@ def _find_poisoned_session_ids(cur, has_sessions: bool, has_messages: bool, has_
                 "OR content LIKE '%never receives the actual Gmail%' "
                 "OR content LIKE '%stay on your local PC%' "
                 "OR content LIKE '%The model provider failed after retries%' "
-                "OR content LIKE '%Your request was not processed. Send it again%';"
+                "OR content LIKE '%Your request was not processed. Send it again%' "
+                "OR content LIKE '%thinking through how to approach%' "
+                "OR content LIKE '%Initial attempt to use terminal%' "
+                "OR content LIKE '%executed via a code execution tool%' "
+                "OR content LIKE '%Gemini 3.5 Flash is no longer available%';"
             )
             for r in cur.fetchall():
                 if r[0]:
@@ -856,6 +860,11 @@ def init_hermes():
             ["hermes", "-p", HERMES_PROFILE, "config", "set", "slash_commands.confirm_reset", "false"],
             ["hermes", "-p", HERMES_PROFILE, "config", "set", "compression.enabled", "false"],
             ["hermes", "-p", HERMES_PROFILE, "config", "set", "stt.provider", "local_command"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "agent.intent_ack_continuation", "true"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "agent.tool_use_enforcement", "true"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "agent.execution_guidance", "true"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "agent.stall_guards", "true"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "agent.api_max_retries", "2"],
             ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.flash", "antigravity/gemini-3.8-flash-low"],
             ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.flash-low", "antigravity/gemini-3.8-flash-low"],
             ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.gemini", "antigravity/gemini-3.8-flash-low"],

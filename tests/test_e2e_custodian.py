@@ -1650,6 +1650,206 @@ class TestTier5JobApplicationAndAttachments(unittest.TestCase):
             self.assertEqual(restored_google["app_password"], "abcd efgh ijkl mnop")
             self.assertEqual(restored_li["li_at"], "li_at_token_123")
 
+    @unittest.skipUnless(HAS_PROXY, "antigravity_proxy.py not present")
+    def test_55_thought_leak_prevention_and_stall_hardening(self):
+        """Tier 2.28: Prevent Gemini thought leaks, zero-action planning stubs, and stale VM stall sessions."""
+        import io
+        import sqlite3
+        import urllib.error
+        import yaml
+        import run as custodian_run
+
+        class _SSEBytesResp(io.BytesIO):
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        def _sse_payload(*events) -> bytes:
+            lines = [f"data: {json.dumps(ev)}\n\n" for ev in events] + ["data: [DONE]\n\n"]
+            return "".join(lines).encode("utf-8")
+
+        tools_spec = [{
+            "type": "function",
+            "function": {
+                "name": "terminal",
+                "description": "Run shell command",
+                "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]},
+            },
+        }]
+        base_body = {"messages": [{"role": "user", "content": "Check my latest 3 emails in Gmail"}], "tools": tools_spec}
+
+        # 1. Thought-only stream must NEVER leak into visible text; must retry without thinkingConfig & return functionCall
+        seen_envelopes = []
+        thought_only_sse = _sse_payload({
+            "response": {
+                "candidates": [{"content": {"parts": [{"thought": True, "text": "I'm thinking through how to approach this."}]}}],
+            }
+        })
+        valid_fc_sse = _sse_payload({
+            "response": {
+                "candidates": [{
+                    "finishReason": "STOP",
+                    "content": {"parts": [{"functionCall": {"name": "terminal", "args": {"command": "python omnichannel_bridge.py google --latest 3"}}}]},
+                }]
+            }
+        })
+
+        def _mock_urlopen_thought(req, timeout=45):
+            seen_envelopes.append(json.loads(req.data.decode("utf-8")))
+            if len(seen_envelopes) == 1:
+                return _SSEBytesResp(thought_only_sse)
+            return _SSEBytesResp(valid_fc_sse)
+
+        with patch("antigravity_proxy.get_valid_access_token", return_value="tok_test"), \
+             patch("urllib.request.urlopen", side_effect=_mock_urlopen_thought):
+            res = antigravity_proxy.execute_antigravity_request(base_body, "gemini-3.8-flash-low")
+
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["text"], "")
+        self.assertEqual(len(res["tool_calls"]), 1)
+        self.assertEqual(res["tool_calls"][0]["function"]["name"], "terminal")
+        self.assertFalse(seen_envelopes[0]["request"]["generationConfig"]["thinkingConfig"]["includeThoughts"])
+        self.assertNotIn("thinkingConfig", seen_envelopes[1]["request"]["generationConfig"])
+
+        # 2. Planning narration stub & pure-thought leak must fail over to next model (keeping tools intact)
+        failover_models_called = []
+        narration_sse = _sse_payload({
+            "response": {
+                "candidates": [{
+                    "finishReason": "STOP",
+                    "content": {"parts": [{"text": "Initial attempt to use terminal directly with yt-dlp. The approach shifts toward a Python script. The Python script will be written and executed via a code execution tool."}]},
+                }]
+            }
+        })
+        approach_sse = _sse_payload({
+            "response": {
+                "candidates": [{
+                    "finishReason": "STOP",
+                    "content": {"parts": [{"text": "I'm thinking through how to approach this."}]},
+                }]
+            }
+        })
+
+        def _mock_urlopen_narration(req, timeout=45):
+            env = json.loads(req.data.decode("utf-8"))
+            failover_models_called.append((env["model"], bool(env["request"].get("tools"))))
+            if len(failover_models_called) == 1:
+                return _SSEBytesResp(narration_sse)
+            if len(failover_models_called) == 2:
+                return _SSEBytesResp(approach_sse)
+            return _SSEBytesResp(valid_fc_sse)
+
+        with patch("antigravity_proxy.get_valid_access_token", return_value="tok_test"), \
+             patch("urllib.request.urlopen", side_effect=_mock_urlopen_narration):
+            res2 = antigravity_proxy.execute_antigravity_request(base_body, "gemini-3.8-flash-low")
+
+        self.assertTrue(res2["ok"])
+        self.assertEqual(res2["model"], "gemini-3.8-flash-medium")
+        self.assertEqual(len(res2["tool_calls"]), 1)
+        self.assertTrue(all(has_t for _, has_t in failover_models_called))
+
+        # 3. HTTP 400 on primary must try failover models WITH tools before falling back to include_tools=False
+        seen_400 = []
+
+        def _mock_urlopen_400(req, timeout=45):
+            env = json.loads(req.data.decode("utf-8"))
+            seen_400.append((env["model"], bool(env["request"].get("tools"))))
+            if env["model"] == "gemini-3.8-flash-low" and env["request"].get("tools"):
+                raise urllib.error.HTTPError(req.full_url, 400, "bad schema", {}, io.BytesIO(b"bad schema"))
+            return _SSEBytesResp(valid_fc_sse)
+
+        with patch("antigravity_proxy.get_valid_access_token", return_value="tok_test"), \
+             patch("urllib.request.urlopen", side_effect=_mock_urlopen_400):
+            res3 = antigravity_proxy.execute_antigravity_request(base_body, "gemini-3.8-flash-low")
+
+        self.assertTrue(res3["ok"])
+        self.assertEqual(res3["model"], "gemini-3.8-flash-medium")
+        self.assertEqual(seen_400[-1], ("gemini-3.8-flash-medium", True))
+
+        # 4. AntigravityGatewayHandler separates reasoning_content from content in JSON & SSE
+        def _invoke_handler(stream_flag: bool) -> bytes:
+            req_bytes = json.dumps({"model": "gemini-3.8-flash-low", "stream": stream_flag, "messages": [{"role": "user", "content": "hi"}]}).encode("utf-8")
+            handler = object.__new__(antigravity_proxy.AntigravityGatewayHandler)
+            handler.path = "/v1/chat/completions"
+            handler.request_version = "HTTP/1.1"
+            handler.headers = {"Content-Length": str(len(req_bytes))}
+            handler.rfile = io.BytesIO(req_bytes)
+            handler.wfile = io.BytesIO()
+            handler.send_response = lambda code, msg=None: None
+            handler.send_header = lambda k, v: None
+            handler.end_headers = lambda: None
+            with patch.object(
+                antigravity_proxy,
+                "execute_antigravity_request",
+                return_value={
+                    "ok": True,
+                    "model": "gemini-3.8-flash-low",
+                    "text": "Here are your 3 emails.",
+                    "reasoning": "Internal chain of thought.",
+                    "tool_calls": [],
+                    "finish_reason": "stop",
+                    "usage": {"prompt_tokens": 5, "completion_tokens": 4, "total_tokens": 9},
+                },
+            ):
+                handler.do_POST()
+            return handler.wfile.getvalue()
+
+        json_out = json.loads(_invoke_handler(False).decode("utf-8"))
+        self.assertEqual(json_out["choices"][0]["message"]["content"], "Here are your 3 emails.")
+        self.assertEqual(json_out["choices"][0]["message"]["reasoning_content"], "Internal chain of thought.")
+
+        sse_out = _invoke_handler(True).decode("utf-8")
+        self.assertIn('"reasoning_content": "Internal chain of thought."', sse_out)
+        self.assertIn('"content": "Here are your 3 emails."', sse_out)
+
+        # 4b. Inline <think>...</think> and truncated <think> blocks move to reasoning cleanly
+        vis1, rsn1 = antigravity_proxy._split_inline_think_blocks("<think>hidden</think>Visible answer", "")
+        self.assertEqual(vis1, "Visible answer")
+        self.assertEqual(rsn1, "hidden")
+        vis2, rsn2 = antigravity_proxy._split_inline_think_blocks("<think>half truncated", "prev")
+        self.assertEqual(vis2, "")
+        self.assertEqual(rsn2, "prev\nhalf truncated")
+
+        # 5. profile/config.yaml anti-stall flags & run.py state.db purge of thought-leak sessions
+        cfg = yaml.safe_load((REPO_ROOT / "profile" / "config.yaml").read_text(encoding="utf-8"))
+        self.assertTrue(cfg["agent"]["intent_ack_continuation"])
+        self.assertTrue(cfg["agent"]["tool_use_enforcement"])
+        self.assertTrue(cfg["agent"]["execution_guidance"])
+        self.assertLessEqual(cfg["agent"]["api_max_retries"], 2)
+        fb_models = [item["model"] for item in cfg.get("fallback_providers", [])]
+        self.assertNotIn("antigravity/gemini-3.5-flash-low", fb_models)
+
+        stall_samples = [
+            "I'm thinking through how to approach this.",
+            "Initial attempt to use terminal directly with yt-dlp for Facebook video metadata retrieval. The Python script will be written and executed via a code execution tool.",
+        ]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            fake_home = Path(tmp_dir) / ".hermes"
+            fake_profile = fake_home / "profiles" / "llm-wiki"
+            fake_profile.mkdir(parents=True, exist_ok=True)
+            db_path = fake_profile / "state.db"
+            conn = sqlite3.connect(str(db_path))
+            cur = conn.cursor()
+            cur.execute("CREATE TABLE system_prompts (hash TEXT PRIMARY KEY, prompt TEXT);")
+            cur.execute("INSERT INTO system_prompts VALUES ('h_ok', 'Prompt with omnichannel_bridge.py');")
+            cur.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, model TEXT, system_prompt TEXT, system_prompt_hash TEXT, tool_names TEXT);")
+            cur.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, role TEXT, content TEXT);")
+            for idx, txt in enumerate(stall_samples):
+                sid = f"sess_stall_{idx}"
+                cur.execute("INSERT INTO sessions VALUES (?, 'm', NULL, 'h_ok', '[\"terminal\"]');", (sid,))
+                cur.execute("INSERT INTO messages (session_id, role, content) VALUES (?, 'user', 'Check my latest 3 emails');", (sid,))
+                cur.execute("INSERT INTO messages (session_id, role, content) VALUES (?, 'assistant', ?);", (sid, txt))
+            conn.commit()
+            conn.close()
+
+            with patch.object(custodian_run, "HERMES_HOME", str(fake_home)), \
+                 patch.object(custodian_run, "HERMES_PROFILE_DIR", str(fake_profile)):
+                custodian_run.unlock_stale_hermes_sessions()
+
+            conn = sqlite3.connect(str(db_path))
+            remaining = conn.execute("SELECT COUNT(*) FROM sessions;").fetchone()[0]
+            conn.close()
+            self.assertEqual(remaining, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

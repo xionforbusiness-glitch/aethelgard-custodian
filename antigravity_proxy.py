@@ -42,8 +42,8 @@ UPSTREAM_URLS = [
     "https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
 ]
 
-UPSTREAM_TIMEOUT = int(os.environ.get("ANTIGRAVITY_UPSTREAM_TIMEOUT", "75"))
-MAX_FAILOVER_BUDGET_SECONDS = int(os.environ.get("ANTIGRAVITY_FAILOVER_BUDGET", "150"))
+UPSTREAM_TIMEOUT = int(os.environ.get("ANTIGRAVITY_UPSTREAM_TIMEOUT", "45"))
+MAX_FAILOVER_BUDGET_SECONDS = int(os.environ.get("ANTIGRAVITY_FAILOVER_BUDGET", "90"))
 MAX_FAILOVER_MODELS = int(os.environ.get("ANTIGRAVITY_MAX_FAILOVER_MODELS", "6"))
 
 
@@ -138,6 +138,29 @@ ADVERTISED_MODELS = [
 ]
 
 BUILTIN_TOOL_NAMES = {"google_search", "web_search", "search_web", "googleSearch"}
+
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
+_THOUGHT_LEAK_SUBSTRINGS = (
+    "i'm thinking through how to approach",
+    "thinking through how to approach this",
+    "initial attempt to use terminal",
+    "the approach shifts toward",
+    "the python script will be written and executed",
+    "will be written and executed via a code execution tool",
+    "thinking process:",
+)
+_DEPRECATED_MODEL_BANNER_RE = re.compile(
+    r"\bis no longer available\b.*\b(?:use|upgrade|switch|gemini|deprecated|not available)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+_PURE_DEFERRAL_ACK_RE = re.compile(
+    r"^(?:i['’]?m thinking(?: through[^.?!\n]*)?|"
+    r"let me (?:check|think|look|run|inspect|verify|see)[^?\n]{0,80}|"
+    r"(?:one|a) moment[^?\n]{0,60}|hold on[^?\n]{0,60}|"
+    r"working on (?:it|that|this)[^?\n]{0,60}|"
+    r"(?:i['’]?ll|i will) (?:check|run|look|fetch|inspect|do)[^?\n]{0,80})[.…! ]*$",
+    re.IGNORECASE,
+)
 
 # ── Token Cache ───────────────────────────────────────────────────────────────
 _token_lock = threading.Lock()
@@ -295,7 +318,12 @@ def convert_openai_content_to_gemini_parts(content) -> list[dict]:
     return [{"text": str(content)}]
 
 
-def build_antigravity_envelope(body: dict, upstream_model: str, include_tools: bool = True) -> dict:
+def build_antigravity_envelope(
+    body: dict,
+    upstream_model: str,
+    include_tools: bool = True,
+    disable_thinking: bool = False,
+) -> dict:
     raw_messages = body.get("messages") or []
     is_claude = "claude" in upstream_model.lower()
     is_gpt_oss = "gpt-oss" in upstream_model.lower()
@@ -431,8 +459,8 @@ def build_antigravity_envelope(body: dict, upstream_model: str, include_tools: b
     elif req_max:
         gen_cfg["maxOutputTokens"] = min(int(req_max), 65536)
 
-    # Thinking budget for Gemini 3.8 Flash tiers
-    if not is_claude and not is_gpt_oss and "gemini" in upstream_model.lower():
+    # Thinking budget for Gemini 3.8 Flash tiers (keep includeThoughts=False so raw CoT never leaks)
+    if not disable_thinking and not is_claude and not is_gpt_oss and "gemini" in upstream_model.lower():
         if upstream_model.endswith("-low"):
             budget = 1024
         elif upstream_model.endswith("-medium") or upstream_model.endswith("-tiered"):
@@ -441,7 +469,7 @@ def build_antigravity_envelope(body: dict, upstream_model: str, include_tools: b
             budget = 16384
         gen_cfg["thinkingConfig"] = {
             "thinkingBudget": budget,
-            "includeThoughts": True,
+            "includeThoughts": False,
         }
         if "maxOutputTokens" in gen_cfg and gen_cfg["maxOutputTokens"] <= budget:
             gen_cfg["maxOutputTokens"] = budget + 4096
@@ -487,171 +515,275 @@ def build_antigravity_envelope(body: dict, upstream_model: str, include_tools: b
     return envelope
 
 
+def _is_mock_object(obj) -> bool:
+    return type(obj).__module__.startswith("unittest.mock")
+
+
+def _iter_sse_lines(resp, attempt_deadline: float):
+    """Yield decoded SSE lines within attempt_deadline, compatible with live HTTPResponse and test mocks."""
+    readline_fn = getattr(resp, "readline", None)
+    if callable(readline_fn) and not _is_mock_object(resp):
+        while time.monotonic() < attempt_deadline:
+            line_bytes = readline_fn()
+            if not line_bytes:
+                break
+            yield line_bytes if isinstance(line_bytes, str) else bytes(line_bytes).decode("utf-8", errors="replace")
+        return
+
+    raw_data = resp.read()
+    raw_text = raw_data if isinstance(raw_data, str) else bytes(raw_data or b"").decode("utf-8", errors="replace")
+    for line in raw_text.splitlines():
+        yield line
+
+
+def _split_inline_think_blocks(text: str, reasoning: str) -> tuple[str, str]:
+    """Move <think>...</think> or truncated trailing <think> segments out of visible text."""
+    if not text or "<think" not in text.lower():
+        return text, reasoning
+
+    extracted = _THINK_BLOCK_RE.findall(text)
+    if extracted:
+        cleaned = _THINK_BLOCK_RE.sub("", text).strip()
+        extra_reasoning = "\n".join(
+            part for part in (
+                re.sub(r"</?think>", "", blk, flags=re.IGNORECASE).strip()
+                for blk in extracted
+            ) if part
+        )
+        merged_reasoning = "\n".join(p for p in (reasoning, extra_reasoning) if p)
+        return cleaned, merged_reasoning
+
+    idx = text.lower().find("<think>")
+    if idx != -1:
+        before = text[:idx].strip()
+        partial_thought = text[idx + 7:].strip()
+        merged_reasoning = "\n".join(p for p in (reasoning, partial_thought) if p)
+        return before, merged_reasoning
+
+    return text, reasoning
+
+
+def _parse_antigravity_sse_stream(resp, attempt_deadline: float) -> dict:
+    """Parse SSE frames from Antigravity upstream without ever promoting thoughts into visible content."""
+    text_chunks = []
+    reasoning_chunks = []
+    tool_calls = []
+    finish_reason = None
+    saw_finish_reason = False
+    usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+    for raw_line in _iter_sse_lines(resp, attempt_deadline):
+        line = raw_line.strip()
+        if not line.startswith("data:"):
+            continue
+        data_str = line[5:].strip()
+        if not data_str or data_str == "[DONE]":
+            continue
+        try:
+            ev = json.loads(data_str)
+        except Exception:
+            continue
+
+        resp_obj = ev.get("response") or ev
+        if not isinstance(resp_obj, dict):
+            continue
+
+        um = resp_obj.get("usageMetadata")
+        if isinstance(um, dict):
+            usage = {
+                "prompt_tokens": int(um.get("promptTokenCount") or 0),
+                "completion_tokens": int(um.get("candidatesTokenCount") or 0),
+                "total_tokens": int(um.get("totalTokenCount") or 0),
+            }
+
+        candidates = resp_obj.get("candidates") or []
+        if not candidates or not isinstance(candidates[0], dict):
+            continue
+        cand = candidates[0]
+        parts = (cand.get("content") or {}).get("parts") or []
+        for p in parts:
+            if not isinstance(p, dict):
+                continue
+            if "functionCall" in p and isinstance(p["functionCall"], dict):
+                fc = p["functionCall"]
+                fc_name = str(fc.get("name") or "")
+                if fc_name:
+                    fc_id = str(fc.get("id") or f"call_{uuid.uuid4().hex[:12]}")
+                    fc_args = fc.get("args") if fc.get("args") is not None else {}
+                    tool_calls.append({
+                        "id": fc_id,
+                        "index": len(tool_calls),
+                        "type": "function",
+                        "function": {
+                            "name": fc_name,
+                            "arguments": json.dumps(fc_args, ensure_ascii=False)
+                            if not isinstance(fc_args, str) else fc_args,
+                        },
+                    })
+            elif isinstance(p.get("text"), str):
+                if p.get("thought"):
+                    reasoning_chunks.append(p["text"])
+                else:
+                    text_chunks.append(p["text"])
+
+        cand_finish = cand.get("finishReason")
+        if cand_finish:
+            saw_finish_reason = True
+            if not tool_calls:
+                cf_lower = str(cand_finish).lower()
+                finish_reason = "length" if cf_lower in ("max_tokens", "length") else "stop"
+
+    stream_timed_out = time.monotonic() >= attempt_deadline
+    full_text, full_reasoning = _split_inline_think_blocks("".join(text_chunks), "".join(reasoning_chunks))
+    resolved_finish = "tool_calls" if tool_calls else (finish_reason or "stop")
+    return {
+        "text": full_text,
+        "reasoning": full_reasoning,
+        "tool_calls": tool_calls,
+        "finish_reason": resolved_finish,
+        "saw_finish_reason": saw_finish_reason,
+        "stream_timed_out": stream_timed_out,
+        "usage": usage,
+    }
+
+
+def _validate_candidate_response(parsed: dict, candidate_model: str, has_tools: bool) -> tuple[bool, str]:
+    """Reject thought-only streams, leaked planning monologues, truncated streams, and deprecation notices."""
+    if parsed["tool_calls"]:
+        return True, ""
+
+    clean_text = (parsed["text"] or "").strip()
+    if not clean_text:
+        if parsed["reasoning"]:
+            return False, f"Thought-only stream without visible text or tool calls from {candidate_model}"
+        return False, f"Empty response stream from {candidate_model}"
+
+    if parsed["stream_timed_out"] and not parsed["saw_finish_reason"]:
+        return False, f"Truncated SSE stream timed out on {candidate_model}"
+
+    if len(clean_text) < 400 and _DEPRECATED_MODEL_BANNER_RE.search(clean_text):
+        return False, f"Deprecated model banner returned by {candidate_model}"
+
+    if has_tools:
+        lower_text = clean_text.lower()
+        if any(pat in lower_text for pat in _THOUGHT_LEAK_SUBSTRINGS):
+            return False, f"Thought/planning narration returned instead of tool execution on {candidate_model}"
+        if _PURE_DEFERRAL_ACK_RE.match(clean_text):
+            return False, f"Zero-action deferral stub returned without tool call on {candidate_model}"
+
+    return True, ""
+
+
 def execute_antigravity_request(body: dict, requested_model: str) -> dict:
     """
     Executes the chat completion against Google Antigravity with automatic
-    model failover and tool-schema fallback if needed.
-    Returns:
-      {
-        "ok": True,
-        "model": actual_model,
-        "text": str,
-        "reasoning": str,
-        "tool_calls": list,
-        "finish_reason": str,
-        "usage": dict,
-      }
+    model failover, bounded wall-clock deadlines, and thought-leak guards.
     """
     chain = build_failover_chain(requested_model)[:MAX_FAILOVER_MODELS]
-    token = get_valid_access_token(force_refresh=False)
-    if not token:
-        token = get_valid_access_token(force_refresh=True)
+    token = get_valid_access_token(force_refresh=False) or get_valid_access_token(force_refresh=True)
     if not token:
         return {"ok": False, "status": 503, "error": "Failed to refresh Google Antigravity OAuth token."}
 
+    has_tools = bool(body.get("tools"))
     last_error = "Unknown upstream error"
     last_status = 503
     start_time = time.monotonic()
+    total_deadline = start_time + MAX_FAILOVER_BUDGET_SECONDS
 
-    for candidate_model in chain:
-        if time.monotonic() - start_time > MAX_FAILOVER_BUDGET_SECONDS:
+    def _run_attempt(candidate_model: str, include_tools: bool, disable_thinking: bool) -> tuple[dict | None, bool]:
+        nonlocal token, last_error, last_status
+        saw_schema_400 = False
+        payload_bytes = json.dumps(
+            build_antigravity_envelope(
+                body,
+                candidate_model,
+                include_tools=include_tools,
+                disable_thinking=disable_thinking,
+            )
+        ).encode("utf-8")
+
+        for upstream_url in UPSTREAM_URLS:
+            remaining = total_deadline - time.monotonic()
+            if remaining <= 0:
+                last_error = f"Failover budget ({MAX_FAILOVER_BUDGET_SECONDS}s) exceeded"
+                return None, saw_schema_400
+            attempt_timeout = max(1.0, min(float(UPSTREAM_TIMEOUT), remaining))
+            attempt_deadline = time.monotonic() + attempt_timeout
+            headers = {
+                "Content-Type": "application/json",
+                "Accept": "text/event-stream",
+                "Authorization": f"Bearer {token}",
+                "User-Agent": "antigravity/ide/2.21.1 darwin/arm64",
+            }
+            req = urllib.request.Request(upstream_url, data=payload_bytes, headers=headers)
+            try:
+                with urllib.request.urlopen(req, timeout=attempt_timeout) as resp:
+                    parsed = _parse_antigravity_sse_stream(resp, attempt_deadline)
+                ok, reason = _validate_candidate_response(parsed, candidate_model, has_tools)
+                if ok:
+                    return {
+                        "ok": True,
+                        "model": candidate_model,
+                        "text": parsed["text"],
+                        "reasoning": parsed["reasoning"],
+                        "tool_calls": parsed["tool_calls"],
+                        "finish_reason": parsed["finish_reason"],
+                        "usage": parsed["usage"],
+                    }, saw_schema_400
+                last_error = reason
+                print(f"[Antigravity Proxy] ⚠ Rejecting candidate response: {reason}", flush=True)
+                return None, saw_schema_400
+            except urllib.error.HTTPError as he:
+                err_body = ""
+                try:
+                    err_body = he.read().decode("utf-8", errors="replace")[:400]
+                except Exception:
+                    pass
+                last_status = he.code
+                last_error = f"HTTP {he.code} on {candidate_model}: {err_body}"
+                print(f"[Antigravity Proxy] ⚠ {last_error}", flush=True)
+                if he.code in (401, 403):
+                    token = get_valid_access_token(force_refresh=True) or token
+                    continue
+                if he.code == 400 and include_tools:
+                    saw_schema_400 = True
+                    break
+                if he.code in (404, 429, 500, 502, 503, 504):
+                    break
+            except Exception as ex:
+                last_error = f"Exception on {candidate_model}: {ex}"
+                print(f"[Antigravity Proxy] ⚠ {last_error}", flush=True)
+                continue
+        return None, saw_schema_400
+
+    schema_400_models = []
+    for idx, candidate_model in enumerate(chain):
+        if time.monotonic() >= total_deadline:
             last_error = f"Failover budget ({MAX_FAILOVER_BUDGET_SECONDS}s) exceeded"
             break
-        # Try with tools first; if upstream returns 400 on tool schema, retry once with textual tool fallback
-        tool_attempts = [True, False] if body.get("tools") else [False]
-        for include_tools in tool_attempts:
-            if time.monotonic() - start_time > MAX_FAILOVER_BUDGET_SECONDS:
-                last_error = f"Failover budget ({MAX_FAILOVER_BUDGET_SECONDS}s) exceeded"
-                break
-            envelope = build_antigravity_envelope(body, candidate_model, include_tools=include_tools)
-            payload_bytes = json.dumps(envelope).encode("utf-8")
+        result, saw_400 = _run_attempt(candidate_model, include_tools=has_tools, disable_thinking=False)
+        if result:
+            return result
+        if saw_400:
+            schema_400_models.append(candidate_model)
+            continue
+        # If the primary Gemini model stalled/leaked thinking, retry once with thinking disabled before advancing
+        if (
+            idx == 0
+            and "gemini" in candidate_model.lower()
+            and (total_deadline - time.monotonic()) > 15.0
+        ):
+            retry_res, _ = _run_attempt(candidate_model, include_tools=has_tools, disable_thinking=True)
+            if retry_res:
+                return retry_res
 
-            for url_idx, upstream_url in enumerate(UPSTREAM_URLS):
-                if time.monotonic() - start_time > MAX_FAILOVER_BUDGET_SECONDS:
-                    last_error = f"Failover budget ({MAX_FAILOVER_BUDGET_SECONDS}s) exceeded"
-                    break
-                headers = {
-                    "Content-Type": "application/json",
-                    "Accept": "text/event-stream",
-                    "Authorization": f"Bearer {token}",
-                    "User-Agent": "antigravity/ide/2.21.1 darwin/arm64",
-                }
-                req = urllib.request.Request(upstream_url, data=payload_bytes, headers=headers)
-                try:
-                    with urllib.request.urlopen(req, timeout=UPSTREAM_TIMEOUT) as resp:
-                        raw_sse = resp.read().decode("utf-8", errors="replace")
-
-                    text_chunks = []
-                    reasoning_chunks = []
-                    tool_calls = []
-                    finish_reason = "stop"
-                    usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-
-                    for line in raw_sse.splitlines():
-                        line = line.strip()
-                        if not line.startswith("data:"):
-                            continue
-                        data_str = line[5:].strip()
-                        if not data_str or data_str == "[DONE]":
-                            continue
-                        try:
-                            ev = json.loads(data_str)
-                        except Exception:
-                            continue
-
-                        resp_obj = ev.get("response") or ev
-                        if not isinstance(resp_obj, dict):
-                            continue
-
-                        um = resp_obj.get("usageMetadata")
-                        if isinstance(um, dict):
-                            usage = {
-                                "prompt_tokens": int(um.get("promptTokenCount") or 0),
-                                "completion_tokens": int(um.get("candidatesTokenCount") or 0),
-                                "total_tokens": int(um.get("totalTokenCount") or 0),
-                            }
-
-                        candidates = resp_obj.get("candidates") or []
-                        if not candidates or not isinstance(candidates[0], dict):
-                            continue
-                        cand = candidates[0]
-                        content_obj = cand.get("content") or {}
-                        parts = content_obj.get("parts") or []
-                        for p in parts:
-                            if not isinstance(p, dict):
-                                continue
-                            if "functionCall" in p and isinstance(p["functionCall"], dict):
-                                fc = p["functionCall"]
-                                fc_name = str(fc.get("name") or "")
-                                if fc_name:
-                                    fc_id = str(fc.get("id") or f"call_{uuid.uuid4().hex[:12]}")
-                                    fc_args = fc.get("args") if fc.get("args") is not None else {}
-                                    tool_calls.append({
-                                        "id": fc_id,
-                                        "index": len(tool_calls),
-                                        "type": "function",
-                                        "function": {
-                                            "name": fc_name,
-                                            "arguments": json.dumps(fc_args, ensure_ascii=False)
-                                            if not isinstance(fc_args, str) else fc_args,
-                                        }
-                                    })
-                                    finish_reason = "tool_calls"
-                            elif isinstance(p.get("text"), str):
-                                if p.get("thought"):
-                                    reasoning_chunks.append(p["text"])
-                                else:
-                                    text_chunks.append(p["text"])
-
-                        cand_finish = cand.get("finishReason")
-                        if cand_finish and not tool_calls:
-                            cf_lower = str(cand_finish).lower()
-                            if cf_lower in ("max_tokens", "length"):
-                                finish_reason = "length"
-                            else:
-                                finish_reason = "stop"
-
-                    full_text = "".join(text_chunks)
-                    full_reasoning = "".join(reasoning_chunks)
-
-                    # Only accept if we got visible text, tool calls, or reasoning
-                    if full_text or tool_calls or full_reasoning:
-                        if not full_text and not tool_calls and full_reasoning:
-                            full_text = full_reasoning
-                        return {
-                            "ok": True,
-                            "model": candidate_model,
-                            "text": full_text,
-                            "reasoning": full_reasoning,
-                            "tool_calls": tool_calls,
-                            "finish_reason": "tool_calls" if tool_calls else finish_reason,
-                            "usage": usage,
-                        }
-                    else:
-                        last_error = f"Empty response stream from {candidate_model}"
-                except urllib.error.HTTPError as he:
-                    err_body = ""
-                    try:
-                        err_body = he.read().decode("utf-8", errors="replace")[:400]
-                    except Exception:
-                        pass
-                    last_status = he.code
-                    last_error = f"HTTP {he.code} on {candidate_model}: {err_body}"
-                    print(f"[Antigravity Proxy] ⚠ {last_error}", flush=True)
-
-                    if he.code in (401, 403):
-                        token = get_valid_access_token(force_refresh=True) or token
-                        continue
-                    if he.code == 400 and include_tools:
-                        # Break inner URL loop so we retry with include_tools=False
-                        break
-                    if he.code in (404, 429, 500, 502, 503, 504):
-                        # Break inner URL loop and fail over immediately to next model in chain
-                        break
-                except Exception as ex:
-                    last_error = f"Exception on {candidate_model}: {ex}"
-                    print(f"[Antigravity Proxy] ⚠ {last_error}", flush=True)
-                    continue
+    # Only strip tools as an explicit last resort if every tool-enabled model failed with HTTP 400
+    for candidate_model in schema_400_models:
+        if time.monotonic() >= total_deadline:
+            break
+        fallback_res, _ = _run_attempt(candidate_model, include_tools=False, disable_thinking=True)
+        if fallback_res:
+            return fallback_res
 
     return {"ok": False, "status": last_status, "error": last_error}
 
@@ -728,12 +860,15 @@ class AntigravityGatewayHandler(BaseHTTPRequestHandler):
         created_ts = int(time.time())
         actual_model = result["model"]
         text_out = result.get("text") or ""
+        reasoning_out = result.get("reasoning") or ""
         tool_calls = result.get("tool_calls") or []
         finish_reason = result.get("finish_reason") or ("tool_calls" if tool_calls else "stop")
         usage = result.get("usage") or {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
         if not is_stream:
             msg_obj = {"role": "assistant", "content": text_out if text_out or not tool_calls else None}
+            if reasoning_out:
+                msg_obj["reasoning_content"] = reasoning_out
             if tool_calls:
                 msg_obj["tool_calls"] = [
                     {
@@ -770,6 +905,15 @@ class AntigravityGatewayHandler(BaseHTTPRequestHandler):
             "model": actual_model,
             "choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": None}],
         })
+        # 1b. Reasoning delta chunk (kept strictly separate from visible content)
+        if reasoning_out:
+            chunks.append({
+                "id": cmpl_id,
+                "object": "chat.completion.chunk",
+                "created": created_ts,
+                "model": actual_model,
+                "choices": [{"index": 0, "delta": {"reasoning_content": reasoning_out}, "finish_reason": None}],
+            })
         # 2. Content delta chunk
         if text_out:
             chunks.append({

@@ -43,7 +43,7 @@ fallback_providers:
     base_url: http://127.0.0.1:20128/v1
     key_env: HERMES_CUSTOM_FIRST_TIME_API_KEY
   - provider: first-time
-    model: antigravity/gemini-3.5-flash-low
+    model: antigravity/gemini-3.8-flash-high
     base_url: http://127.0.0.1:20128/v1
     key_env: HERMES_CUSTOM_FIRST_TIME_API_KEY
 
@@ -72,6 +72,12 @@ terminal:
   timeout: 300
 
 agent:
+  intent_ack_continuation: true
+  tool_use_enforcement: true
+  execution_guidance: true
+  stall_guards: true
+  task_completion_guidance: true
+  api_max_retries: 2
   disabled_toolsets:
     - browser
     - computer_use
