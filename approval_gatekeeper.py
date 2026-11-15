@@ -210,7 +210,11 @@ def verify_draft_authorized(draft_id: str) -> Dict[str, Any]:
     return draft
 
 
-def approve_draft(draft_id: Optional[str] = None, execute: bool = True) -> Dict[str, Any]:
+def approve_draft(
+    draft_id: Optional[str] = None,
+    execute: bool = True,
+    approved_via: str = "telegram",
+) -> Dict[str, Any]:
     """
     Marks a pending draft as 'approved' and authorizes transmission via the platform adapter.
     If draft_id is None or 'latest', approves the most recent pending draft.
@@ -232,6 +236,7 @@ def approve_draft(draft_id: Optional[str] = None, execute: bool = True) -> Dict[
     now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
     draft["status"] = "approved"
     draft["approved_at"] = now_iso
+    draft["approved_via"] = approved_via
 
     # Save approved state prior to dispatch so platform adapters verifying approval status succeed
     draft_path = _draft_file_path(draft_id)
@@ -262,10 +267,39 @@ def approve_draft(draft_id: Optional[str] = None, execute: bool = True) -> Dict[
     draft_path.write_text(json.dumps(draft, indent=2, ensure_ascii=False), encoding="utf-8")
     _sync_pending_index()
 
+    # Hook into Closed-Loop Promise Ledger for outbound correspondence
+    if execute:
+        try:
+            meta = draft.get("metadata") or {}
+            platform = str(draft.get("platform") or "").lower()
+            target = str(draft.get("recipient_or_target") or "").strip()
+            if platform in ("gmail", "google", "whatsapp", "telegram", "telegram_user") and target:
+                import promise_ledger
+                if not meta.get("skip_promise_ledger"):
+                    existing_pid = meta.get("promise_id")
+                    if meta.get("resolves_promise_id"):
+                        promise_ledger.resolve_promise(
+                            str(meta["resolves_promise_id"]),
+                            note=f"Fulfilled via {draft_id} ({approved_via})",
+                        )
+                    elif not existing_pid:
+                        summary = str(draft.get("subject") or draft.get("content", "")[:80]).strip()
+                        promise_ledger.add_promise(
+                            counterparty=target,
+                            summary=summary or f"Sent {platform} message",
+                            direction="waiting_on_them",
+                            channel=platform,
+                            follow_up_after_hours=int(meta.get("follow_up_after_hours", 48)),
+                            metadata={"draft_id": draft_id, "approved_via": approved_via},
+                        )
+        except Exception:
+            pass
+
     return {
         "success": True,
         "draft_id": draft_id,
         "status": "approved",
+        "approved_via": approved_via,
         "platform": draft.get("platform"),
         "result": dispatch_result,
         "error": dispatch_error,

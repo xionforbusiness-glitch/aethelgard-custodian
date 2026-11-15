@@ -1,6 +1,7 @@
 import os
 import re
 import datetime
+from typing import Optional
 
 def parse_time_to_minutes(time_str: str) -> int:
     """Parses '08:15 AM' or '03:00' to minutes from midnight."""
@@ -95,3 +96,76 @@ def format_circadian_telegram_report(vault_dir: str) -> str:
         f"💡 *Bio-Rule:* Protecting sleep architecture prevents cognitive degradation on multi-day shift rotations."
     )
     return report
+
+
+def get_operational_mode(
+    vault_dir: Optional[str] = None,
+    now: Optional[datetime.datetime] = None,
+    metar_text: Optional[str] = None,
+) -> dict:
+    """
+    Fuses shift timing, biological sleep anchors, and OSDI Damascus airport telemetry
+    into a live cockpit mode for Jarvis v2:
+      - `SLEEP_SHIELD`: suppress non-critical calls/pings during core sleep anchor
+      - `COCKPIT_DUTY`: ultra-brief operational mode during active airport shift (+ foggy IROPS flag)
+      - `POST_SHIFT_DEBRIEF`: recovery window 0-60m after shift ends
+      - `STRATEGIC_WINDOW`: full proactive autonomy outside sleep/shift
+    """
+    damascus_tz = datetime.timezone(datetime.timedelta(hours=3))
+    ref_now = now or datetime.datetime.now(damascus_tz)
+    if ref_now.tzinfo is None:
+        ref_now = ref_now.replace(tzinfo=damascus_tz)
+    cur_mins = ref_now.hour * 60 + ref_now.minute
+
+    forecast = get_circadian_forecast(vault_dir or "")
+    sleep_parts = str(forecast.get("sleep_anchor", "23:15 → 07:15")).split("→")
+    sleep_start = parse_time_to_minutes(sleep_parts[0])
+    sleep_end = parse_time_to_minutes(sleep_parts[1]) if len(sleep_parts) > 1 else (7 * 60 + 15)
+
+    shift_start = 8 * 60 + 15
+    shift_end = 16 * 60
+    try:
+        import shift_tracker
+        st = shift_tracker.load_tracker_state()
+        raw_shift = str(st.get("today_shift_raw") or "")
+        m = re.search(r"(\d{1,2}:\d{2})\s*[-–→to]+\s*(\d{1,2}:\d{2})", raw_shift)
+        if m:
+            sh, sm = map(int, m.group(1).split(":"))
+            eh, em = map(int, m.group(2).split(":"))
+            shift_start = sh * 60 + sm
+            shift_end = eh * 60 + em
+    except Exception:
+        pass
+
+    def _in_window(minute_val: int, start_m: int, end_m: int) -> bool:
+        if start_m <= end_m:
+            return start_m <= minute_val < end_m
+        return minute_val >= start_m or minute_val < end_m
+
+    metar_raw = metar_text
+    if metar_raw is None:
+        try:
+            import airport_radar
+            metar_raw = airport_radar.fetch_damascus_airport_metar()
+        except Exception:
+            metar_raw = ""
+    metar_upper = str(metar_raw or "").upper()
+    irops_alert = any(code in metar_upper for code in ("FG", "BR", "TS", "SQ", "RMK", "BKN002", "OVC002", "0200", "0400", "0800"))
+
+    mode = "STRATEGIC_WINDOW"
+    if _in_window(cur_mins, shift_start, shift_end):
+        mode = "COCKPIT_DUTY"
+    elif _in_window(cur_mins, sleep_start, sleep_end):
+        mode = "SLEEP_SHIELD"
+    elif 0 <= ((cur_mins - shift_end) % 1440) <= 60:
+        mode = "POST_SHIFT_DEBRIEF"
+
+    return {
+        "mode": mode,
+        "timestamp": ref_now.isoformat(),
+        "shift_window": f"{shift_start // 60:02d}:{shift_start % 60:02d} -> {shift_end // 60:02d}:{shift_end % 60:02d}",
+        "sleep_anchor": forecast.get("sleep_anchor"),
+        "irops_alert": irops_alert,
+        "allow_proactive_calls": mode != "SLEEP_SHIELD",
+        "briefing_style": "ultra_brief" if mode == "COCKPIT_DUTY" else "normal",
+    }

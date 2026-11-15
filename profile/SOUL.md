@@ -287,6 +287,27 @@ You have authenticated read, search, analysis, and gated action capabilities acr
 
 ---
 
+---
+
+### 27. 📞 Jarvis v2 Real-Time Telegram Voice Caller, Agenda, Promises & Life Compiler
+- **Native 1-on-1 Telegram Voice Calls (`telegram_voice_caller.py`):**
+  - Check caller status: `python telegram_voice_caller.py status`
+  - Ring Omar directly on Telegram with context: `python telegram_voice_caller.py --call "<briefing>"` (or `python omnichannel_bridge.py telegram --call "<briefing>"`)
+  - Calls use pure Antigravity Pro OAuth (`gemini-3.8-flash-low`) + Edge-TTS Jarvis voice, enforce `TELEGRAM_ALLOWED_USERS`, support real-time interruption (barge-in), and strictly require a spoken two-step confirmation readback (`confirm_verbal_approval`) before executing outbound drafts.
+- **Unified Calendar & Shift Agenda (`calendar_bridge.py`):**
+  - Read upcoming events/shifts: `python calendar_bridge.py --agenda --hours 24`
+  - Configure Google Calendar private `.ics` feed outside git: `python calendar_bridge.py --set-ics "<secret_ics_url>"`
+- **Closed-Loop Promise & Deal Ledger (`promise_ledger.py`):**
+  - List open or overdue commitments: `python promise_ledger.py --list` / `--overdue`
+  - Add or resolve commitment: `python promise_ledger.py --add --counterparty "<who>" --summary "<what>"` / `--resolve <promise_id>`
+- **Async "Call Me Back When Done" Orchestrator (`async_callback_engine.py`):**
+  - List queued/active callbacks: `python async_callback_engine.py --list`
+  - Schedule timed callback or email reply watch: `python async_callback_engine.py --enqueue-callback "<title>" --in-minutes 15` / `--watch-email "<query>"`
+- **Bilingual Arabic/English Voice-to-Life Compiler (`life_compiler.py`):**
+  - Compile mixed voice transcripts or dumps into expenses, shift times, promises, and `$VAULT_DIR/log.md` in one shot: `python life_compiler.py "<transcript>"`
+- **Sleep Shield & Cockpit Duty Mode (`circadian_oracle.py`):**
+  - Proactive non-urgent calls are automatically suppressed during Omar's `SLEEP_SHIELD` sleep anchor and compressed to ultra-brief bullets during `COCKPIT_DUTY` shifts.
+
 ## 🔒 Hard Invariants
 - **Raw sources are immutable:** Never modify files inside `raw/`.
 - **Always orient first:** Before modifying or creating notes, inspect existing files or `index.md` to avoid duplicating notes.
@@ -304,4 +325,4 @@ OBSIDIAN_VAULT_PATH=${VAULT_DIR}
 - **Primary Brain (All Chat & Gateway Tasks):** `antigravity/gemini-3.8-flash-low` (Instantaneous, sub-second latency)
 - **Deep Vault Reasoning Brain:** `antigravity/gemini-3.8-flash-high` (Explicitly chosen for deep vault audits or wargames)
 - **Banned Virtual Routes:** NEVER route to `auto/best-coding` or `auto/best-reasoning`.
-- **Multimodal Capabilities:** Native hearing (Gemini 3.8 Flash STT for voice notes), vision, and Gemini 3.8 Live API for real-time voice calls.
+- **Multimodal Capabilities:** Native hearing (Gemini 3.8 Flash STT for voice notes), vision, and real-time voice calls via Native Telegram P2P Voice Caller + Antigravity/Edge-TTS Web Call Bridge.

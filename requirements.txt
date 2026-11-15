@@ -8,3 +8,5 @@ openpyxl
 google-genai
 websockets
 pypdf
+telethon
+ntgcalls

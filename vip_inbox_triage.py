@@ -321,6 +321,14 @@ def process_incoming_email(
     vip_info = classify_vip_sender(sender, subject)
     is_vip = vip_info.get("is_vip", False)
 
+    # Check if this inbound email closes any open Promise Ledger loop
+    promise_resolution = {"matched": 0, "resolved_ids": []}
+    try:
+        import promise_ledger
+        promise_resolution = promise_ledger.ingest_inbound_email(email_data, vault_dir=vault_dir)
+    except Exception:
+        pass
+
     vault_res = None
     alert_sent = False
     if is_vip:
@@ -328,6 +336,17 @@ def process_incoming_email(
             vault_res = ingest_vip_email_to_vault(email_data, vault_dir=vault_dir)
         if send_alert:
             alert_sent = send_vip_telegram_alert(email_data)
+            # Trigger proactive native voice call only for CRITICAL priority when outside SLEEP_SHIELD
+            if vip_info.get("priority") == "CRITICAL":
+                try:
+                    import telegram_voice_caller
+                    org = vip_info.get("organization", "VIP")
+                    telegram_voice_caller.request_call_via_rpc_or_direct(
+                        opening_prompt=f"Omar, critical email just arrived from {org}. Subject: {subject}. Would you like me to summarize or draft a reply?",
+                        vault_dir=vault_dir,
+                    )
+                except Exception:
+                    pass
 
     return {
         "processed": True,
@@ -337,6 +356,7 @@ def process_incoming_email(
         "organization": vip_info.get("organization"),
         "vault_result": vault_res,
         "alert_sent": alert_sent,
+        "promise_resolution": promise_resolution,
     }
 
 

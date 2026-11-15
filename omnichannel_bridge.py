@@ -649,14 +649,22 @@ class GoogleAdapter:
         }
 
     def list_calendar_events(self, max_results: int = 10) -> List[Dict[str, Any]]:
-        """Lists upcoming Google Calendar events."""
+        """Lists upcoming Google Calendar events, fusing `.ics` feeds & shifts when OAuth Calendar is unavailable."""
         now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
         res = self._execute_api_call(
             "events",
             params={"timeMin": now_iso, "maxResults": max_results, "singleEvents": "true", "orderBy": "startTime"},
             base_url=self.CALENDAR_BASE,
         )
-        return res.get("items", []) if isinstance(res, dict) else []
+        items = res.get("items", []) if isinstance(res, dict) else []
+        if items:
+            return items
+        try:
+            import calendar_bridge
+            agenda = calendar_bridge.get_unified_agenda(hours_ahead=48)
+            return agenda.get("events", [])[:max_results]
+        except Exception:
+            return []
 
     def list_drive_files(self, query: str = "", max_results: int = 10) -> List[Dict[str, Any]]:
         """Searches files in Omar's Google Drive."""
@@ -887,6 +895,16 @@ class TelegramUserAdapter:
             "dispatched_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         }
 
+    def place_voice_call(self, summary: str = "") -> Dict[str, Any]:
+        """Places a native 1-on-1 Telegram voice call to Omar via telegram_voice_caller."""
+        try:
+            import telegram_voice_caller
+            return telegram_voice_caller.request_call_via_rpc_or_direct(
+                opening_prompt=summary or "Omar, you have an update from Aethelgard."
+            )
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
 
 # ==============================================================================
 # 4. LINKEDIN ACCOUNT ADAPTER (Voyager REST Session API, < 10MB RAM)
@@ -991,6 +1009,74 @@ class LinkedInAdapter:
             return elements[:limit] if isinstance(elements, list) else []
         except Exception:
             return []
+
+    def get_conversations(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Fetches recent LinkedIn inbox conversations."""
+        try:
+            res = self._execute_voyager_request(f"/messaging/conversations?count={limit}")
+            elements = res.get("elements", [])
+            return elements[:limit] if isinstance(elements, list) else []
+        except Exception:
+            return []
+
+    def check_unseen_events(self, state_dir: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Polls LinkedIn notifications & messages for unseen recruiter/interview events,
+        deduplicating seen IDs and throttling expired-cookie alerts to once per 24h.
+        """
+        if self.get_status().get("status") != "connected":
+            return {"status": "needs_auth", "events": []}
+
+        base_state = Path(state_dir) if state_dir else Path(
+            os.environ.get("AETHELGARD_STATE_DIR") or (Path(os.environ.get("AETHELGARD_HOME") or (Path.home() / ".aethelgard")) / "state")
+        )
+        base_state.mkdir(parents=True, exist_ok=True)
+        seen_file = base_state / "linkedin_seen_ids.json"
+        expiry_file = base_state / "linkedin_expiry_alert.json"
+
+        try:
+            seen_ids = set(json.loads(seen_file.read_text(encoding="utf-8")).get("seen_ids", [])) if seen_file.exists() else set()
+        except Exception:
+            seen_ids = set()
+
+        new_events: List[Dict[str, Any]] = []
+        session_check = self.verify_session()
+        if not session_check.get("valid"):
+            # Throttle expired session alerts to once every 24h
+            should_alert = True
+            now_ts = datetime.datetime.now(datetime.timezone.utc).timestamp()
+            if expiry_file.exists():
+                try:
+                    last_ts = float(json.loads(expiry_file.read_text(encoding="utf-8")).get("last_alert_ts", 0))
+                    if (now_ts - last_ts) < 86400:
+                        should_alert = False
+                except Exception:
+                    pass
+            if session_check.get("state") == "expired" and should_alert:
+                expiry_file.write_text(json.dumps({"last_alert_ts": now_ts}), encoding="utf-8")
+                return {"status": "expired", "notify_expired": True, "events": []}
+            return {"status": session_check.get("state", "error"), "notify_expired": False, "events": []}
+
+        keywords = ("recruiter", "interview", "offer", "application", "message", "hiring", "aviation", "etihad", "talent")
+        for n in self.get_notifications(limit=10) + self.get_conversations(limit=10):
+            if not isinstance(n, dict):
+                continue
+            eid = str(n.get("entityUrn") or n.get("id") or hash(json.dumps(n, sort_keys=True)))
+            if eid in seen_ids:
+                continue
+            seen_ids.add(eid)
+            blob = json.dumps(n, ensure_ascii=False).lower()
+            is_priority = any(k in blob for k in keywords)
+            new_events.append({
+                "id": eid,
+                "priority": "HIGH" if is_priority else "NORMAL",
+                "summary": (n.get("headline") or n.get("title") or blob[:140]),
+                "raw": n,
+            })
+
+        seen_list = list(seen_ids)[-1000:]
+        seen_file.write_text(json.dumps({"seen_ids": seen_list}, indent=2), encoding="utf-8")
+        return {"status": "ok", "events": new_events}
 
     def stage_post(
         self,
@@ -1210,12 +1296,15 @@ def main() -> int:
     t_p = sub.add_parser("telegram", help="Personal Telegram MTProto operations")
     t_p.add_argument("--dialogs", action="store_true", help="List personal Telegram dialogs")
     t_p.add_argument("--stage-msg", action="store_true", help="Stage a personal Telegram message via Gatekeeper")
+    t_p.add_argument("--call", metavar="SUMMARY", nargs="?", const="", help="Place a 1-on-1 Telegram voice call to Omar")
     t_p.add_argument("--to", default="", help="Target username or phone")
     t_p.add_argument("--text", default="", help="Message text")
 
     l_p = sub.add_parser("linkedin", help="LinkedIn account operations")
     l_p.add_argument("--feed", action="store_true", help="Read LinkedIn feed")
     l_p.add_argument("--notifications", action="store_true", help="Read LinkedIn notifications")
+    l_p.add_argument("--messages", action="store_true", help="Read LinkedIn inbox conversations")
+    l_p.add_argument("--poll", action="store_true", help="Check unseen LinkedIn recruiter/message events")
     l_p.add_argument("--stage-post", metavar="TEXT", help="Stage a LinkedIn post via Gatekeeper")
     l_p.add_argument("--visibility", default="PUBLIC", help="Post visibility (PUBLIC or CONNECTIONS)")
 
@@ -1267,6 +1356,8 @@ def main() -> int:
             print(json.dumps(ta.list_dialogs(), indent=2, ensure_ascii=False))
         elif args.stage_msg:
             print(json.dumps(ta.stage_message(args.to, args.text, notify_telegram=True), indent=2, ensure_ascii=False))
+        elif args.call is not None:
+            print(json.dumps(ta.place_voice_call(args.call), indent=2, ensure_ascii=False))
         return 0
 
     if args.cmd == "linkedin":
@@ -1275,6 +1366,10 @@ def main() -> int:
             print(json.dumps(la.get_feed(), indent=2, ensure_ascii=False))
         elif args.notifications:
             print(json.dumps(la.get_notifications(), indent=2, ensure_ascii=False))
+        elif args.messages:
+            print(json.dumps(la.get_conversations(), indent=2, ensure_ascii=False))
+        elif args.poll:
+            print(json.dumps(la.check_unseen_events(), indent=2, ensure_ascii=False))
         elif args.stage_post:
             print(json.dumps(la.stage_post(args.stage_post, args.visibility, notify_telegram=True), indent=2, ensure_ascii=False))
         return 0

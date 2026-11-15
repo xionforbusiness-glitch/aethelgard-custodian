@@ -302,6 +302,25 @@ def convert_openai_content_to_gemini_parts(content) -> list[dict]:
                 itype = item.get("type")
                 if itype in ("text", "input_text") and item.get("text"):
                     g_parts.append({"text": str(item["text"])})
+                elif itype == "input_audio":
+                    audio_obj = item.get("input_audio") or {}
+                    b64_data = str(audio_obj.get("data") or "").strip()
+                    fmt = str(audio_obj.get("format") or "wav").lower().strip()
+                    mime_map = {
+                        "wav": "audio/wav",
+                        "mp3": "audio/mp3",
+                        "ogg": "audio/ogg",
+                        "flac": "audio/flac",
+                        "webm": "audio/webm",
+                        "pcm": "audio/L16",
+                    }
+                    if b64_data:
+                        g_parts.append({
+                            "inlineData": {
+                                "mimeType": mime_map.get(fmt, f"audio/{fmt}"),
+                                "data": b64_data,
+                            }
+                        })
                 elif itype == "image_url":
                     img_url = item.get("image_url", {})
                     url_str = img_url.get("url", "") if isinstance(img_url, dict) else str(img_url)

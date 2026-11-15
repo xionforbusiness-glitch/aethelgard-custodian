@@ -23,6 +23,7 @@ from __future__ import annotations
 import os
 import sys
 import json
+import datetime
 import time
 import shutil
 import tempfile
@@ -1849,6 +1850,315 @@ class TestTier5JobApplicationAndAttachments(unittest.TestCase):
             remaining = conn.execute("SELECT COUNT(*) FROM sessions;").fetchone()[0]
             conn.close()
             self.assertEqual(remaining, 0)
+
+
+class TestTier6JarvisV2(unittest.TestCase):
+    """Real-world Jarvis v2 voice caller, calendar, promise ledger, async callbacks, and life compiler."""
+
+    def test_56_voice_engine_pcm_and_sentence_streaming(self):
+        import asyncio
+        import voice_engine
+
+        clauses = voice_engine.split_speakable_sentences(
+            "Hello **Omar**! الطقس ممتاز؟ Stay safe at OSDI."
+        )
+        self.assertEqual(len(clauses), 3)
+        self.assertIn("Omar", clauses[0])
+        self.assertNotIn("**", clauses[0])
+
+        class _FakeCommunicate:
+            def __init__(self, text, voice, **kwargs):
+                self.text = text
+
+            async def stream(self):
+                yield {"type": "audio", "data": b"FAKE_MP3"}
+
+        # 2000 bytes PCM -> yields 2 frames of 1920 bytes each (second frame zero-padded)
+        fake_proc = MagicMock(returncode=0, stdout=b"\x01\x00" * 1000, stderr=b"")
+
+        async def _collect():
+            out = []
+            async for fr in voice_engine.synthesize_pcm_frames("Hello Omar.", sample_rate=48000, frame_ms=20):
+                out.append(fr)
+            return out
+
+        with patch.object(voice_engine.edge_tts, "Communicate", _FakeCommunicate), \
+             patch("subprocess.run", return_value=fake_proc):
+            frames = asyncio.run(_collect())
+
+        self.assertEqual(len(frames), 2)
+        self.assertTrue(all(len(f) == 1920 for f in frames))
+
+    def test_57_telegram_caller_security_vad_barge_in_and_verbal_approval(self):
+        import array
+        import base64
+        import antigravity_proxy
+        import approval_gatekeeper
+        import telegram_voice_caller
+
+        # 1. Whitelist enforcement
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "1021125594"}):
+            self.assertTrue(telegram_voice_caller.is_caller_authorized(1021125594))
+            self.assertTrue(telegram_voice_caller.is_caller_authorized("1021125594"))
+            self.assertFalse(telegram_voice_caller.is_caller_authorized(999888777))
+            self.assertFalse(telegram_voice_caller.is_caller_authorized("invalid"))
+
+        # 2. Downsample 48k -> 16k + RMS + VAD barge-in & turn end
+        loud_samples = array.array("h", [2500] * 960)  # 20ms @ 48kHz
+        loud_frame = loud_samples.tobytes()
+        silent_frame = b"\x00" * 1920
+
+        ds = telegram_voice_caller.downsample_48k_to_16k(loud_frame)
+        self.assertEqual(len(ds), len(loud_frame) // 3)
+        self.assertGreater(telegram_voice_caller.pcm16_rms(loud_frame), 2000)
+
+        vad = telegram_voice_caller.AudioTurnDetector(
+            speech_rms_threshold=500.0,
+            barge_in_ms=220,
+            min_speech_ms=260,
+            silence_end_ms=600,
+        )
+        # First 10 frames (200ms) should not trigger barge-in yet; 11th frame (220ms) should!
+        barge_events = []
+        for _ in range(15):
+            r = vad.feed_frame(loud_frame, ai_speaking=True)
+            if r["barge_in"]:
+                barge_events.append(True)
+        self.assertEqual(len(barge_events), 1)
+
+        ready_pcm = None
+        for _ in range(35):  # 700ms silence > 600ms silence_end_ms
+            r = vad.feed_frame(silent_frame, ai_speaking=False)
+            if r["utterance_ready"]:
+                ready_pcm = r["utterance_pcm_16k"]
+        self.assertIsNotNone(ready_pcm)
+        wav = telegram_voice_caller.pcm16_to_wav_bytes(ready_pcm, sample_rate=16000)
+        self.assertTrue(wav.startswith(b"RIFF"))
+
+        # 3. Multimodal input_audio translation in antigravity_proxy
+        g_parts = antigravity_proxy.convert_openai_content_to_gemini_parts([
+            {"type": "text", "text": "Transcribe"},
+            {"type": "input_audio", "input_audio": {"data": base64.b64encode(wav).decode("ascii"), "format": "wav"}},
+        ])
+        self.assertEqual(g_parts[1]["inlineData"]["mimeType"], "audio/wav")
+
+        # 4. Strict Two-Step Verbal Approval Guard
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            drafts_dir = Path(tmp_dir) / "drafts"
+            state_dir = Path(tmp_dir) / "state"
+            with patch.dict(os.environ, {"AETHELGARD_DRAFTS_DIR": str(drafts_dir), "AETHELGARD_STATE_DIR": str(state_dir)}):
+                draft = approval_gatekeeper.stage_draft(
+                    platform="whatsapp",
+                    action="send_message",
+                    recipient_or_target="+963999000111",
+                    content="Confirmed arrival at 08:00.",
+                    notify_telegram=False,
+                )
+                did = draft["draft_id"]
+                guard = telegram_voice_caller.VerbalApprovalGuard()
+
+                # Blocked before readback
+                res_early = guard.authorize(did, "Yes confirm send")
+                self.assertFalse(res_early["success"])
+
+                # Blocked on negation even after readback
+                guard.register_readback(did)
+                res_cancel = guard.authorize(did, "No wait cancel send")
+                self.assertFalse(res_cancel["success"])
+
+                # Approved on explicit spoken confirmation
+                res_ok = guard.authorize(did, "Yes confirm and send it")
+                self.assertTrue(res_ok["success"])
+                self.assertEqual(res_ok["approved_via"], "telegram_voice_call")
+
+    def test_58_calendar_bridge_ics_and_shift_fusion(self):
+        import calendar_bridge
+        import shift_tracker
+
+        now = datetime.datetime(2026, 11, 16, 8, 0, tzinfo=calendar_bridge.DAMASCUS_TZ)
+        end = now + datetime.timedelta(hours=1)
+        ics_blob = calendar_bridge.generate_ics_invite(
+            summary="Etihad Ground Ops Briefing",
+            start_iso=now.isoformat(),
+            end_iso=end.isoformat(),
+            location="Damascus Terminal 1",
+            description="Line 1\nLine 2",
+        )
+        events = calendar_bridge.parse_ics_events(ics_blob, source="test_cal")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["summary"], "Etihad Ground Ops Briefing")
+        self.assertEqual(events[0]["location"], "Damascus Terminal 1")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            cred_dir = Path(tmp_dir) / "creds"
+            fake_shift_state = {"date": "2026-11-16", "today_shift_raw": "09:00-17:00"}
+            with patch.dict(os.environ, {"AETHELGARD_CREDENTIALS_DIR": str(cred_dir)}), \
+                 patch.object(calendar_bridge, "fetch_ics_url", return_value=ics_blob), \
+                 patch.object(shift_tracker, "load_tracker_state", return_value=fake_shift_state):
+                calendar_bridge.save_calendar_ics_url("https://calendar.google.com/calendar/ical/test/basic.ics")
+                agenda = calendar_bridge.get_unified_agenda(hours_ahead=24, now=now, include_email_ics=False)
+                summaries = [e["summary"] for e in agenda["events"]]
+                self.assertIn("Etihad Ground Ops Briefing", summaries)
+                self.assertTrue(any("Work Shift" in s for s in summaries))
+
+    def test_59_promise_ledger_closed_loop_lifecycle(self):
+        import approval_gatekeeper
+        import promise_ledger
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault_dir = Path(tmp_dir) / "vault"
+            vault_dir.mkdir(parents=True, exist_ok=True)
+            state_dir = Path(tmp_dir) / "state"
+            drafts_dir = Path(tmp_dir) / "drafts"
+            with patch.dict(os.environ, {
+                "AETHELGARD_STATE_DIR": str(state_dir),
+                "AETHELGARD_DRAFTS_DIR": str(drafts_dir),
+                "VAULT_DIR": str(vault_dir),
+            }):
+                p1 = promise_ledger.add_promise(
+                    counterparty="careers@etihad.ae",
+                    summary="Etihad Airport Services Officer Application",
+                    direction="waiting_on_them",
+                    follow_up_after_hours=24,
+                    vault_dir=str(vault_dir),
+                )
+                self.assertEqual(len(promise_ledger.list_promises("open")), 1)
+                self.assertTrue((vault_dir / "tasks" / "promise_ledger.md").exists())
+
+                # Simulate 30 hours elapsed -> overdue + stages follow-up draft without sending
+                future = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=30)
+                overdue = promise_ledger.check_overdue_promises(now=future)
+                self.assertEqual(len(overdue), 1)
+                followup = promise_ledger.stage_followup_for_overdue(p1["id"], notify_telegram=False, vault_dir=str(vault_dir))
+                self.assertTrue(followup["success"])
+                pending_draft = approval_gatekeeper.get_draft(followup["draft"]["draft_id"])
+                self.assertEqual(pending_draft["status"], "pending_approval")
+
+                # Inbound reply from @etihad.ae resolves the open loop automatically
+                res = promise_ledger.ingest_inbound_email(
+                    {"sender": "talent@etihad.ae", "subject": "Re: Airport Services Officer Application"},
+                    vault_dir=str(vault_dir),
+                )
+                self.assertEqual(res["matched"], 1)
+                self.assertEqual(len(promise_ledger.list_promises("open")), 0)
+
+    def test_60_async_callback_engine_concurrency_and_callbacks(self):
+        import async_callback_engine
+        import circadian_oracle
+        from omnichannel_bridge import GoogleAdapter
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state_dir = Path(tmp_dir) / "state"
+            with patch.dict(os.environ, {"AETHELGARD_STATE_DIR": str(state_dir)}):
+                past_iso = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=5)).isoformat()
+                j1 = async_callback_engine.enqueue_async_job(
+                    "timed_callback",
+                    "Call Omar back about METAR",
+                    payload={"trigger_at": past_iso, "message": "METAR check ready"},
+                    delivery="call",
+                )
+                j2 = async_callback_engine.enqueue_async_job(
+                    "watch_reply",
+                    "Watch Cham Wings",
+                    payload={"query": "from:chamwings", "initial_msg_ids": ["old_1"]},
+                    delivery="call",
+                )
+
+                called_prompts = []
+                tg_msgs = []
+                with patch.object(circadian_oracle, "get_operational_mode", return_value={"mode": "STRATEGIC_WINDOW", "allow_proactive_calls": True}), \
+                     patch.object(GoogleAdapter, "get_status", return_value={"status": "connected"}), \
+                     patch.object(GoogleAdapter, "search_emails", return_value=[{"id": "new_9", "sender": "ops@chamwings.com", "subject": "Roster Confirmed"}]):
+                    tick_res = async_callback_engine.tick_async_jobs(
+                        call_fn=lambda p: called_prompts.append(p) or {"success": True},
+                        telegram_fn=lambda m: tg_msgs.append(m) or True,
+                        spawn_workers=False,
+                    )
+                self.assertEqual(tick_res["triggered"], 2)
+                self.assertEqual(len(called_prompts), 2)
+
+                # Verify SLEEP_SHIELD suppresses voice call and delivers Telegram instead
+                j3 = async_callback_engine.enqueue_async_job(
+                    "timed_callback",
+                    "Nightly check",
+                    payload={"trigger_at": past_iso, "message": "Done silently"},
+                    delivery="call",
+                    urgent=False,
+                )
+                called_sleep = []
+                tg_sleep = []
+                with patch.object(circadian_oracle, "get_operational_mode", return_value={"mode": "SLEEP_SHIELD", "allow_proactive_calls": False}):
+                    async_callback_engine.tick_async_jobs(
+                        call_fn=lambda p: called_sleep.append(p) or {"success": True},
+                        telegram_fn=lambda m: tg_sleep.append(m) or True,
+                        spawn_workers=False,
+                    )
+                self.assertEqual(len(called_sleep), 0)
+                self.assertEqual(len(tg_sleep), 1)
+                self.assertEqual(async_callback_engine.MAX_CONCURRENT_WORKERS, 1)
+
+    def test_61_life_compiler_bilingual_extraction(self):
+        import life_compiler
+        import promise_ledger
+        import shift_tracker
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault_dir = Path(tmp_dir) / "vault"
+            vault_dir.mkdir(parents=True, exist_ok=True)
+            state_dir = Path(tmp_dir) / "state"
+            with patch.dict(os.environ, {"VAULT_DIR": str(vault_dir), "AETHELGARD_STATE_DIR": str(state_dir)}), \
+                 patch.object(shift_tracker, "on_user_interaction", return_value="Shift synced 07:00-15:00"):
+                out = life_compiler.compile_life_dump(
+                    "صرفت 50000 SYP بنزين. Today shift 07:00-15:00. I promised Ahmed to send the updated PDF. Reviewed OSDI fog SOP.",
+                    vault_dir=str(vault_dir),
+                    use_ai=False,
+                )
+                self.assertTrue(out["compiled"])
+                self.assertGreaterEqual(len(out["expenses_logged"]), 1)
+                self.assertGreaterEqual(len(out["shift_updates_applied"]), 1)
+                self.assertGreaterEqual(len(out["promises_added"]), 1)
+                self.assertTrue(out["vault_log_appended"])
+                self.assertTrue((vault_dir / "log.md").exists())
+                self.assertGreaterEqual(len(promise_ledger.list_promises("open")), 1)
+
+    def test_62_circadian_operational_mode_and_sleep_shield(self):
+        import circadian_oracle
+        import proactive_scheduler
+        import shift_tracker
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault_dir = Path(tmp_dir) / "vault"
+            vault_dir.mkdir(parents=True, exist_ok=True)
+            state_dir = Path(tmp_dir) / "state"
+            cred_dir = Path(tmp_dir) / "creds"
+
+            with patch.dict(os.environ, {"AETHELGARD_STATE_DIR": str(state_dir), "AETHELGARD_CREDENTIALS_DIR": str(cred_dir)}), \
+                 patch.object(shift_tracker, "load_tracker_state", return_value={"today_shift_raw": "08:15-16:00"}):
+                # 1. Active duty during fog IROPS
+                duty_dt = datetime.datetime(2026, 11, 16, 10, 30, tzinfo=datetime.timezone(datetime.timedelta(hours=3)))
+                m_duty = circadian_oracle.get_operational_mode(str(vault_dir), now=duty_dt, metar_text="OSDI 160730Z 00000KT 0400 FG OVC002 08/08 Q1018")
+                self.assertEqual(m_duty["mode"], "COCKPIT_DUTY")
+                self.assertEqual(m_duty["briefing_style"], "ultra_brief")
+                self.assertTrue(m_duty["irops_alert"])
+
+                # 2. Sleep shield at 02:30 AM (inside 23:15 -> 07:15 anchor)
+                sleep_dt = datetime.datetime(2026, 11, 16, 2, 30, tzinfo=datetime.timezone(datetime.timedelta(hours=3)))
+                m_sleep = circadian_oracle.get_operational_mode(str(vault_dir), now=sleep_dt, metar_text="OSDI CAVOK")
+                self.assertEqual(m_sleep["mode"], "SLEEP_SHIELD")
+                self.assertFalse(m_sleep["allow_proactive_calls"])
+
+                # 3. Scheduler maintenance suppresses LinkedIn & overdue staging during Sleep Shield
+                sent_alerts = []
+                maint = proactive_scheduler.run_jarvis_background_maintenance(
+                    vault_dir=str(vault_dir),
+                    now=sleep_dt,
+                    check_linkedin=True,
+                    check_overdue_promises=True,
+                    telegram_fn=lambda msg: sent_alerts.append(msg) or True,
+                )
+                self.assertEqual(maint["operational_mode"]["mode"], "SLEEP_SHIELD")
+                self.assertEqual(maint["staged_followups"], 0)
+                self.assertEqual(len(sent_alerts), 0)
 
 
 if __name__ == "__main__":

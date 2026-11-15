@@ -7,7 +7,7 @@ from librarian import SecondBrainLibrarian
 from airport_radar import format_damascus_flight_briefing
 from voice_engine import send_telegram_voice_sync
 from wargame_engine import run_cognitive_collision
-from circadian_oracle import get_circadian_forecast
+from circadian_oracle import get_circadian_forecast, get_operational_mode
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_TOKEN_REDACTED")
 TELEGRAM_USER_ID = os.environ.get("TELEGRAM_ALLOWED_USERS", "1021125594")
@@ -238,6 +238,70 @@ def trigger_wakeup_alarm(vault_dir):
     )
     send_telegram_voice_sync(voice_alarm, caption=None)
 
+def run_jarvis_background_maintenance(
+    vault_dir,
+    now=None,
+    check_linkedin: bool = False,
+    check_overdue_promises: bool = False,
+    telegram_fn=None,
+):
+    """
+    Runs one background Jarvis v2 maintenance pass:
+      1. Evaluates Async Callback Orchestrator (`async_callback_engine.tick_async_jobs`)
+      2. Checks Sleep Shield via `circadian_oracle.get_operational_mode`
+      3. Stages overdue Promise Ledger follow-up drafts (notification only; Gatekeeper invariant)
+      4. Polls LinkedIn unseen notifications/messages & alerts on new recruiter hits or expired cookies
+    """
+    tg = telegram_fn or send_telegram
+    op_mode = {"mode": "STRATEGIC_WINDOW", "allow_proactive_calls": True}
+    try:
+        op_mode = get_operational_mode(vault_dir=vault_dir, now=now)
+    except Exception:
+        pass
+
+    async_res = {}
+    try:
+        import async_callback_engine
+        async_res = async_callback_engine.tick_async_jobs(now=now, vault_dir=vault_dir)
+    except Exception:
+        pass
+
+    staged_followups = 0
+    if check_overdue_promises and op_mode.get("allow_proactive_calls", True):
+        try:
+            import promise_ledger
+            for item in promise_ledger.check_overdue_promises(now=now):
+                if not item.get("followup_draft_id"):
+                    res = promise_ledger.stage_followup_for_overdue(
+                        item["id"], notify_telegram=True, vault_dir=vault_dir
+                    )
+                    if res.get("success") and not res.get("already_staged"):
+                        staged_followups += 1
+        except Exception:
+            pass
+
+    linkedin_events = 0
+    if check_linkedin and op_mode.get("allow_proactive_calls", True):
+        try:
+            from omnichannel_bridge import LinkedInAdapter
+            li_res = LinkedInAdapter().check_unseen_events()
+            if li_res.get("notify_expired"):
+                tg("🔗 *LinkedIn Session Expired:* Please refresh `li_at` cookie via `/connect linkedin` or `Connect_Aethelgard_Accounts.bat`.")
+            for ev in li_res.get("events", []):
+                linkedin_events += 1
+                if ev.get("priority") == "HIGH":
+                    tg(f"💼 *LinkedIn Priority Alert:*\n{ev.get('summary', '')}")
+        except Exception:
+            pass
+
+    return {
+        "operational_mode": op_mode,
+        "async_jobs": async_res,
+        "staged_followups": staged_followups,
+        "linkedin_events": linkedin_events,
+    }
+
+
 def proactive_scheduler_daemon(vault_dir):
     """Continuous background loop monitoring Damascus time and firing scheduled proactive events."""
     last_wakeup_date = None
@@ -248,6 +312,8 @@ def proactive_scheduler_daemon(vault_dir):
     last_weekly_date = None
     last_curiosity_hm = None
     last_vip_triage_slot = None
+    last_linkedin_slot = None
+    last_promise_slot = None
 
     print(f"[{time.strftime('%H:%M:%S')}] ⏰ Full Proactive Autonomy Suite active (Damascus UTC+3)...")
 
@@ -258,6 +324,11 @@ def proactive_scheduler_daemon(vault_dir):
             hour = now.hour
             minute = now.minute
             is_sunday = now.weekday() == 6
+
+            try:
+                op_mode = get_operational_mode(vault_dir=vault_dir, now=now)
+            except Exception:
+                op_mode = {"mode": "STRATEGIC_WINDOW", "allow_proactive_calls": True}
 
             # 0. Dedicated Wake-Up Call (06:00 AM)
             if hour == 6 and minute >= 0 and last_wakeup_date != today_str:
@@ -295,15 +366,16 @@ def proactive_scheduler_daemon(vault_dir):
                 trigger_weekly_review(vault_dir)
                 last_weekly_date = today_str
 
-            # 6. Spontaneous Daytime Curiosity Ping (Stochastic check-in every 15m)
+            # 6. Spontaneous Daytime Curiosity Ping (Stochastic check-in every 15m, suppressed during SLEEP_SHIELD)
             current_hm = (hour, minute // 15)
             if current_hm != last_curiosity_hm:
                 last_curiosity_hm = current_hm
-                try:
-                    from spontaneous_curiosity import trigger_spontaneous_ping
-                    trigger_spontaneous_ping(vault_dir, force=False)
-                except Exception as ce:
-                    pass
+                if op_mode.get("allow_proactive_calls", True):
+                    try:
+                        from spontaneous_curiosity import trigger_spontaneous_ping
+                        trigger_spontaneous_ping(vault_dir, force=False)
+                    except Exception:
+                        pass
 
             # 7. Proactive VIP Inbox Triage & Vault Auto-Ingest (Every 5 minutes)
             current_vip_slot = (today_str, hour, minute // 5)
@@ -314,6 +386,24 @@ def proactive_scheduler_daemon(vault_dir):
                     run_vip_triage_cycle(vault_dir=vault_dir, send_alerts=True)
                 except Exception as ve:
                     print(f"⚠ VIP Inbox Triage notice: {ve}")
+
+            # 8. Jarvis v2 Async Callbacks (30s) + LinkedIn (15m) + Promise SLA Check (1h)
+            li_slot = (today_str, hour, minute // 15)
+            do_li = li_slot != last_linkedin_slot
+            if do_li:
+                last_linkedin_slot = li_slot
+
+            prm_slot = (today_str, hour)
+            do_prm = prm_slot != last_promise_slot
+            if do_prm:
+                last_promise_slot = prm_slot
+
+            run_jarvis_background_maintenance(
+                vault_dir=vault_dir,
+                now=now,
+                check_linkedin=do_li,
+                check_overdue_promises=do_prm,
+            )
 
         except Exception as e:
             print(f"⚠ Proactive Scheduler notice: {e}")

@@ -1139,11 +1139,29 @@ def run_gateway_forever():
     except Exception as se:
         print(f"⚠ Proactive Scheduler startup notice: {se}")
 
-    # ── Launch Gemini 3.8 Live Voice Call Bridge ─────────
+    # ── Launch Native Telegram 1-on-1 Voice Caller (+20 MTProto Bridge) ──────
+    try:
+        try:
+            import telethon  # noqa: F401
+            import ntgcalls  # noqa: F401
+        except ImportError:
+            print("📦 Installing telethon & ntgcalls for Native Telegram Voice Caller...", flush=True)
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "-q", "telethon", "ntgcalls"],
+                timeout=120,
+                check=False,
+            )
+        from telegram_voice_caller import start_telegram_caller_background
+        start_telegram_caller_background()
+        print("📱 Native Telegram 1-on-1 Voice Caller thread initialized (RPC :20132)!")
+    except Exception as tce:
+        print(f"⚠ Telegram Voice Caller startup notice: {tce}")
+
+    # ── Launch Live Voice Call Web Bridge ──────────────────────────────
     try:
         from live_call_server import start_live_call_server_background
         start_live_call_server_background()
-        print("📞 Gemini 3.8 Live Voice Call server active on port 20130!")
+        print("📞 Live Voice Call Web server active on port 20130!")
     except Exception as ce:
         print(f"⚠ Live Call Server startup notice: {ce}")
 

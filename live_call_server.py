@@ -17,12 +17,21 @@ from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
 try:
     import websockets
     from websockets.asyncio.server import serve
+    WS_AVAILABLE = True
+except ImportError as err:
+    print(f"⚠ WebSocket server dependency missing (install websockets): {err}")
+    WS_AVAILABLE = False
+
+try:
     from google import genai
     from google.genai import types
-    LIVE_CALL_AVAILABLE = True
-except ImportError as err:
-    print(f"⚠ Live Call dependencies missing (install websockets google-genai): {err}")
-    LIVE_CALL_AVAILABLE = False
+    GENAI_LIVE_AVAILABLE = True
+except ImportError:
+    genai = None  # type: ignore
+    types = None  # type: ignore
+    GENAI_LIVE_AVAILABLE = False
+
+LIVE_CALL_AVAILABLE = WS_AVAILABLE
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 HTML_PATH = os.path.join(SCRIPT_DIR, "call_interface.html")
@@ -93,6 +102,11 @@ class CallHttpHandler(BaseHTTPRequestHandler):
                 status_data["shift_tracker"] = shift_tracker.load_tracker_state()
             except Exception:
                 pass
+            try:
+                import telegram_voice_caller
+                status_data["telegram_caller"] = telegram_voice_caller.get_caller_status()
+            except Exception:
+                pass
             hb_path = "/tmp/hermes_turn_heartbeat.json" if os.name != "nt" else os.path.join(SCRIPT_DIR, "heartbeat.json")
             if os.path.exists(hb_path):
                 try:
@@ -132,8 +146,60 @@ def start_http_server():
     server.serve_forever()
 
 
+async def handle_antigravity_browser_client(websocket):
+    """Pure Antigravity Pro + Edge-TTS fallback WebSocket voice bridge ($0 extra API keys)."""
+    import telegram_voice_caller
+    import voice_engine
+
+    print("[Live Call] Browser connected via Pure Antigravity + Edge-TTS WebSocket bridge.")
+    brain = telegram_voice_caller.VoiceBrainSession(vault_dir=VAULT_DIR)
+    vad = telegram_voice_caller.AudioTurnDetector(frame_ms=256, barge_in_ms=256, min_speech_ms=256, silence_end_ms=768)
+    send_lock = asyncio.Lock()
+
+    try:
+        greeting = "Aethelgard Web Bridge online via Antigravity Pro. Go ahead, Omar."
+        await websocket.send(json.dumps({"type": "transcript", "text": greeting}))
+        async for chunk in voice_engine.synthesize_pcm_frames(greeting, sample_rate=24000, frame_ms=40):
+            await websocket.send(json.dumps({"type": "audio", "data": base64.b64encode(chunk).decode("ascii")}))
+
+        async for raw_msg in websocket:
+            msg = json.loads(raw_msg)
+            if msg.get("type") != "audio":
+                continue
+            pcm_16k = base64.b64decode(msg.get("data", ""))
+            rms = telegram_voice_caller.pcm16_rms(pcm_16k)
+            is_voice = rms >= vad.speech_rms_threshold
+            if is_voice:
+                vad.in_speech = True
+                vad.speech_ms += 256
+                vad.silence_ms = 0
+                vad._buffer_48k.extend(pcm_16k)
+            elif vad.in_speech:
+                vad.silence_ms += 256
+                vad._buffer_48k.extend(pcm_16k)
+                if vad.silence_ms >= 768 and vad.speech_ms >= 256:
+                    raw_pcm = bytes(vad._buffer_48k)
+                    vad.reset()
+                    wav_bytes = telegram_voice_caller.pcm16_to_wav_bytes(raw_pcm, sample_rate=16000)
+                    reply = await asyncio.to_thread(brain.process_user_turn, wav_bytes=wav_bytes)
+                    async with send_lock:
+                        await websocket.send(json.dumps({"type": "transcript", "text": reply}))
+                        async for frame in voice_engine.synthesize_pcm_frames(reply, sample_rate=24000, frame_ms=40):
+                            await websocket.send(json.dumps({"type": "audio", "data": base64.b64encode(frame).decode("ascii")}))
+                        await websocket.send(json.dumps({"type": "ai_speaking", "active": False}))
+    except asyncio.CancelledError:
+        pass
+    except Exception as exc:
+        print(f"[Live Call] Antigravity WebSocket session ended: {exc}")
+    finally:
+        brain.flush_transcript_to_vault()
+
+
 async def handle_browser_client(websocket):
-    """Bridges browser Web Audio streams directly with Gemini 3.8 Live API."""
+    """Routes WebSocket voice calls to Gemini Live (when GOOGLE_API_KEY set) or Antigravity + Edge-TTS."""
+    if not (GENAI_LIVE_AVAILABLE and GOOGLE_API_KEY):
+        await handle_antigravity_browser_client(websocket)
+        return
     print("[Live Call] Browser connected to WebSocket voice bridge.")
     client = genai.Client(api_key=GOOGLE_API_KEY)
 
@@ -269,7 +335,7 @@ async def run_ws_server():
 def start_live_call_server_background():
     """Starts both HTTP UI server and WebSocket bridge in background threads."""
     if not LIVE_CALL_AVAILABLE:
-        print("⚠ Live call server skipped: google-genai or websockets not installed.")
+        print("⚠ Live call server skipped: websockets not installed.")
         return None, None
     t_http = threading.Thread(target=start_http_server, daemon=True)
     t_http.start()

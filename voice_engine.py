@@ -3,6 +3,7 @@ import re
 import uuid
 import json
 import asyncio
+import subprocess
 import tempfile
 import urllib.request
 import edge_tts
@@ -77,3 +78,121 @@ def send_telegram_voice_sync(text: str, caption: str = None, chat_id: str = TELE
                 os.remove(ogg_path)
             except Exception:
                 pass
+
+
+def split_speakable_sentences(text: str, max_chars: int = 220) -> list[str]:
+    """
+    Splits clean assistant prose into low-latency speakable clauses for progressive TTS.
+    Respects English and Arabic punctuation while preserving short decimal/abbreviation flows.
+    """
+    clean = re.sub(r"[*_`#\[\]()~>|]", "", text or "")
+    clean = re.sub(r"\s+", " ", clean).strip()
+    if not clean:
+        return []
+
+    raw_parts = re.split(r"(?<=[.!?\u061F\u06D4;:])\s+|\n+", clean)
+    clauses: list[str] = []
+    for part in raw_parts:
+        chunk = part.strip()
+        if not chunk:
+            continue
+        while len(chunk) > max_chars:
+            cut = chunk.rfind(" ", 0, max_chars)
+            if cut <= 20:
+                cut = max_chars
+            clauses.append(chunk[:cut].strip())
+            chunk = chunk[cut:].strip()
+        if chunk:
+            clauses.append(chunk)
+    return clauses
+
+
+async def synthesize_pcm_bytes(
+    text: str,
+    voice: str = "auto",
+    sample_rate: int = 48000,
+    channels: int = 1,
+) -> bytes:
+    """
+    Synthesizes speech via edge-tts (Jarvis British EN / Laith Syrian AR calibration)
+    and decodes the streamed MP3 into raw s16le PCM bytes using ffmpeg.
+    """
+    is_ar = is_arabic(text)
+    if voice == "auto":
+        voice = VOICE_ARABIC if is_ar else VOICE_ENGLISH
+
+    pitch = "-1Hz" if is_ar else JARVIS_PITCH
+    rate = "+0%" if is_ar else JARVIS_RATE
+    clean_text = re.sub(r"[*_`#\[\]()~>|]", "", text or "").strip()
+    if not clean_text:
+        return b""
+
+    communicate = edge_tts.Communicate(clean_text, voice, pitch=pitch, rate=rate)
+    mp3_chunks: list[bytes] = []
+    async for chunk in communicate.stream():
+        if chunk.get("type") == "audio" and chunk.get("data"):
+            mp3_chunks.append(chunk["data"])
+    mp3_bytes = b"".join(mp3_chunks)
+    if not mp3_bytes:
+        return b""
+
+    def _decode_mp3_to_pcm(payload: bytes) -> bytes:
+        proc = subprocess.run(
+            [
+                "ffmpeg",
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "mp3",
+                "-i",
+                "pipe:0",
+                "-f",
+                "s16le",
+                "-acodec",
+                "pcm_s16le",
+                "-ac",
+                str(channels),
+                "-ar",
+                str(sample_rate),
+                "pipe:1",
+            ],
+            input=payload,
+            capture_output=True,
+            check=False,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(proc.stderr.decode("utf-8", errors="replace").strip() or "ffmpeg decode failed")
+        return proc.stdout
+
+    return await asyncio.to_thread(_decode_mp3_to_pcm, mp3_bytes)
+
+
+async def synthesize_pcm_frames(
+    text: str,
+    voice: str = "auto",
+    sample_rate: int = 48000,
+    channels: int = 1,
+    frame_ms: int = 20,
+):
+    """
+    Async generator yielding fixed-duration s16le PCM frames (default 20ms = 1920 bytes @ 48kHz mono)
+    sentence-by-sentence for low time-to-first-audio in live voice calls.
+    """
+    frame_bytes = (sample_rate * 2 * channels * frame_ms) // 1000
+    for sentence in split_speakable_sentences(text):
+        pcm = await synthesize_pcm_bytes(
+            sentence,
+            voice=voice,
+            sample_rate=sample_rate,
+            channels=channels,
+        )
+        if not pcm:
+            continue
+        for offset in range(0, len(pcm), frame_bytes):
+            frame = pcm[offset : offset + frame_bytes]
+            if len(frame) < frame_bytes:
+                frame = frame + b"\x00" * (frame_bytes - len(frame))
+            yield frame
+
