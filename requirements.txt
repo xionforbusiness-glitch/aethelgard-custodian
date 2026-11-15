@@ -3,7 +3,7 @@ requests
 yt-dlp
 pillow
 pyyaml
-edge-tts
+edge-tts>=7.2.8
 openpyxl
 google-genai
 websockets

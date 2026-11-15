@@ -2214,6 +2214,98 @@ class TestTier6JarvisV2(unittest.TestCase):
         self.assertTrue(os.environ.get("TELEGRAM_ALLOWED_USERS"))
         self.assertTrue(os.environ.get("AETHELGARD_DIR"))
 
+    def test_64_voice_engine_403_fallback_and_duplicate_phone_call_guard(self):
+        import array
+        import asyncio
+        from types import SimpleNamespace
+        from telethon.tl import types as tg_types
+        import telegram_voice_caller
+        import voice_engine
+
+        # 1. When edge-tts fails with 403, voice_engine circuit-breaks and uses Google TTS HTTP fallback
+        class _Fail403Communicate:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def stream(self):
+                raise RuntimeError("403, message='Invalid response status', url='wss://speech.platform.bing.com/'")
+                yield  # pragma: no cover
+
+        fake_proc = MagicMock(returncode=0, stdout=b"\x02\x00" * 960, stderr=b"")
+        prev_block = voice_engine._EDGE_TTS_BLOCKED_UNTIL
+        try:
+            voice_engine._EDGE_TTS_BLOCKED_UNTIL = 0.0
+            with patch.object(voice_engine.edge_tts, "Communicate", _Fail403Communicate), \
+                 patch.object(voice_engine, "_synthesize_google_tts_mp3_sync", return_value=b"FAKE_GOOGLE_MP3") as gmock, \
+                 patch("subprocess.run", return_value=fake_proc):
+                pcm = asyncio.run(voice_engine.synthesize_pcm_bytes("Good evening Omar."))
+            self.assertEqual(pcm, b"\x02\x00" * 960)
+            gmock.assert_called_once()
+            self.assertGreater(voice_engine._EDGE_TTS_BLOCKED_UNTIL, 0.0)
+        finally:
+            voice_engine._EDGE_TTS_BLOCKED_UNTIL = prev_block
+
+        # 2. 10ms WebRTC frames (960 bytes @ 48kHz) + 180 RMS threshold trigger utterance cleanly
+        vad = telegram_voice_caller.AudioTurnDetector()
+        soft_10ms = array.array("h", [300] * 480).tobytes()
+        silent_10ms = b"\x00" * 960
+        for _ in range(25):  # 250ms speech > 220ms
+            vad.feed_frame(soft_10ms, ai_speaking=False)
+        captured = None
+        for _ in range(75):  # 750ms silence > 700ms
+            res = vad.feed_frame(silent_10ms, ai_speaking=False)
+            if res["utterance_ready"]:
+                captured = res["utterance_pcm_16k"]
+        self.assertIsNotNone(captured)
+
+        # 3. Duplicate UpdatePhoneCall(PhoneCall) after PhoneCallAccepted does NOT call exchange_keys twice
+        async def _verify_call_state():
+            loop = asyncio.get_running_loop()
+            mgr = telegram_voice_caller.TelegramP2PCallManager(loop)
+
+            fake_proto = SimpleNamespace(udp_p2p=True, udp_reflector=True, min_layer=92, max_layer=92, library_versions=["8.0.0"])
+            mgr.ntg = MagicMock()
+            mgr.ntg.get_protocol.return_value = fake_proto
+            mgr.ntg.exchange_keys = AsyncMock(return_value=SimpleNamespace(g_a_or_b=b"A" * 256, key_fingerprint=999))
+            mgr.ntg.connect_p2p = AsyncMock(return_value=None)
+
+            confirmed_call = tg_types.PhoneCall(
+                id=777,
+                access_hash=888,
+                date=None,
+                admin_id=1,
+                participant_id=1021125594,
+                g_a_or_b=b"A" * 256,
+                key_fingerprint=999,
+                protocol=tg_types.PhoneCallProtocol(min_layer=92, max_layer=92, library_versions=["8.0.0"], udp_p2p=True, udp_reflector=True),
+                connections=[],
+                start_date=None,
+                p2p_allowed=True,
+            )
+            mgr.client = AsyncMock(return_value=SimpleNamespace(phone_call=confirmed_call))
+
+            input_call = tg_types.InputPhoneCall(id=777, access_hash=888)
+            mgr._init_call_context(1021125594, input_call, 777)
+
+            accepted = tg_types.PhoneCallAccepted(
+                id=777,
+                access_hash=888,
+                date=None,
+                admin_id=1,
+                participant_id=1021125594,
+                g_b=b"B" * 256,
+                protocol=tg_types.PhoneCallProtocol(min_layer=92, max_layer=92, library_versions=["8.0.0"], udp_p2p=True, udp_reflector=True),
+            )
+            await mgr._on_phone_call_update(accepted)
+            # Duplicate PhoneCall update right afterwards (same id=777)
+            await mgr._on_phone_call_update(confirmed_call)
+
+            self.assertEqual(mgr.ntg.exchange_keys.await_count, 1)
+            self.assertEqual(mgr.ntg.connect_p2p.await_count, 1)
+            await mgr._cleanup_call(1021125594)
+
+        asyncio.run(_verify_call_state())
+
 
 if __name__ == "__main__":
     unittest.main()

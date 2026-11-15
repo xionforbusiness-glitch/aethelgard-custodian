@@ -233,11 +233,11 @@ class AudioTurnDetector:
 
     def __init__(
         self,
-        speech_rms_threshold: float = 550.0,
+        speech_rms_threshold: float = 180.0,
         frame_ms: int = 20,
         barge_in_ms: int = 220,
-        min_speech_ms: int = 260,
-        silence_end_ms: int = 840,
+        min_speech_ms: int = 220,
+        silence_end_ms: int = 700,
         max_turn_ms: int = 18000,
     ):
         self.speech_rms_threshold = float(speech_rms_threshold)
@@ -265,6 +265,7 @@ class AudioTurnDetector:
         self._buffer_48k.clear()
 
     def feed_frame(self, pcm_48k: bytes, ai_speaking: bool = False) -> Dict[str, Any]:
+        step_ms = max(1, (len(pcm_48k) * 1000) // (VOICE_SAMPLE_RATE * 2)) if len(pcm_48k) >= 96 else self.frame_ms
         rms = pcm16_rms(pcm_48k)
         is_voice = rms >= self.speech_rms_threshold
         barge_in = False
@@ -273,7 +274,7 @@ class AudioTurnDetector:
 
         if ai_speaking:
             if is_voice:
-                self._barge_streak_ms += self.frame_ms
+                self._barge_streak_ms += step_ms
                 if self._barge_streak_ms >= self.barge_in_ms and not self._barge_fired:
                     self._barge_fired = True
                     barge_in = True
@@ -286,13 +287,13 @@ class AudioTurnDetector:
 
         if is_voice:
             self.in_speech = True
-            self.speech_ms += self.frame_ms
+            self.speech_ms += step_ms
             self.silence_ms = 0
-            self.total_turn_ms += self.frame_ms
+            self.total_turn_ms += step_ms
             self._buffer_48k.extend(pcm_48k)
         elif self.in_speech:
-            self.silence_ms += self.frame_ms
-            self.total_turn_ms += self.frame_ms
+            self.silence_ms += step_ms
+            self.total_turn_ms += step_ms
             self._buffer_48k.extend(pcm_48k)
 
             if self.silence_ms >= self.silence_end_ms or self.total_turn_ms >= self.max_turn_ms:
@@ -604,8 +605,12 @@ class VoiceBrainSession:
             data=json.dumps(payload).encode("utf-8"),
             headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
         )
-        with urllib.request.urlopen(req, timeout=25) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(req, timeout=25) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            err_body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Proxy HTTP {exc.code}: {err_body[:300]}") from exc
 
     def process_user_turn(self, wav_bytes: Optional[bytes] = None, text_prompt: str = "") -> str:
         """
@@ -900,27 +905,44 @@ class TelegramP2PCallManager:
             ctx = self.active_calls.get(peer_id)
             if not ctx:
                 return
+            if mode == ntgcalls.StreamMode.CAPTURE:
+                return
             vad: AudioTurnDetector = ctx["vad"]
-            for fr in frames or []:
-                raw = bytes(getattr(fr, "data", b""))
-                if not raw:
-                    continue
-                res = vad.feed_frame(raw, ai_speaking=ctx.get("ai_speaking", False))
-                if res.get("barge_in"):
-                    ctx["generation"] = ctx.get("generation", 0) + 1
-                    ctx["ai_speaking"] = False
-                    out_q: asyncio.Queue = ctx["out_queue"]
-                    while not out_q.empty():
-                        try:
-                            out_q.get_nowait()
-                        except Exception:
-                            break
-                if res.get("utterance_ready") and res.get("utterance_pcm_16k"):
-                    pcm16 = res["utterance_pcm_16k"]
-                    asyncio.run_coroutine_threadsafe(
-                        self._handle_utterance(peer_id, pcm16),
-                        self.loop,
-                    )
+            try:
+                for fr in frames or []:
+                    raw = bytes(getattr(fr, "data", b""))
+                    if not raw:
+                        continue
+                    if not ctx.get("rx_logged"):
+                        ctx["rx_logged"] = True
+                        self._log_event(
+                            f"Audio RX active peer={peer_id} mode={mode} device={device} bytes={len(raw)} rms={round(pcm16_rms(raw), 1)}"
+                        )
+                    was_in_speech = vad.in_speech
+                    res = vad.feed_frame(raw, ai_speaking=ctx.get("ai_speaking", False))
+                    if not was_in_speech and vad.in_speech and not ctx.get("speech_start_logged"):
+                        ctx["speech_start_logged"] = True
+                        self._log_event(f"Voice activity started peer={peer_id} rms={res.get('rms')}")
+                    if res.get("barge_in"):
+                        self._log_event(f"Barge-in triggered peer={peer_id}")
+                        ctx["generation"] = ctx.get("generation", 0) + 1
+                        ctx["ai_speaking"] = False
+                        out_q: asyncio.Queue = ctx["out_queue"]
+                        while not out_q.empty():
+                            try:
+                                out_q.get_nowait()
+                            except Exception:
+                                break
+                    if res.get("utterance_ready") and res.get("utterance_pcm_16k"):
+                        ctx["speech_start_logged"] = False
+                        pcm16 = res["utterance_pcm_16k"]
+                        self._log_event(f"Utterance captured peer={peer_id} pcm_16k_bytes={len(pcm16)}")
+                        asyncio.run_coroutine_threadsafe(
+                            self._handle_utterance(peer_id, pcm16),
+                            self.loop,
+                        )
+            except Exception as fexc:
+                self._log_event(f"_on_frames error: {type(fexc).__name__}: {fexc}")
 
         def _on_conn_change(peer_id: int, info: Any) -> None:
             ctx = self.active_calls.get(peer_id)
@@ -1067,9 +1089,14 @@ class TelegramP2PCallManager:
                 if not peer_id:
                     self._log_event(f"Ignoring PhoneCallAccepted for unknown id={phone_call.id}")
                     return
+                ctx = self.active_calls.get(peer_id)
+                if not ctx:
+                    return
+                if ctx.get("webrtc_started"):
+                    self._log_event(f"PhoneCallAccepted ignored (WebRTC already started id={phone_call.id})")
+                    return
                 self._log_event(f"PhoneCallAccepted id={phone_call.id} peer={peer_id} -> confirming")
                 auth = await self.ntg.exchange_keys(peer_id, phone_call.g_b, 0)
-                ctx = self.active_calls[peer_id]
                 ntg_proto = self.ntg.get_protocol()
                 confirmed = await self.client(functions.phone.ConfirmCallRequest(
                     peer=ctx["input_call"],
@@ -1083,6 +1110,7 @@ class TelegramP2PCallManager:
                         library_versions=ntg_proto.library_versions,
                     ),
                 ))
+                ctx["webrtc_started"] = True
                 self._log_event(f"ConfirmCallRequest ok -> {type(confirmed.phone_call).__name__}")
                 await self._connect_webrtc(peer_id, confirmed.phone_call)
 
@@ -1090,6 +1118,12 @@ class TelegramP2PCallManager:
                 peer_id = self.call_by_tg_id.get(phone_call.id)
                 if not peer_id:
                     return
+                ctx = self.active_calls.get(peer_id)
+                if ctx and ctx.get("webrtc_started"):
+                    self._log_event(f"PhoneCall update ignored (already connected id={phone_call.id})")
+                    return
+                if ctx:
+                    ctx["webrtc_started"] = True
                 self._log_event(f"PhoneCall active id={phone_call.id} peer={peer_id}")
                 await self.ntg.exchange_keys(peer_id, phone_call.g_a_or_b, phone_call.key_fingerprint)
                 await self._connect_webrtc(peer_id, phone_call)
@@ -1125,6 +1159,10 @@ class TelegramP2PCallManager:
             "generation": 0,
             "ai_speaking": False,
             "greeted": False,
+            "webrtc_started": False,
+            "rx_logged": False,
+            "speech_start_logged": False,
+            "tx_error_logged": False,
             "opening_prompt": opening_prompt,
             "turn_lock": asyncio.Lock(),
             "sender_task": None,
@@ -1188,13 +1226,18 @@ class TelegramP2PCallManager:
             return
         gen_at_start = ctx["generation"]
         ctx["ai_speaking"] = True
+        queued = 0
         try:
+            self._log_event(f"TTS synthesizing peer={peer_id}: {text[:80]}")
             async for frame in voice_engine.synthesize_pcm_frames(text, voice="auto", sample_rate=VOICE_SAMPLE_RATE):
                 if ctx.get("generation") != gen_at_start or peer_id not in self.active_calls:
                     break
                 await ctx["out_queue"].put(frame)
+                queued += 1
+            self._log_event(f"TTS queued {queued} PCM frames peer={peer_id}")
         except Exception as exc:
-            print(f"⚠ Live call TTS error: {exc}")
+            self._log_event(f"Live call TTS error: {type(exc).__name__}: {exc}")
+            traceback.print_exc()
 
     async def _handle_utterance(self, peer_id: int, pcm_16k: bytes) -> None:
         ctx = self.active_calls.get(peer_id)
@@ -1203,7 +1246,14 @@ class TelegramP2PCallManager:
         async with ctx["turn_lock"]:
             wav_bytes = pcm16_to_wav_bytes(pcm_16k, sample_rate=ASR_SAMPLE_RATE)
             brain: VoiceBrainSession = ctx["brain"]
-            reply = await asyncio.to_thread(brain.process_user_turn, wav_bytes=wav_bytes)
+            try:
+                self._log_event(f"VoiceBrain turn start peer={peer_id} wav_bytes={len(wav_bytes)}")
+                reply = await asyncio.to_thread(brain.process_user_turn, wav_bytes=wav_bytes)
+                self._log_event(f"VoiceBrain reply peer={peer_id}: {str(reply)[:90]}")
+            except Exception as bexc:
+                self._log_event(f"VoiceBrain turn error peer={peer_id}: {type(bexc).__name__}: {bexc}")
+                traceback.print_exc()
+                reply = "Sorry Omar, I hit a quick reasoning hiccup — say that once more."
             if reply:
                 await self._speak_text(peer_id, reply)
 
@@ -1216,12 +1266,17 @@ class TelegramP2PCallManager:
                     frame = ctx["out_queue"].get_nowait()
                     ctx["ai_speaking"] = True
                     if self.ntg:
-                        await self.ntg.send_external_frame(
-                            peer_id,
-                            ntgcalls.StreamDevice.MICROPHONE,
-                            frame,
-                            ntgcalls.FrameData(),
-                        )
+                        try:
+                            await self.ntg.send_external_frame(
+                                peer_id,
+                                ntgcalls.StreamDevice.MICROPHONE,
+                                frame,
+                                ntgcalls.FrameData(),
+                            )
+                        except Exception as tx_err:
+                            if not ctx.get("tx_error_logged"):
+                                ctx["tx_error_logged"] = True
+                                self._log_event(f"TX send_external_frame notice: {type(tx_err).__name__}: {tx_err}")
                 except asyncio.QueueEmpty:
                     ctx["ai_speaking"] = False
                 next_tick += frame_step

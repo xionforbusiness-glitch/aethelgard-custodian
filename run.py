@@ -609,6 +609,17 @@ def auto_update_self(allow_reexec: bool = False):
 
 
 # ── 2. Sync Aethelgard Obsidian Vault from GitHub ────────────────────────────
+def _abort_stale_git_rebase(repo_dir: str) -> None:
+    """Aborts or clears leftover git rebase state directories before pull --rebase."""
+    git_dir = os.path.join(repo_dir, ".git")
+    for name in ("rebase-merge", "rebase-apply"):
+        if os.path.exists(os.path.join(git_dir, name)):
+            subprocess.run(["git", "-C", repo_dir, "rebase", "--abort"], check=False, capture_output=True, timeout=10)
+            stale = os.path.join(git_dir, name)
+            if os.path.exists(stale):
+                shutil.rmtree(stale, ignore_errors=True)
+
+
 def init_vault():
     print("📁 [1/4] Synchronizing Aethelgard Obsidian Vault...")
     os.makedirs(os.path.dirname(VAULT_DIR) or ".", exist_ok=True)
@@ -622,6 +633,7 @@ def init_vault():
         try:
             if GITHUB_TOKEN:
                 subprocess.run(["git", "-C", VAULT_DIR, "remote", "set-url", "origin", auth_url], check=False)
+            _abort_stale_git_rebase(VAULT_DIR)
             subprocess.run(["git", "-C", VAULT_DIR, "pull", "--rebase", "origin", VAULT_BRANCH], check=True)
             print("✅ Vault updated to latest commit.")
         except Exception as e:
@@ -928,6 +940,7 @@ def auto_sync_worker():
         try:
             # First, pull any new commits from local desktop / GitHub
             _ensure_repo_remote_auth(VAULT_DIR)
+            _abort_stale_git_rebase(VAULT_DIR)
             subprocess.run(["git", "-C", VAULT_DIR, "pull", "--rebase", "origin", VAULT_BRANCH], check=False)
             subprocess.run(["git", "-C", VAULT_DIR, "add", "."], check=True)
             res = subprocess.run(["git", "-C", VAULT_DIR, "commit", "-m", "Auto-sync from Aethelgard 24/7 Custodian"], capture_output=True, text=True)
