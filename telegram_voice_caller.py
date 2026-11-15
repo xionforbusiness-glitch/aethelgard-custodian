@@ -68,8 +68,8 @@ MODEL_NAME = os.environ.get("VOICE_CALL_MODEL", "antigravity/gemini-3.8-flash-lo
 
 VOICE_SAMPLE_RATE = 48000
 ASR_SAMPLE_RATE = 16000
-FRAME_MS = 20
-FRAME_BYTES_48K = (VOICE_SAMPLE_RATE * 2 * FRAME_MS) // 1000  # 1920 bytes
+FRAME_MS = 10  # NTgCalls WebRTC external audio requires strictly 10ms PCM frames
+FRAME_BYTES_48K = (VOICE_SAMPLE_RATE * 2 * FRAME_MS) // 1000  # 960 bytes
 
 
 # ==============================================================================
@@ -997,10 +997,11 @@ class TelegramP2PCallManager:
             ntgcalls.StreamMode.CAPTURE,
             ntgcalls.MediaDescription(microphone=ad, speaker=None, camera=None, screen=None),
         )
+        # NTgCalls StreamManager enables enable_audio_incoming() only when PLAYBACK binds microphone=ad (RecordStream spec).
         await self.ntg.set_stream_sources(
             peer_id,
             ntgcalls.StreamMode.PLAYBACK,
-            ntgcalls.MediaDescription(microphone=None, speaker=ad, camera=None, screen=None),
+            ntgcalls.MediaDescription(microphone=ad, speaker=None, camera=None, screen=None),
         )
 
     async def _connect_webrtc(self, peer_id: int, phone_call: Any) -> None:
@@ -1229,12 +1230,17 @@ class TelegramP2PCallManager:
         queued = 0
         try:
             self._log_event(f"TTS synthesizing peer={peer_id}: {text[:80]}")
-            async for frame in voice_engine.synthesize_pcm_frames(text, voice="auto", sample_rate=VOICE_SAMPLE_RATE):
+            async for frame in voice_engine.synthesize_pcm_frames(
+                text,
+                voice="auto",
+                sample_rate=VOICE_SAMPLE_RATE,
+                frame_ms=FRAME_MS,
+            ):
                 if ctx.get("generation") != gen_at_start or peer_id not in self.active_calls:
                     break
                 await ctx["out_queue"].put(frame)
                 queued += 1
-            self._log_event(f"TTS queued {queued} PCM frames peer={peer_id}")
+            self._log_event(f"TTS queued {queued} PCM frames ({FRAME_MS}ms) peer={peer_id}")
         except Exception as exc:
             self._log_event(f"Live call TTS error: {type(exc).__name__}: {exc}")
             traceback.print_exc()
@@ -1279,12 +1285,15 @@ class TelegramP2PCallManager:
                                 self._log_event(f"TX send_external_frame notice: {type(tx_err).__name__}: {tx_err}")
                 except asyncio.QueueEmpty:
                     ctx["ai_speaking"] = False
+                    next_tick = self.loop.time()
                 next_tick += frame_step
-                delay = next_tick - self.loop.time()
+                now = self.loop.time()
+                delay = next_tick - now
                 if delay > 0:
                     await asyncio.sleep(delay)
-                else:
-                    next_tick = self.loop.time()
+                elif (now - next_tick) > 0.05:
+                    # Only resync clock after real stalls (>50ms); keep 1-3ms asyncio jitter compensated for smooth 100fps TX
+                    next_tick = now
         except asyncio.CancelledError:
             pass
 

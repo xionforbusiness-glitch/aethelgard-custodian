@@ -2306,6 +2306,85 @@ class TestTier6JarvisV2(unittest.TestCase):
 
         asyncio.run(_verify_call_state())
 
+    def test_65_ntgcalls_10ms_tx_and_playback_microphone_rx(self):
+        import array
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock, patch
+        import ntgcalls
+        import telegram_voice_caller
+        import voice_engine
+
+        # 1. Verify 10ms WebRTC frame geometry (960 bytes @ 48kHz mono s16le)
+        self.assertEqual(telegram_voice_caller.FRAME_MS, 10)
+        self.assertEqual(telegram_voice_caller.FRAME_BYTES_48K, 960)
+
+        async def _verify_10ms_and_streams():
+            loop = asyncio.get_running_loop()
+            mgr = telegram_voice_caller.TelegramP2PCallManager(loop)
+
+            stream_calls = []
+            mgr.ntg = MagicMock()
+            mgr.ntg.stop = AsyncMock(return_value=None)
+            mgr.ntg.create_p2p_call = AsyncMock(return_value=None)
+
+            async def _record_stream_sources(peer_id, mode, media):
+                stream_calls.append((peer_id, mode, media))
+
+            mgr.ntg.set_stream_sources = AsyncMock(side_effect=_record_stream_sources)
+
+            # 2. _prepare_ntg_peer binds microphone=ad, speaker=None for BOTH CAPTURE and PLAYBACK
+            await mgr._prepare_ntg_peer(1021125594)
+            modes = {mode: media for _, mode, media in stream_calls}
+            self.assertIn(ntgcalls.StreamMode.CAPTURE, modes)
+            self.assertIn(ntgcalls.StreamMode.PLAYBACK, modes)
+            self.assertIsNotNone(modes[ntgcalls.StreamMode.CAPTURE].microphone)
+            self.assertIsNone(modes[ntgcalls.StreamMode.CAPTURE].speaker)
+            self.assertIsNotNone(modes[ntgcalls.StreamMode.PLAYBACK].microphone)
+            self.assertIsNone(modes[ntgcalls.StreamMode.PLAYBACK].speaker)
+            self.assertEqual(modes[ntgcalls.StreamMode.CAPTURE].microphone.sample_rate, 48000)
+
+            # 3. _speak_text requests frame_ms=10 and queues 960-byte frames
+            captured_kwargs = {}
+
+            async def _fake_synth(text, voice="auto", sample_rate=48000, frame_ms=20):
+                captured_kwargs["sample_rate"] = sample_rate
+                captured_kwargs["frame_ms"] = frame_ms
+                yield b"\x01\x02" * 480
+                yield b"\x03\x04" * 480
+
+            mgr._init_call_context(1021125594, SimpleNamespace(id=1, access_hash=2), 1)
+            with patch.object(voice_engine, "synthesize_pcm_frames", side_effect=_fake_synth):
+                await mgr._speak_text(1021125594, "Hello Omar.")
+
+            self.assertEqual(captured_kwargs, {"sample_rate": 48000, "frame_ms": 10})
+            out_q = mgr.active_calls[1021125594]["out_queue"]
+            self.assertEqual(out_q.qsize(), 2)
+            self.assertEqual(len(out_q.get_nowait()), 960)
+            self.assertEqual(len(out_q.get_nowait()), 960)
+
+            # 4. _on_frames accepts PLAYBACK + StreamDevice.MICROPHONE 10ms frames into VAD
+            captured_cb = {}
+            fake_ntg = MagicMock()
+            fake_ntg.on_signaling_data = lambda fn: None
+            fake_ntg.on_connection_change = lambda fn: None
+            fake_ntg.on_frames = lambda fn: captured_cb.setdefault("on_frames", fn)
+            mgr.ntg = fake_ntg
+            mgr._register_ntg_callbacks()
+
+            speech_frame = SimpleNamespace(data=array.array("h", [500] * 480).tobytes())
+            captured_cb["on_frames"](
+                1021125594,
+                ntgcalls.StreamMode.PLAYBACK,
+                ntgcalls.StreamDevice.MICROPHONE,
+                [speech_frame],
+            )
+            self.assertTrue(mgr.active_calls[1021125594]["rx_logged"])
+            self.assertGreater(mgr.active_calls[1021125594]["vad"].speech_ms, 0)
+            await mgr._cleanup_call(1021125594)
+
+        asyncio.run(_verify_10ms_and_streams())
+
 
 if __name__ == "__main__":
     unittest.main()
