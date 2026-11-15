@@ -45,7 +45,7 @@ cd "$SCRIPT_DIR"
 
 echo "📦 [1/5] Updating system packages and installing prerequisites..."
 $SUDO apt-get update -y
-$SUDO apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" curl git ffmpeg psmisc pciutils lshw zstd python3 python3-pip python3-venv
+$SUDO apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" curl git ffmpeg psmisc pciutils lshw zstd python3 python3-pip python3-venv python-is-python3
 
 # Install Node.js 22 LTS (Required for OmniRoute Antigravity router)
 echo "📦 [2/5] Installing Node.js 22 LTS..."

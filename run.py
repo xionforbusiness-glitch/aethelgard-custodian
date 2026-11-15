@@ -92,6 +92,37 @@ def _resolve_github_token() -> str:
     return ""
 
 
+def _ensure_repo_remote_auth(repo_dir: str):
+    """Refreshes HTTPS GitHub origin remote URL with the active resolved token."""
+    if not repo_dir or not os.path.exists(os.path.join(repo_dir, ".git")):
+        return
+    tok = _resolve_github_token()
+    if not tok:
+        return
+    try:
+        res = subprocess.run(
+            ["git", "-C", repo_dir, "config", "--get", "remote.origin.url"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        remote_url = res.stdout.strip()
+        if not remote_url:
+            return
+        parsed = urllib.parse.urlparse(remote_url)
+        if parsed.scheme in ("http", "https") and parsed.hostname and parsed.hostname.lower().endswith("github.com") and parsed.path:
+            target_url = f"https://{GITHUB_USER}:{tok}@github.com{parsed.path}"
+            if remote_url != target_url:
+                subprocess.run(
+                    ["git", "-C", repo_dir, "remote", "set-url", "origin", target_url],
+                    check=False,
+                    capture_output=True,
+                    timeout=5,
+                )
+    except Exception:
+        pass
+
+
 GITHUB_TOKEN = _resolve_github_token()
 VAULT_REPO = os.environ.get("VAULT_REPO", "aethelgard-vault")
 VAULT_BRANCH = os.environ.get("VAULT_BRANCH", "main")
@@ -229,10 +260,15 @@ def _find_poisoned_session_ids(cur, has_sessions: bool, has_messages: bool, has_
             cur.execute(
                 "SELECT DISTINCT session_id FROM messages "
                 "WHERE content LIKE '%don''t currently have an active integration%' "
+                "OR content LIKE '%don''t have an active integration%' "
                 "OR content LIKE '%Connect a Google Workspace%' "
+                "OR content LIKE '%Set up local API credentials%' "
                 "OR content LIKE '%don''t have access to your Gmail%' "
                 "OR content LIKE '%can''t check or read your inbox%' "
                 "OR content LIKE '%I don''t have your credentials%' "
+                "OR content LIKE '%never transfer%' "
+                "OR content LIKE '%never receives the actual Gmail%' "
+                "OR content LIKE '%stay on your local PC%' "
                 "OR content LIKE '%The model provider failed after retries%' "
                 "OR content LIKE '%Your request was not processed. Send it again%';"
             )
@@ -537,23 +573,35 @@ def unlock_stale_hermes_sessions():
         pass
 
 
-def auto_update_self():
+def auto_update_self(allow_reexec: bool = False):
     """Auto-pull latest codebase on boot using git reset --hard origin/main so dirty files never block updates."""
     print("🔄 Checking for Aethelgard Custodian updates from GitHub...")
+    updated = False
     if os.path.exists(os.path.join(SCRIPT_DIR, ".git")):
         try:
+            _ensure_repo_remote_auth(SCRIPT_DIR)
             subprocess.run(["git", "-C", SCRIPT_DIR, "fetch", "origin", "main"], timeout=15, capture_output=True, text=True)
             local_rev = subprocess.run(["git", "-C", SCRIPT_DIR, "rev-parse", "HEAD"], timeout=5, capture_output=True, text=True).stdout.strip()
             remote_rev = subprocess.run(["git", "-C", SCRIPT_DIR, "rev-parse", "origin/main"], timeout=5, capture_output=True, text=True).stdout.strip()
             if local_rev and remote_rev and local_rev != remote_rev:
                 res = subprocess.run(["git", "-C", SCRIPT_DIR, "reset", "--hard", "origin/main"], timeout=15, capture_output=True, text=True)
                 print(f"✅ Aethelgard updated to latest commit: {res.stdout.strip()}")
+                updated = True
             else:
                 print("✅ Aethelgard is up to date.")
         except Exception as e:
             print(f"⚠ Auto-update notice: {e}")
 
     unlock_stale_hermes_sessions()
+    if updated and allow_reexec and os.environ.get("_AETHELGARD_BOOT_REEXEC") != "1":
+        print("🔄 Reloading updated custodian modules via execv...", flush=True)
+        os.environ["_AETHELGARD_BOOT_REEXEC"] = "1"
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+        except Exception:
+            pass
+        os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
 # ── 2. Sync Aethelgard Obsidian Vault from GitHub ────────────────────────────
@@ -645,22 +693,19 @@ def init_omniroute():
 
 
 # ── 4. Configure Hermes Agent Profile ─────────────────────────────────────────
-def init_hermes():
-    print(f"\n⚙️ [3/4] Configuring Hermes Profile '{HERMES_PROFILE}'...")
-    # Apply Hermes typing lifecycle hotfix & proxy hardening
-    patch_results = patch_hermes_gateway_typing()
-    print(f"⚡ [Hotfix 1] Applied Hermes Gateway typing lifecycle patches: {patch_results}", flush=True)
-
-    roots = _get_hermes_roots()
-    root_homes = []
-    root_profiles = []
-    for root_home, root_profile in roots:
-        os.makedirs(root_home, exist_ok=True)
-        os.makedirs(root_profile, exist_ok=True)
-        if root_home not in root_homes:
-            root_homes.append(root_home)
-        if root_profile not in root_profiles:
-            root_profiles.append(root_profile)
+def _sync_hermes_profile_files(root_homes=None, root_profiles=None):
+    """Synchronizes SOUL.md, config.yaml, skills, hooks, career assets, and .env to active Hermes roots."""
+    if root_homes is None or root_profiles is None:
+        roots = _get_hermes_roots()
+        root_homes = []
+        root_profiles = []
+        for root_home, root_profile in roots:
+            os.makedirs(root_home, exist_ok=True)
+            os.makedirs(root_profile, exist_ok=True)
+            if root_home not in root_homes:
+                root_homes.append(root_home)
+            if root_profile not in root_profiles:
+                root_profiles.append(root_profile)
 
     # Sync config.yaml, SOUL.md & skills across active roots/profiles
     cfg_src = os.path.join(SCRIPT_DIR, "profile", "config.yaml")
@@ -748,10 +793,26 @@ def init_hermes():
         home_env = os.path.join(HERMES_HOME, ".env")
         try:
             os.makedirs(HERMES_HOME, exist_ok=True)
-            with open(home_env, "a", encoding="utf-8") as hef:
-                hef.write(f"\nGOOGLE_API_KEY={GOOGLE_API_KEY}\nGEMINI_API_KEY={GOOGLE_API_KEY}\n")
+            existing = ""
+            if os.path.exists(home_env):
+                with open(home_env, "r", encoding="utf-8", errors="ignore") as hef_r:
+                    existing = hef_r.read()
+            if f"GOOGLE_API_KEY={GOOGLE_API_KEY}" not in existing:
+                with open(home_env, "a", encoding="utf-8") as hef:
+                    hef.write(f"\nGOOGLE_API_KEY={GOOGLE_API_KEY}\nGEMINI_API_KEY={GOOGLE_API_KEY}\n")
         except Exception:
             pass
+
+    return root_homes, root_profiles, cfg_src, stt_cmd
+
+
+def init_hermes():
+    print(f"\n⚙️ [3/4] Configuring Hermes Profile '{HERMES_PROFILE}'...")
+    # Apply Hermes typing lifecycle hotfix & proxy hardening
+    patch_results = patch_hermes_gateway_typing()
+    print(f"⚡ [Hotfix 1] Applied Hermes Gateway typing lifecycle patches: {patch_results}", flush=True)
+
+    _root_homes, root_profiles, cfg_src, stt_cmd = _sync_hermes_profile_files()
 
     os.environ["WIKI_PATH"] = VAULT_DIR
     os.environ["OBSIDIAN_VAULT_PATH"] = VAULT_DIR
@@ -835,6 +896,7 @@ def auto_sync_worker():
         time.sleep(45)
         # 1. Codebase Auto-Updater: check if origin/main has new commits
         try:
+            _ensure_repo_remote_auth(SCRIPT_DIR)
             subprocess.run(["git", "-C", SCRIPT_DIR, "fetch", "origin", "main"], check=False, capture_output=True, timeout=15)
             local_rev = subprocess.run(["git", "-C", SCRIPT_DIR, "rev-parse", "HEAD"], capture_output=True, text=True, timeout=10).stdout.strip()
             remote_rev = subprocess.run(["git", "-C", SCRIPT_DIR, "rev-parse", "origin/main"], capture_output=True, text=True, timeout=10).stdout.strip()
@@ -849,6 +911,7 @@ def auto_sync_worker():
         # 2. Vault Sync
         try:
             # First, pull any new commits from local desktop / GitHub
+            _ensure_repo_remote_auth(VAULT_DIR)
             subprocess.run(["git", "-C", VAULT_DIR, "pull", "--rebase", "origin", VAULT_BRANCH], check=False)
             subprocess.run(["git", "-C", VAULT_DIR, "add", "."], check=True)
             res = subprocess.run(["git", "-C", VAULT_DIR, "commit", "-m", "Auto-sync from Aethelgard 24/7 Custodian"], capture_output=True, text=True)
@@ -888,6 +951,61 @@ def send_telegram_startup():
 active_gateway_proc = None
 gateway_start_time = 0.0
 
+def _restart_custodian_process():
+    """Reboots the entire run.py process cleanly (never call sys.exit(0) inside a worker thread)."""
+    try:
+        import antigravity_proxy
+        srv = getattr(antigravity_proxy, "_proxy_server_instance", None)
+        if srv is not None:
+            srv.shutdown()
+            srv.server_close()
+    except Exception:
+        pass
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:
+        pass
+    if os.name != "nt" and os.environ.get("INVOCATION_ID"):
+        # Running under systemd (Restart=always): terminate the whole OS process so systemd reloads cleanly.
+        os._exit(0)
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
+def _pull_repo_head(repo_dir: str):
+    """Fetches and hard-resets repo_dir to origin/main using active remote auth."""
+    _ensure_repo_remote_auth(repo_dir)
+    subprocess.run(["git", "-C", repo_dir, "fetch", "origin", "main"], timeout=15, check=False)
+    subprocess.run(["git", "-C", repo_dir, "reset", "--hard", "origin/main"], timeout=15, check=False)
+
+
+def _apply_restart_trigger(restart_path: str, proc=None):
+    """Consumes restart trigger, syncs repo & profile files, stops gateway child, and reboots."""
+    try:
+        os.remove(restart_path)
+    except Exception:
+        pass
+    print("[Supervisor] 🔄 Emergency restart requested! Pulling latest code & recycling service...", flush=True)
+    try:
+        _pull_repo_head(SCRIPT_DIR)
+    except Exception:
+        pass
+    unlock_stale_hermes_sessions()
+    try:
+        _sync_hermes_profile_files()
+    except Exception:
+        pass
+    if proc and proc.poll() is None:
+        try:
+            proc.terminate()
+            proc.wait(timeout=5)
+        except Exception:
+            proc.kill()
+    unlock_stale_hermes_sessions()
+    print("[Supervisor] 🚀 Restarting full custodian process for a clean 100% reload...", flush=True)
+    _restart_custodian_process()
+
+
 def emergency_reboot_worker():
     """Monitors running gateway for remote /restart triggers without killing turns."""
     restart_path = "/tmp/hermes_restart_requested" if os.name != "nt" else os.path.join(SCRIPT_DIR, "restart.trigger")
@@ -897,31 +1015,13 @@ def emergency_reboot_worker():
         time.sleep(5)
         global active_gateway_proc
         proc = active_gateway_proc
-        if not proc or proc.poll() is not None:
-            continue
 
         # 1. External Emergency Restart Trigger (from /restart, /reboot, or auto-updater)
         if os.path.exists(restart_path):
-            try:
-                os.remove(restart_path)
-            except Exception:
-                pass
-            print("[Supervisor] 🔄 Emergency restart requested! Pulling latest code & recycling service...", flush=True)
-            try:
-                subprocess.run(["git", "-C", SCRIPT_DIR, "fetch", "origin", "main"], timeout=15, check=False)
-                subprocess.run(["git", "-C", SCRIPT_DIR, "reset", "--hard", "origin/main"], timeout=15, check=False)
-            except Exception:
-                pass
-            unlock_stale_hermes_sessions()
-            if proc and proc.poll() is None:
-                try:
-                    proc.terminate()
-                    proc.wait(timeout=5)
-                except Exception:
-                    proc.kill()
-            unlock_stale_hermes_sessions()
-            print("[Supervisor] 🚀 Exiting process so systemd performs a clean 100% reload...", flush=True)
-            sys.exit(0)
+            _apply_restart_trigger(restart_path, proc=proc)
+
+        if not proc or proc.poll() is not None:
+            continue
 
         # 2. Antigravity proxy liveness check: restart thread if proxy went down (3 consecutive failures)
         if not is_omniroute_alive():
@@ -1049,9 +1149,14 @@ def run_gateway_forever():
         os.environ["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
 
     cmd = ["hermes", "-p", HERMES_PROFILE, "gateway", "run", "--replace", "--force", "--accept-hooks"]
+    restart_path = "/tmp/hermes_restart_requested" if os.name != "nt" else os.path.join(SCRIPT_DIR, "restart.trigger")
 
     while True:
         try:
+            if os.path.exists(restart_path):
+                _apply_restart_trigger(restart_path)
+
+            _sync_hermes_profile_files()
             unlock_stale_hermes_sessions()
             print(f"[{time.strftime('%H:%M:%S')}] Starting Hermes Gateway process...", flush=True)
             gateway_start_time = time.time()
@@ -1070,7 +1175,7 @@ def run_gateway_forever():
 
 
 if __name__ == "__main__":
-    auto_update_self()
+    auto_update_self(allow_reexec=True)
     init_vault()
     init_omniroute()
     init_hermes()

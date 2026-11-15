@@ -318,13 +318,32 @@ def extract_browser_cookies(cookie_db_paths: Optional[List[str]] = None) -> Dict
     }
 
 
+_PLATFORM_CRED_MAPPING = {
+    "google": "google_oauth.json",
+    "whatsapp": "whatsapp_session.json",
+    "telegram": "telegram_session.json",
+    "linkedin": "linkedin_session.json",
+    "facebook": "facebook_session.json",
+}
+
+_PRIORITY_COOKIE_KEYS = {
+    "linkedin": {"li_at", "JSESSIONID", "li_rm", "bcookie", "bscookie", "lang", "liap"},
+    "facebook": {"c_user", "xs", "sb", "datr", "fr", "wd"},
+    "google": {
+        "email", "app_password", "access_token", "refresh_token",
+        "client_id", "client_secret", "token_uri", "type", "scopes", "expiry", "updated_at",
+        "SID", "HSID", "SSID", "APISID", "SAPISID", "OSID", "__Secure-1PSID", "__Secure-3PSID",
+    },
+}
+
+
 def save_credentials_locally(
     payload: Dict[str, Any],
     cred_dir: Optional[str] = None,
 ) -> Dict[str, str]:
     """
     Saves extracted or bundled credentials into `~/.aethelgard/credentials/`
-    outside git-reset wipe paths.
+    outside git-reset wipe paths, merging with any existing saved fields.
     """
     target_dir = Path(cred_dir) if cred_dir else Path(
         os.environ.get("AETHELGARD_CREDENTIALS_DIR", os.path.expanduser("~/.aethelgard/credentials"))
@@ -332,17 +351,21 @@ def save_credentials_locally(
     target_dir.mkdir(parents=True, exist_ok=True)
 
     written: Dict[str, str] = {}
-    mapping = {
-        "google": "google_oauth.json",
-        "whatsapp": "whatsapp_session.json",
-        "telegram": "telegram_session.json",
-        "linkedin": "linkedin_session.json",
-        "facebook": "facebook_session.json",
-    }
-    for key, filename in mapping.items():
+    for key, filename in _PLATFORM_CRED_MAPPING.items():
         if key in payload and isinstance(payload[key], dict) and payload[key]:
             out_file = target_dir / filename
-            out_file.write_text(json.dumps(payload[key], indent=2, ensure_ascii=False), encoding="utf-8")
+            merged: Dict[str, Any] = {}
+            if out_file.exists():
+                try:
+                    existing = json.loads(out_file.read_text(encoding="utf-8"))
+                    if isinstance(existing, dict):
+                        merged.update(existing)
+                except Exception:
+                    pass
+            for k, v in payload[key].items():
+                if v not in (None, ""):
+                    merged[k] = v
+            out_file.write_text(json.dumps(merged, indent=2, ensure_ascii=False), encoding="utf-8")
             if os.name != "nt":
                 try:
                     os.chmod(out_file, 0o600)
@@ -351,6 +374,57 @@ def save_credentials_locally(
             written[key] = str(out_file)
 
     return written
+
+
+def collect_credentials_for_bundle(
+    extracted_platforms: Optional[Dict[str, Any]] = None,
+    cred_dir: Optional[str] = None,
+    max_b64_chars: int = 3600,
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Merges existing credentials in `~/.aethelgard/credentials/` with newly extracted
+    browser cookies, keeping the encrypted bundle compact enough for Telegram `/connect import`.
+    """
+    target_dir = Path(cred_dir) if cred_dir else Path(
+        os.environ.get("AETHELGARD_CREDENTIALS_DIR", os.path.expanduser("~/.aethelgard/credentials"))
+    )
+    saved_keys_by_platform: Dict[str, set] = {}
+    merged: Dict[str, Dict[str, Any]] = {}
+
+    for key, filename in _PLATFORM_CRED_MAPPING.items():
+        p = target_dir / filename
+        if p.exists():
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+                if isinstance(data, dict) and data:
+                    merged[key] = dict(data)
+                    saved_keys_by_platform[key] = set(data.keys())
+            except Exception:
+                pass
+
+    for key, val in (extracted_platforms or {}).items():
+        if key in _PLATFORM_CRED_MAPPING and isinstance(val, dict) and val:
+            dest = merged.setdefault(key, {})
+            for ck, cv in val.items():
+                if cv not in (None, ""):
+                    dest[ck] = cv
+
+    if not merged:
+        return merged
+
+    test_b64 = base64.b64encode(encrypt_credentials_bundle(merged)).decode("ascii")
+    if len(test_b64) <= max_b64_chars:
+        return merged
+
+    compacted: Dict[str, Dict[str, Any]] = {}
+    for key, data in merged.items():
+        keep_keys = set(_PRIORITY_COOKIE_KEYS.get(key, set())) | saved_keys_by_platform.get(key, set())
+        if keep_keys:
+            filtered = {k: v for k, v in data.items() if k in keep_keys}
+            compacted[key] = filtered if filtered else dict(data)
+        else:
+            compacted[key] = dict(data)
+    return compacted
 
 
 def sync_bundle_to_vm(
@@ -362,10 +436,17 @@ def sync_bundle_to_vm(
     """
     Syncs the encrypted credentials bundle to the Cloud VM via:
       1. SSH/SCP (if vm_host is provided)
-      2. Zero-SSH encrypted sync via Telegram Bot API
+      2. Zero-SSH encrypted sync via Telegram Bot API (untruncated `/connect import` command)
     """
     b64_bundle = base64.b64encode(bundle_bytes).decode("ascii")
-    results: Dict[str, Any] = {"bundle_size_bytes": len(bundle_bytes), "ssh_synced": False, "zero_ssh_ready": True}
+    import_command = f"/connect import {b64_bundle}"
+    results: Dict[str, Any] = {
+        "bundle_size_bytes": len(bundle_bytes),
+        "bundle_b64_length": len(b64_bundle),
+        "import_command": import_command,
+        "ssh_synced": False,
+        "zero_ssh_ready": True,
+    }
 
     if vm_host:
         with tempfile.NamedTemporaryFile(suffix=".enc", delete=False) as tf:
@@ -389,18 +470,33 @@ def sync_bundle_to_vm(
         chat_id = os.environ.get("TELEGRAM_ALLOWED_USERS", "1021125594")
         if bot_token and chat_id:
             try:
-                msg = (
+                single_msg = (
                     "🔐 *Aethelgard Encrypted Account Bundle Generated*\n\n"
-                    f"To import on any node without SSH, send:\n"
-                    f"`/connect import {b64_bundle[:120]}...`"
+                    "To import on any node without SSH, copy & send:\n"
+                    f"`{import_command}`"
                 )
-                req = urllib.request.Request(
-                    f"https://api.telegram.org/bot{bot_token}/sendMessage",
-                    data=json.dumps({"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"}).encode("utf-8"),
-                    headers={"Content-Type": "application/json"},
-                )
-                with urllib.request.urlopen(req, timeout=8) as r:
-                    results["telegram_notified"] = r.status == 200
+                if len(single_msg) <= 4096:
+                    payloads = [{"chat_id": chat_id, "text": single_msg, "parse_mode": "Markdown"}]
+                else:
+                    payloads = [
+                        {
+                            "chat_id": chat_id,
+                            "text": "🔐 *Aethelgard Encrypted Account Bundle Generated*\nCopy & send the full `/connect import` message below:",
+                            "parse_mode": "Markdown",
+                        },
+                        {"chat_id": chat_id, "text": import_command},
+                    ]
+                all_ok = True
+                for tg_payload in payloads:
+                    req = urllib.request.Request(
+                        f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                        data=json.dumps(tg_payload).encode("utf-8"),
+                        headers={"Content-Type": "application/json"},
+                    )
+                    with urllib.request.urlopen(req, timeout=8) as r:
+                        if r.status != 200:
+                            all_ok = False
+                results["telegram_notified"] = all_ok
             except Exception:
                 results["telegram_notified"] = False
 
@@ -466,6 +562,7 @@ def main() -> int:
     parser.add_argument("--extract", action="store_true", help="Extract browser cookies and save locally")
     parser.add_argument("--vm-host", default=None, help="Optional SSH user@host for Cloud VM sync")
     parser.add_argument("--ssh-key", default=None, help="Optional SSH private key path")
+    parser.add_argument("--send-telegram", action="store_true", help="Send complete /connect import bundle command via Telegram")
     args = parser.parse_args()
 
     if args.self_test:
@@ -475,18 +572,34 @@ def main() -> int:
 
     print("🏛️ Aethelgard 1-Click Windows Account Pairing Helper")
     extracted = extract_browser_cookies()
-    payload = extracted.get("platforms", {})
+    payload = collect_credentials_for_bundle(extracted.get("platforms", {}))
     saved = save_credentials_locally(payload)
     bundle = encrypt_credentials_bundle(payload)
-    bundle_file = Path(os.path.expanduser("~/.aethelgard/credentials/aethelgard_bundle.enc"))
-    bundle_file.parent.mkdir(parents=True, exist_ok=True)
+    cred_base = Path(os.environ.get("AETHELGARD_CREDENTIALS_DIR", os.path.expanduser("~/.aethelgard/credentials")))
+    cred_base.mkdir(parents=True, exist_ok=True)
+    bundle_file = cred_base / "aethelgard_bundle.enc"
     bundle_file.write_bytes(bundle)
 
-    sync_res = sync_bundle_to_vm(bundle, vm_host=args.vm_host, ssh_key=args.ssh_key)
+    sync_res = sync_bundle_to_vm(
+        bundle,
+        vm_host=args.vm_host,
+        ssh_key=args.ssh_key,
+        send_via_telegram=args.send_telegram,
+    )
+    cmd_file = cred_base / "import_command.txt"
+    cmd_file.write_text(sync_res["import_command"] + "\n", encoding="utf-8")
+    if os.name != "nt":
+        try:
+            os.chmod(cmd_file, 0o600)
+        except Exception:
+            pass
+
     print(json.dumps({
         "cookies_found": extracted.get("found", False),
+        "platforms_in_bundle": sorted(payload.keys()),
         "saved_files": saved,
         "encrypted_bundle": str(bundle_file),
+        "import_command_file": str(cmd_file),
         "sync": sync_res,
     }, indent=2))
     return 0

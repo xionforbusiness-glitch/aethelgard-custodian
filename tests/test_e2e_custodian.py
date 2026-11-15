@@ -1502,6 +1502,154 @@ class TestTier5JobApplicationAndAttachments(unittest.TestCase):
             self.assertIn("k_clean", sj_b_after)
             self.assertIsNone(sj_b_after["k_clean"]["active_turn_token"])
 
+    def test_54_self_restart_process_and_bundle_no_truncation(self):
+        """
+        End-to-end test:
+          1. run.py never calls sys.exit() inside emergency_reboot_worker or run_gateway_forever;
+             _restart_custodian_process uses os._exit(0) under systemd or os.execv otherwise.
+          2. _find_poisoned_session_ids purges the 8:59 PM PC-vs-VM refusal phrases.
+          3. connect_accounts_windows merges credentials safely without clobbering google_oauth.json
+             and sends the complete untruncated `/connect import <b64>` round-trippable by connect_wizard.
+        """
+        import ast
+        import inspect
+        import sqlite3
+        import tempfile
+        import run as custodian_run
+        import connect_accounts_windows
+        import connect_wizard
+
+        # 1. Verify neither worker nor gateway loop contains bare sys.exit()
+        for fn in (
+            custodian_run.emergency_reboot_worker,
+            custodian_run.run_gateway_forever,
+            custodian_run._apply_restart_trigger,
+        ):
+            src = inspect.getsource(fn)
+            self.assertNotIn("sys.exit", src, f"{fn.__name__} must never call sys.exit()")
+            tree = ast.parse(src)
+            self.assertIsNotNone(tree)
+
+        # Verify _restart_custodian_process dispatches to os._exit(0) (systemd) or os.execv
+        mock_srv = MagicMock()
+        import antigravity_proxy
+        with patch.object(antigravity_proxy, "_proxy_server_instance", mock_srv):
+            with patch.object(custodian_run.os, "name", "posix"), \
+                 patch.dict(os.environ, {"INVOCATION_ID": "abc123"}, clear=False), \
+                 patch.object(custodian_run.os, "_exit") as mock_exit, \
+                 patch.object(custodian_run.os, "execv") as mock_execv:
+                mock_exit.side_effect = RuntimeError("exited_os")
+                with self.assertRaisesRegex(RuntimeError, "exited_os"):
+                    custodian_run._restart_custodian_process()
+                mock_exit.assert_called_once_with(0)
+                mock_execv.assert_not_called()
+            mock_srv.shutdown.assert_called_once()
+            mock_srv.server_close.assert_called_once()
+
+            mock_srv.reset_mock()
+            clean_env = {k: v for k, v in os.environ.items() if k != "INVOCATION_ID"}
+            with patch.dict(os.environ, clean_env, clear=True), \
+                 patch.object(custodian_run.os, "execv") as mock_execv, \
+                 patch.object(custodian_run.os, "_exit") as mock_exit:
+                mock_execv.side_effect = RuntimeError("reexeced")
+                with self.assertRaisesRegex(RuntimeError, "reexeced"):
+                    custodian_run._restart_custodian_process()
+                mock_execv.assert_called_once()
+                mock_exit.assert_not_called()
+
+        # 2. Verify new 8:59 PM refusal phrases are purged by _find_poisoned_session_ids / unlock_stale_hermes_sessions
+        refusal_samples = [
+            "I don't have an active integration on this machine.",
+            "Please Set up local API credentials first.",
+            "Those keys stay on your local PC and never transfer to this machine.",
+            "This VM never receives the actual Gmail access token!",
+        ]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            fake_home = Path(tmp_dir) / ".hermes"
+            fake_profile = fake_home / "profiles" / "llm-wiki"
+            fake_profile.mkdir(parents=True, exist_ok=True)
+            db_path = fake_profile / "state.db"
+            conn = sqlite3.connect(str(db_path))
+            cur = conn.cursor()
+            cur.execute("CREATE TABLE system_prompts (hash TEXT PRIMARY KEY, prompt TEXT);")
+            cur.execute("INSERT INTO system_prompts VALUES ('h_ok', 'Prompt with omnichannel_bridge.py');")
+            cur.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, model TEXT, system_prompt TEXT, system_prompt_hash TEXT, tool_names TEXT);")
+            cur.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, role TEXT, content TEXT);")
+            for idx, txt in enumerate(refusal_samples):
+                sid = f"sess_ref_{idx}"
+                cur.execute("INSERT INTO sessions VALUES (?, 'm', NULL, 'h_ok', '[\"terminal\"]');", (sid,))
+                cur.execute("INSERT INTO messages (session_id, role, content) VALUES (?, 'user', 'check mail');", (sid,))
+                cur.execute("INSERT INTO messages (session_id, role, content) VALUES (?, 'assistant', ?);", (sid, txt))
+            conn.commit()
+            conn.close()
+
+            with patch.object(custodian_run, "HERMES_HOME", str(fake_home)), \
+                 patch.object(custodian_run, "HERMES_PROFILE_DIR", str(fake_profile)):
+                custodian_run.unlock_stale_hermes_sessions()
+
+            conn = sqlite3.connect(str(db_path))
+            remaining = conn.execute("SELECT COUNT(*) FROM sessions;").fetchone()[0]
+            conn.close()
+            self.assertEqual(remaining, 0)
+
+        # 3. Verify credential preservation + untruncated Telegram `/connect import` round-trip
+        with tempfile.TemporaryDirectory() as src_dir, tempfile.TemporaryDirectory() as dst_dir:
+            connect_accounts_windows.save_credentials_locally(
+                {"google": {"email": "omar.alnemr04@gmail.com", "app_password": "abcd efgh ijkl mnop"}},
+                cred_dir=src_dir,
+            )
+            # Browser cookies on google must NOT overwrite saved email/app_password
+            merged = connect_accounts_windows.collect_credentials_for_bundle(
+                extracted_platforms={
+                    "google": {"SID": "sid_cookie_val"},
+                    "linkedin": {"li_at": "li_at_token_123"},
+                },
+                cred_dir=src_dir,
+            )
+            self.assertEqual(merged["google"]["email"], "omar.alnemr04@gmail.com")
+            self.assertEqual(merged["google"]["app_password"], "abcd efgh ijkl mnop")
+            self.assertEqual(merged["linkedin"]["li_at"], "li_at_token_123")
+
+            connect_accounts_windows.save_credentials_locally(merged, cred_dir=src_dir)
+            saved_google = json.loads((Path(src_dir) / "google_oauth.json").read_text(encoding="utf-8"))
+            self.assertEqual(saved_google["app_password"], "abcd efgh ijkl mnop")
+
+            bundle = connect_accounts_windows.encrypt_credentials_bundle(merged)
+            sent_texts = []
+
+            class _FakeResp:
+                status = 200
+                def __enter__(self): return self
+                def __exit__(self, *a): return False
+                def read(self): return b'{"ok": true}'
+
+            def _capture_urlopen(req, timeout=8):
+                body = json.loads(req.data.decode("utf-8"))
+                sent_texts.append(body["text"])
+                return _FakeResp()
+
+            with patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "123:abc", "TELEGRAM_ALLOWED_USERS": "999"}), \
+                 patch.object(connect_accounts_windows.urllib.request, "urlopen", side_effect=_capture_urlopen):
+                sync_res = connect_accounts_windows.sync_bundle_to_vm(bundle, send_via_telegram=True)
+
+            self.assertTrue(sync_res["telegram_notified"])
+            combined_tg = "\n".join(sent_texts)
+            self.assertIn(sync_res["import_command"], combined_tg)
+            self.assertNotIn("[:120]", combined_tg)
+            self.assertNotIn("...`", combined_tg)
+
+            # Feed exact untruncated command into connect_wizard on a clean destination cred dir
+            with patch.dict(os.environ, {"AETHELGARD_CREDENTIALS_DIR": dst_dir}):
+                import omnichannel_bridge
+                with patch.object(omnichannel_bridge, "get_credentials_dir", return_value=Path(dst_dir)):
+                    reply = connect_wizard.handle_connect_command(sync_res["import_command"])
+            self.assertIn("Imported Successfully", reply)
+            restored_google = json.loads((Path(dst_dir) / "google_oauth.json").read_text(encoding="utf-8"))
+            restored_li = json.loads((Path(dst_dir) / "linkedin_session.json").read_text(encoding="utf-8"))
+            self.assertEqual(restored_google["email"], "omar.alnemr04@gmail.com")
+            self.assertEqual(restored_google["app_password"], "abcd efgh ijkl mnop")
+            self.assertEqual(restored_li["li_at"], "li_at_token_123")
+
 
 if __name__ == "__main__":
     unittest.main()
