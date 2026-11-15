@@ -1357,6 +1357,151 @@ class TestTier5JobApplicationAndAttachments(unittest.TestCase):
             self.assertEqual(clean_row, (custodian_run.MODEL_DEFAULT, None, None, None))
             conn.close()
 
+    def test_53_system_prompts_table_join_and_sessions_json_dangling_purge(self):
+        """
+        Verifies run.py unlock_stale_hermes_sessions() joins system_prompts via system_prompt_hash
+        when sessions.system_prompt is NULL, purges wedged user-only sessions, and prunes
+        dangling session_id routes in gateway_routing and sessions/sessions.json.
+        """
+        import sqlite3
+        import run as custodian_run
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            # Part A: system_prompts join (sessions.system_prompt IS NULL) + wedged user-only session
+            fake_home = Path(tmp_dir) / "hermes_a"
+            fake_profile = fake_home / "profiles" / "llm-wiki"
+            sessions_dir = fake_profile / "sessions"
+            sessions_dir.mkdir(parents=True, exist_ok=True)
+            (sessions_dir / "sess_legacy_hash.jsonl").write_text('{"role":"user","content":"hi"}\n', encoding="utf-8")
+
+            sessions_json = sessions_dir / "sessions.json"
+            sessions_json.write_text(
+                json.dumps({
+                    "_README": "meta",
+                    "agent:llm-wiki:telegram:dm:1021125594": {
+                        "session_key": "agent:llm-wiki:telegram:dm:1021125594",
+                        "session_id": "sess_legacy_hash",
+                        "active_turn_token": "tok1",
+                    },
+                    "agent:llm-wiki:telegram:dm:999": {
+                        "session_key": "agent:llm-wiki:telegram:dm:999",
+                        "session_id": "sess_wedged",
+                    },
+                }),
+                encoding="utf-8",
+            )
+
+            db_path = fake_profile / "state.db"
+            conn = sqlite3.connect(str(db_path))
+            cur = conn.cursor()
+            cur.execute("CREATE TABLE system_prompts (hash TEXT PRIMARY KEY, prompt TEXT);")
+            cur.execute("INSERT INTO system_prompts VALUES ('h_legacy', 'You are Hermes without email tools');")
+            cur.execute("INSERT INTO system_prompts VALUES ('h_ok', 'Prompt with omnichannel_bridge.py');")
+            cur.execute(
+                "CREATE TABLE sessions (id TEXT PRIMARY KEY, model TEXT, system_prompt TEXT, "
+                "system_prompt_hash TEXT, tool_names TEXT, message_count INTEGER DEFAULT 0, parent_session_id TEXT);"
+            )
+            cur.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, role TEXT, content TEXT);")
+            cur.execute("CREATE TABLE gateway_routing (scope TEXT, session_key TEXT, entry_json TEXT);")
+            cur.execute("CREATE TABLE session_turn_leases (conversation_id TEXT PRIMARY KEY, owner_pid INTEGER);")
+            cur.execute(
+                "CREATE TABLE async_delegations (delegation_id TEXT PRIMARY KEY, origin_session TEXT, "
+                "parent_session_id TEXT, origin_session_id TEXT);"
+            )
+
+            # Legacy session stores prompt ONLY in system_prompts.prompt via hash
+            cur.execute("INSERT INTO sessions VALUES ('sess_legacy_hash', 'old-model', NULL, 'h_legacy', NULL, 2, NULL);")
+            cur.execute("INSERT INTO messages (session_id, role, content) VALUES ('sess_legacy_hash', 'user', 'hello');")
+            cur.execute("INSERT INTO messages (session_id, role, content) VALUES ('sess_legacy_hash', 'assistant', 'Hi!');")
+            cur.execute("INSERT INTO session_turn_leases VALUES ('sess_legacy_hash', 12345);")
+            cur.execute(
+                "INSERT INTO async_delegations VALUES ('del_1', 'sess_legacy_hash', 'sess_legacy_hash', 'sess_legacy_hash');"
+            )
+
+            # Wedged session has clean system_prompt_hash but only user message and 0 assistant replies
+            cur.execute("INSERT INTO sessions VALUES ('sess_wedged', 'old-model', NULL, 'h_ok', NULL, 1, 'sess_legacy_hash');")
+            cur.execute("INSERT INTO messages (session_id, role, content) VALUES ('sess_wedged', 'user', 'ping');")
+
+            # Half-deleted skeleton session (0 messages, NULL prompt/hash, non-zero message_count)
+            cur.execute("INSERT INTO sessions VALUES ('sess_skeleton', 'old-model', NULL, NULL, NULL, 135, NULL);")
+
+            cur.execute(
+                "INSERT INTO gateway_routing VALUES ('s1', 'agent:llm-wiki:telegram:dm:1021125594', ?);",
+                (json.dumps({"session_key": "agent:llm-wiki:telegram:dm:1021125594", "session_id": "sess_legacy_hash"}),),
+            )
+            conn.commit()
+            conn.close()
+
+            with patch.object(custodian_run, "HERMES_HOME", str(fake_home)), \
+                 patch.object(custodian_run, "HERMES_PROFILE_DIR", str(fake_profile)):
+                custodian_run.unlock_stale_hermes_sessions()
+
+            self.assertFalse((sessions_dir / "sess_legacy_hash.jsonl").exists())
+            conn = sqlite3.connect(str(db_path))
+            cur = conn.cursor()
+            self.assertEqual(cur.execute("SELECT COUNT(*) FROM sessions;").fetchone()[0], 0)
+            self.assertEqual(cur.execute("SELECT COUNT(*) FROM messages;").fetchone()[0], 0)
+            self.assertEqual(cur.execute("SELECT COUNT(*) FROM gateway_routing;").fetchone()[0], 0)
+            self.assertEqual(cur.execute("SELECT COUNT(*) FROM session_turn_leases;").fetchone()[0], 0)
+            self.assertEqual(cur.execute("SELECT COUNT(*) FROM async_delegations;").fetchone()[0], 0)
+            conn.close()
+            sj_after = json.loads(sessions_json.read_text(encoding="utf-8"))
+            self.assertEqual(list(sj_after.keys()), ["_README"])
+
+            # Part B: Dangling session_id in gateway_routing + sessions.json when DB has zero newly-poisoned sessions
+            fake_home_b = Path(tmp_dir) / "hermes_b"
+            fake_profile_b = fake_home_b / "profiles" / "llm-wiki"
+            sessions_dir_b = fake_profile_b / "sessions"
+            sessions_dir_b.mkdir(parents=True, exist_ok=True)
+            sessions_json_b = sessions_dir_b / "sessions.json"
+            sessions_json_b.write_text(
+                json.dumps({
+                    "_README": "meta",
+                    "k_dangling": {"session_key": "k_dangling", "session_id": "sess_missing"},
+                    "k_clean": {"session_key": "k_clean", "session_id": "sess_clean", "active_turn_token": "tok_stale"},
+                }),
+                encoding="utf-8",
+            )
+            db_path_b = fake_profile_b / "state.db"
+            conn_b = sqlite3.connect(str(db_path_b))
+            cur_b = conn_b.cursor()
+            cur_b.execute("CREATE TABLE system_prompts (hash TEXT PRIMARY KEY, prompt TEXT);")
+            cur_b.execute("INSERT INTO system_prompts VALUES ('h_ok', 'Prompt with omnichannel_bridge.py');")
+            cur_b.execute(
+                "CREATE TABLE sessions (id TEXT PRIMARY KEY, model TEXT, system_prompt TEXT, system_prompt_hash TEXT, tool_names TEXT);"
+            )
+            cur_b.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, role TEXT, content TEXT);")
+            cur_b.execute("CREATE TABLE gateway_routing (scope TEXT, session_key TEXT, entry_json TEXT);")
+            cur_b.execute("INSERT INTO sessions VALUES ('sess_clean', 'old-model', NULL, 'h_ok', '[\"terminal\"]');")
+            cur_b.execute("INSERT INTO messages (session_id, role, content) VALUES ('sess_clean', 'user', 'hi');")
+            cur_b.execute("INSERT INTO messages (session_id, role, content) VALUES ('sess_clean', 'assistant', 'hello');")
+            cur_b.execute(
+                "INSERT INTO gateway_routing VALUES ('s1', 'k_dangling', ?);",
+                (json.dumps({"session_key": "k_dangling", "session_id": "sess_missing"}),),
+            )
+            cur_b.execute(
+                "INSERT INTO gateway_routing VALUES ('s1', 'k_clean', ?);",
+                (json.dumps({"session_key": "k_clean", "session_id": "sess_clean", "active_turn_token": "tok_stale"}),),
+            )
+            conn_b.commit()
+            conn_b.close()
+
+            with patch.object(custodian_run, "HERMES_HOME", str(fake_home_b)), \
+                 patch.object(custodian_run, "HERMES_PROFILE_DIR", str(fake_profile_b)):
+                custodian_run.unlock_stale_hermes_sessions()
+
+            conn_b = sqlite3.connect(str(db_path_b))
+            cur_b = conn_b.cursor()
+            routes_b = cur_b.execute("SELECT session_key, entry_json FROM gateway_routing;").fetchall()
+            self.assertEqual(len(routes_b), 1)
+            self.assertEqual(routes_b[0][0], "k_clean")
+            self.assertIsNone(json.loads(routes_b[0][1])["active_turn_token"])
+            conn_b.close()
+            sj_b_after = json.loads(sessions_json_b.read_text(encoding="utf-8"))
+            self.assertNotIn("k_dangling", sj_b_after)
+            self.assertIn("k_clean", sj_b_after)
+            self.assertIsNone(sj_b_after["k_clean"]["active_turn_token"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -7,6 +7,7 @@
 # ==============================================================================
 
 import os
+import re
 import sys
 import time
 import json
@@ -122,14 +123,145 @@ print(f"📱 Telegram Gateway:  @aethelgard_vault_bot")
 print("=" * 65 + "\n")
 
 
+def _get_hermes_roots():
+    """Returns active (hermes_home, hermes_profile_dir) pairs across POSIX and Windows native roots."""
+    roots = [(HERMES_HOME, HERMES_PROFILE_DIR)]
+    if os.name == "nt":
+        default_user_home = os.path.normcase(os.path.abspath(os.path.expanduser("~/.hermes")))
+        current_home = os.path.normcase(os.path.abspath(HERMES_HOME))
+        local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
+        if local_appdata and current_home == default_user_home:
+            win_home = os.path.join(local_appdata, "hermes")
+            win_norm = os.path.normcase(os.path.abspath(win_home))
+            if os.path.isdir(win_home) and win_norm != current_home:
+                roots.append((win_home, os.path.join(win_home, "profiles", HERMES_PROFILE)))
+    return roots
+
+
+def _strip_deprecated_env_keys(env_path: str) -> None:
+    """Removes deprecated TERMINAL_CWD / MESSAGING_CWD entries from an existing .env file."""
+    if not os.path.isfile(env_path):
+        return
+    try:
+        with open(env_path, "r", encoding="utf-8") as ef:
+            lines = ef.readlines()
+        filtered = [
+            ln for ln in lines
+            if not ln.lstrip().startswith(("TERMINAL_CWD=", "MESSAGING_CWD="))
+        ]
+        if len(filtered) != len(lines):
+            with open(env_path, "w", encoding="utf-8") as ef:
+                ef.writelines(filtered)
+    except Exception:
+        pass
+
+
+def _write_profile_config(cfg_src: str, target_cfg: str, script_dir: str) -> None:
+    """Copies profile/config.yaml and injects OS-native terminal.cwd without polluting git."""
+    with open(cfg_src, "r", encoding="utf-8") as cf:
+        cfg_text = cf.read()
+    cwd_yaml = f"  cwd: {json.dumps(script_dir)}"
+    if re.search(r"^terminal:\s*$", cfg_text, re.MULTILINE):
+        cfg_text = re.sub(
+            r"(^terminal:\s*\r?\n(?:[ \t]+[^\n]*\r?\n)*)",
+            lambda m: (
+                m.group(1)
+                if re.search(r"^[ \t]+cwd:", m.group(1), re.MULTILINE)
+                else m.group(1) + cwd_yaml + "\n"
+            ),
+            cfg_text,
+            count=1,
+            flags=re.MULTILINE,
+        )
+    else:
+        cfg_text = cfg_text.rstrip() + f"\nterminal:\n{cwd_yaml}\n"
+    os.makedirs(os.path.dirname(target_cfg), exist_ok=True)
+    with open(target_cfg, "w", encoding="utf-8") as tf:
+        tf.write(cfg_text)
+
+
+def _find_poisoned_session_ids(cur, has_sessions: bool, has_messages: bool, has_system_prompts: bool):
+    """Detects pre-omnichannel, refusal-poisoned, or wedged user-only sessions."""
+    poisoned_sids = set()
+    session_cols = set()
+    if has_sessions:
+        cur.execute("PRAGMA table_info(sessions);")
+        session_cols = {r[1] for r in cur.fetchall()}
+        if has_system_prompts and "system_prompt" in session_cols and "system_prompt_hash" in session_cols:
+            cur.execute(
+                "SELECT s.id FROM sessions s "
+                "LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash "
+                "WHERE COALESCE(NULLIF(s.system_prompt, ''), sp.prompt, '') != '' "
+                "AND COALESCE(NULLIF(s.system_prompt, ''), sp.prompt, '') NOT LIKE '%omnichannel_bridge.py%';"
+            )
+        elif has_system_prompts and "system_prompt_hash" in session_cols:
+            cur.execute(
+                "SELECT s.id FROM sessions s "
+                "JOIN system_prompts sp ON sp.hash = s.system_prompt_hash "
+                "WHERE sp.prompt IS NOT NULL AND sp.prompt != '' "
+                "AND sp.prompt NOT LIKE '%omnichannel_bridge.py%';"
+            )
+        elif "system_prompt" in session_cols:
+            cur.execute(
+                "SELECT id FROM sessions WHERE system_prompt IS NOT NULL "
+                "AND system_prompt != '' AND system_prompt NOT LIKE '%omnichannel_bridge.py%';"
+            )
+        else:
+            cur.execute("SELECT id FROM sessions WHERE 0;")
+        for r in cur.fetchall():
+            if r[0]:
+                poisoned_sids.add(str(r[0]))
+        if has_messages and "message_count" in session_cols:
+            cur.execute(
+                "SELECT s.id FROM sessions s "
+                "WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id) "
+                "AND (COALESCE(s.message_count, 0) > 0 "
+                "     OR (COALESCE(s.system_prompt, '') = '' AND COALESCE(s.system_prompt_hash, '') = ''));"
+            )
+            for r in cur.fetchall():
+                if r[0]:
+                    poisoned_sids.add(str(r[0]))
+
+    if has_messages:
+        cur.execute("PRAGMA table_info(messages);")
+        msg_cols = {r[1] for r in cur.fetchall()}
+        if "session_id" in msg_cols and "content" in msg_cols:
+            cur.execute(
+                "SELECT DISTINCT session_id FROM messages "
+                "WHERE content LIKE '%don''t currently have an active integration%' "
+                "OR content LIKE '%Connect a Google Workspace%' "
+                "OR content LIKE '%don''t have access to your Gmail%' "
+                "OR content LIKE '%can''t check or read your inbox%' "
+                "OR content LIKE '%I don''t have your credentials%' "
+                "OR content LIKE '%The model provider failed after retries%' "
+                "OR content LIKE '%Your request was not processed. Send it again%';"
+            )
+            for r in cur.fetchall():
+                if r[0]:
+                    poisoned_sids.add(str(r[0]))
+        if "session_id" in msg_cols and "role" in msg_cols:
+            cur.execute(
+                "SELECT m.session_id FROM messages m "
+                "GROUP BY m.session_id "
+                "HAVING SUM(CASE WHEN m.role = 'user' THEN 1 ELSE 0 END) > 0 "
+                "AND SUM(CASE WHEN m.role = 'assistant' THEN 1 ELSE 0 END) = 0;"
+            )
+            for r in cur.fetchall():
+                if r[0]:
+                    poisoned_sids.add(str(r[0]))
+
+    return poisoned_sids, session_cols
+
+
 # ── 1. Auto-Update Custodian Codebase & Stale Locks ──────────────────────────
 def unlock_stale_hermes_sessions():
     """
     Guarantees 100% gateway responsiveness:
     1. Removes all stale lock and heartbeat markers.
     2. Clears active_turn_token, active_turn_started_at, resume_pending, AND stale model_override
-       from gateway_routing and sessions tables in ~/.hermes/state.db and profile state.db.
-    3. Clears active_turn_token, resume_pending, and stale model_override from all sessions.json files.
+       from gateway_routing and sessions tables in state.db across active roots.
+    3. Purges poisoned/wedged sessions (including prompts stored via system_prompts.prompt join),
+       clears cached system prompts, and prunes dangling session IDs from gateway_routing & sessions.json.
     """
     print("🔓 [Session Armor] Checking & unlocking any stale session locks & legacy model overrides...")
 
@@ -148,13 +280,34 @@ def unlock_stale_hermes_sessions():
         except Exception:
             pass
 
-    lock_dirs = [HERMES_HOME, HERMES_PROFILE_DIR]
-    profiles_root = os.path.join(HERMES_HOME, "profiles")
-    if os.path.exists(profiles_root):
-        for p_name in os.listdir(profiles_root):
-            p_dir = os.path.join(profiles_root, p_name)
-            if os.path.isdir(p_dir) and p_dir not in lock_dirs:
-                lock_dirs.append(p_dir)
+    roots = _get_hermes_roots()
+    lock_dirs = []
+    db_candidates = []
+    json_candidates = []
+    for root_home, root_profile in roots:
+        for base_dir in (root_home, root_profile):
+            if base_dir not in lock_dirs:
+                lock_dirs.append(base_dir)
+            db_p = os.path.join(base_dir, "state.db")
+            if db_p not in db_candidates:
+                db_candidates.append(db_p)
+            js_p = os.path.join(base_dir, "sessions", "sessions.json")
+            if js_p not in json_candidates:
+                json_candidates.append(js_p)
+
+        profiles_root = os.path.join(root_home, "profiles")
+        if os.path.exists(profiles_root):
+            for p_name in os.listdir(profiles_root):
+                p_dir = os.path.join(profiles_root, p_name)
+                if os.path.isdir(p_dir):
+                    if p_dir not in lock_dirs:
+                        lock_dirs.append(p_dir)
+                    p_db = os.path.join(p_dir, "state.db")
+                    if os.path.exists(p_db) and p_db not in db_candidates:
+                        db_candidates.append(p_db)
+                    p_json = os.path.join(p_dir, "sessions", "sessions.json")
+                    if os.path.exists(p_json) and p_json not in json_candidates:
+                        json_candidates.append(p_json)
 
     for ld in lock_dirs:
         for lock_f in ["gateway.lock", "gateway_state.json", "gateway-dispatcher.lock",
@@ -167,16 +320,10 @@ def unlock_stale_hermes_sessions():
                 except Exception:
                     pass
 
-    # 2. Unlock SQLite gateway_routing & sessions tables in state.db files
-    db_candidates = [
-        os.path.join(HERMES_HOME, "state.db"),
-        os.path.join(HERMES_PROFILE_DIR, "state.db"),
-    ]
-    if os.path.exists(profiles_root):
-        for p_name in os.listdir(profiles_root):
-            p_db = os.path.join(profiles_root, p_name, "state.db")
-            if os.path.exists(p_db) and p_db not in db_candidates:
-                db_candidates.append(p_db)
+    # 2. Unlock SQLite gateway_routing & sessions tables in state.db files (Pass 1)
+    all_poisoned_sids = set()
+    all_valid_sids = set()
+    any_db_has_sessions = False
 
     for db_p in db_candidates:
         if not os.path.exists(db_p):
@@ -222,37 +369,15 @@ def unlock_stale_hermes_sessions():
             has_sessions = bool(cur.fetchone())
             cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages';")
             has_messages = bool(cur.fetchone())
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='system_prompts';")
+            has_system_prompts = bool(cur.fetchone())
 
-            poisoned_sids = set()
-            session_cols = set()
-            if has_sessions:
-                cur.execute("PRAGMA table_info(sessions);")
-                session_cols = {r[1] for r in cur.fetchall()}
-                if "system_prompt" in session_cols:
-                    cur.execute(
-                        "SELECT id FROM sessions WHERE system_prompt IS NOT NULL "
-                        "AND system_prompt != '' AND system_prompt NOT LIKE '%omnichannel_bridge.py%';"
-                    )
-                    for r in cur.fetchall():
-                        if r[0]:
-                            poisoned_sids.add(str(r[0]))
-
-            if has_messages:
-                cur.execute("PRAGMA table_info(messages);")
-                msg_cols = {r[1] for r in cur.fetchall()}
-                if "session_id" in msg_cols and "content" in msg_cols:
-                    cur.execute(
-                        "SELECT DISTINCT session_id FROM messages "
-                        "WHERE content LIKE '%don''t currently have an active integration%' "
-                        "OR content LIKE '%Connect a Google Workspace%' "
-                        "OR content LIKE '%don''t have access to your Gmail%' "
-                        "OR content LIKE '%The model provider failed after retries%';"
-                    )
-                    for r in cur.fetchall():
-                        if r[0]:
-                            poisoned_sids.add(str(r[0]))
+            poisoned_sids, session_cols = _find_poisoned_session_ids(
+                cur, has_sessions, has_messages, has_system_prompts
+            )
 
             if poisoned_sids:
+                all_poisoned_sids.update(poisoned_sids)
                 try:
                     placeholders = ",".join("?" for _ in poisoned_sids)
                     params = list(poisoned_sids)
@@ -261,19 +386,40 @@ def unlock_stale_hermes_sessions():
                     for aux_tbl in ("session_model_usage", "compression_locks", "session_turn_leases", "async_delegations"):
                         cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?;", (aux_tbl,))
                         if cur.fetchone():
-                            cur.execute(f"DELETE FROM {aux_tbl} WHERE session_id IN ({placeholders});", params)
+                            cur.execute(f"PRAGMA table_info({aux_tbl});")
+                            aux_cols = {r[1] for r in cur.fetchall()}
+                            for ref_col in (
+                                "session_id",
+                                "conversation_id",
+                                "parent_session_id",
+                                "origin_session_id",
+                                "origin_ui_session_id",
+                                "origin_session",
+                            ):
+                                if ref_col in aux_cols:
+                                    cur.execute(f"DELETE FROM {aux_tbl} WHERE {ref_col} IN ({placeholders});", params)
                     if has_sessions:
+                        if "parent_session_id" in session_cols:
+                            cur.execute(
+                                f"UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id IN ({placeholders});",
+                                params,
+                            )
                         cur.execute(f"DELETE FROM sessions WHERE id IN ({placeholders});", params)
                     cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='gateway_routing';")
                     if cur.fetchone():
                         cur.execute("DELETE FROM gateway_routing;")
                     conn.commit()
                     print(f"  ✅ Purged {len(poisoned_sids)} poisoned/legacy session(s) in {os.path.basename(db_p)}.")
-                except Exception:
-                    pass
+                except Exception as pe:
+                    print(f"  ⚠ Notice purging poisoned sessions in {os.path.basename(db_p)}: {pe}")
 
             if has_sessions:
+                any_db_has_sessions = True
                 try:
+                    cur.execute("SELECT id FROM sessions;")
+                    for r in cur.fetchall():
+                        if r[0]:
+                            all_valid_sids.add(str(r[0]))
                     set_parts = ["model = ?"]
                     set_vals = [MODEL_DEFAULT]
                     for opt_col in ("system_prompt", "system_prompt_hash", "tool_names"):
@@ -284,8 +430,7 @@ def unlock_stale_hermes_sessions():
                 except Exception:
                     pass
 
-            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='system_prompts';")
-            if cur.fetchone():
+            if has_system_prompts:
                 try:
                     cur.execute("DELETE FROM system_prompts;")
                     conn.commit()
@@ -295,18 +440,49 @@ def unlock_stale_hermes_sessions():
         except Exception as dbe:
             print(f"  ⚠ Notice unlocking {db_p}: {dbe}")
 
-    # 3. Unlock JSON files (sessions.json)
-    json_candidates = [
-        os.path.join(HERMES_HOME, "sessions", "sessions.json"),
-        os.path.join(HERMES_PROFILE_DIR, "sessions", "sessions.json"),
-    ]
-    if os.path.exists(profiles_root):
-        for p_name in os.listdir(profiles_root):
-            p_json = os.path.join(profiles_root, p_name, "sessions", "sessions.json")
-            if os.path.exists(p_json) and p_json not in json_candidates:
-                json_candidates.append(p_json)
+    # Pass 2: Prune dangling gateway_routing entries whose session_id no longer exists in sessions
+    for db_p in db_candidates:
+        if not os.path.exists(db_p):
+            continue
+        try:
+            conn = sqlite3.connect(db_p, timeout=5)
+            cur = conn.cursor()
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='gateway_routing';")
+            if cur.fetchone():
+                cur.execute("SELECT scope, session_key, entry_json FROM gateway_routing;")
+                dangling = 0
+                for scope, session_key, entry_json in cur.fetchall():
+                    try:
+                        entry = json.loads(entry_json)
+                        sid = entry.get("session_id")
+                        if isinstance(sid, str) and sid and (
+                            sid in all_poisoned_sids or (any_db_has_sessions and sid not in all_valid_sids)
+                        ):
+                            cur.execute(
+                                "DELETE FROM gateway_routing WHERE scope = ? AND session_key = ?",
+                                (scope, session_key),
+                            )
+                            dangling += 1
+                    except Exception:
+                        pass
+                if dangling > 0:
+                    conn.commit()
+                    print(f"  ✅ Pruned {dangling} dangling route(s) from gateway_routing in {os.path.basename(db_p)}.")
+            conn.close()
+        except Exception:
+            pass
 
+    # 3. Unlock & prune JSON files (sessions.json) + orphaned session JSONL transcripts
     for jp in json_candidates:
+        sessions_dir = os.path.dirname(jp)
+        for psid in all_poisoned_sids:
+            jsonl_p = os.path.join(sessions_dir, f"{psid}.jsonl")
+            if os.path.exists(jsonl_p):
+                try:
+                    os.remove(jsonl_p)
+                except Exception:
+                    pass
+
         if not os.path.exists(jp):
             continue
         try:
@@ -314,25 +490,36 @@ def unlock_stale_hermes_sessions():
                 data = json.load(jf)
             changed = False
             if isinstance(data, dict):
+                keys_to_remove = []
                 for k, entry in data.items():
-                    if isinstance(entry, dict):
-                        for field, default in [
-                            ("active_turn_token", None),
-                            ("active_turn_started_at", None),
-                            ("resume_pending", False),
-                            ("resume_reason", None),
-                            ("model_override", None),
-                        ]:
-                            if entry.get(field) != default:
-                                entry[field] = default
-                                changed = True
-                        if isinstance(entry.get("model"), str) and entry["model"] != MODEL_DEFAULT:
-                            entry["model"] = MODEL_DEFAULT
+                    if k.startswith("_") or not isinstance(entry, dict):
+                        continue
+                    sid = entry.get("session_id")
+                    if isinstance(sid, str) and sid and (
+                        sid in all_poisoned_sids or (any_db_has_sessions and sid not in all_valid_sids)
+                    ):
+                        keys_to_remove.append(k)
+                        changed = True
+                        continue
+                    for field, default in [
+                        ("active_turn_token", None),
+                        ("active_turn_started_at", None),
+                        ("resume_pending", False),
+                        ("resume_reason", None),
+                        ("model_override", None),
+                    ]:
+                        if entry.get(field) != default:
+                            entry[field] = default
                             changed = True
+                    if isinstance(entry.get("model"), str) and entry["model"] != MODEL_DEFAULT:
+                        entry["model"] = MODEL_DEFAULT
+                        changed = True
+                for rk in keys_to_remove:
+                    del data[rk]
             if changed:
                 with open(jp, "w", encoding="utf-8") as jf:
                     json.dump(data, jf, indent=2)
-                print(f"  ✅ Sanitized active turn tokens & model overrides in {os.path.basename(jp)}.")
+                print(f"  ✅ Sanitized active turn tokens, dangling routes & model overrides in {os.path.basename(jp)}.")
         except Exception as je:
             print(f"  ⚠ Notice sanitizing {jp}: {je}")
 
@@ -463,28 +650,39 @@ def init_hermes():
     # Apply Hermes typing lifecycle hotfix & proxy hardening
     patch_results = patch_hermes_gateway_typing()
     print(f"⚡ [Hotfix 1] Applied Hermes Gateway typing lifecycle patches: {patch_results}", flush=True)
-    os.makedirs(HERMES_PROFILE_DIR, exist_ok=True)
 
-    # Sync config.yaml, SOUL.md & skills
+    roots = _get_hermes_roots()
+    root_homes = []
+    root_profiles = []
+    for root_home, root_profile in roots:
+        os.makedirs(root_home, exist_ok=True)
+        os.makedirs(root_profile, exist_ok=True)
+        if root_home not in root_homes:
+            root_homes.append(root_home)
+        if root_profile not in root_profiles:
+            root_profiles.append(root_profile)
+
+    # Sync config.yaml, SOUL.md & skills across active roots/profiles
     cfg_src = os.path.join(SCRIPT_DIR, "profile", "config.yaml")
     if os.path.exists(cfg_src):
-        shutil.copy2(cfg_src, os.path.join(HERMES_PROFILE_DIR, "config.yaml"))
+        for target_profile in root_profiles:
+            _write_profile_config(cfg_src, os.path.join(target_profile, "config.yaml"), SCRIPT_DIR)
 
     soul_src = os.path.join(SCRIPT_DIR, "profile", "SOUL.md")
     if os.path.exists(soul_src):
-        os.makedirs(HERMES_HOME, exist_ok=True)
-        shutil.copy2(soul_src, os.path.join(HERMES_PROFILE_DIR, "SOUL.md"))
-        shutil.copy2(soul_src, os.path.join(HERMES_HOME, "SOUL.md"))
+        for target_home in root_homes + root_profiles:
+            shutil.copy2(soul_src, os.path.join(target_home, "SOUL.md"))
 
     skills_src = os.path.join(SCRIPT_DIR, "profile", "skills")
     if os.path.exists(skills_src):
-        for target_skills in (os.path.join(HERMES_PROFILE_DIR, "skills"), os.path.join(HERMES_HOME, "skills")):
+        for target_home in root_homes + root_profiles:
+            target_skills = os.path.join(target_home, "skills")
             if os.path.exists(target_skills):
                 shutil.rmtree(target_skills, ignore_errors=True)
             shutil.copytree(skills_src, target_skills)
 
-    # Purge cached skills snapshot in both profile and root homes
-    for snap_home in (HERMES_PROFILE_DIR, HERMES_HOME):
+    # Purge cached skills snapshot across both profile and root homes
+    for snap_home in root_homes + root_profiles:
         snap_p = os.path.join(snap_home, ".skills_prompt_snapshot.json")
         if os.path.exists(snap_p):
             try:
@@ -495,7 +693,8 @@ def init_hermes():
     # Sync hooks (Shift sync, Excel delivery, Watchdog heartbeat)
     hooks_src = os.path.join(SCRIPT_DIR, "profile", "hooks")
     if os.path.exists(hooks_src):
-        for target_dir in [os.path.join(HERMES_PROFILE_DIR, "hooks"), os.path.join(HERMES_HOME, "hooks")]:
+        for target_home in root_homes + root_profiles:
+            target_dir = os.path.join(target_home, "hooks")
             os.makedirs(target_dir, exist_ok=True)
             for h_name in os.listdir(hooks_src):
                 h_s = os.path.join(hooks_src, h_name)
@@ -514,32 +713,36 @@ def init_hermes():
         shutil.copytree(assets_src, assets_dest)
 
     # Purge stale caches (remove any auto/best-coding leaks)
-    for cache_f in ["provider_models_cache.json", "context_length_cache.yaml"]:
-        cp = os.path.join(HERMES_PROFILE_DIR, cache_f)
-        if os.path.exists(cp):
-            try:
-                os.remove(cp)
-            except Exception:
-                pass
+    for target_profile in root_profiles:
+        for cache_f in ["provider_models_cache.json", "context_length_cache.yaml"]:
+            cp = os.path.join(target_profile, cache_f)
+            if os.path.exists(cp):
+                try:
+                    os.remove(cp)
+                except Exception:
+                    pass
 
     stt_script = os.path.join(SCRIPT_DIR, "transcribe_gemini.py")
     stt_cmd = f"python3 {stt_script} {{input_path}} --output_dir {{output_dir}}"
 
-    # Write profile .env
-    with open(os.path.join(HERMES_PROFILE_DIR, ".env"), "w", encoding="utf-8") as f:
-        f.write(f"TELEGRAM_BOT_TOKEN={TELEGRAM_BOT_TOKEN}\n")
-        f.write(f"TELEGRAM_ALLOWED_USERS={TELEGRAM_USER_ID}\n")
-        f.write("GATEWAY_ALLOW_ALL_USERS=true\n")
-        f.write(f"WIKI_PATH={VAULT_DIR}\n")
-        f.write(f"OBSIDIAN_VAULT_PATH={VAULT_DIR}\n")
-        f.write(f"HERMES_CUSTOM_FIRST_TIME_API_KEY={OMNIROUTE_API_KEY}\n")
-        f.write(f"OMNIROUTE_API_KEY={OMNIROUTE_API_KEY}\n")
-        if GOOGLE_API_KEY:
-            f.write(f"GOOGLE_API_KEY={GOOGLE_API_KEY}\n")
-            f.write(f"GEMINI_API_KEY={GOOGLE_API_KEY}\n")
-        f.write(f"HERMES_LOCAL_STT_COMMAND={stt_cmd}\n")
-        f.write(f"AETHELGARD_DIR={SCRIPT_DIR}\n")
-        f.write(f"TERMINAL_CWD={SCRIPT_DIR}\n")
+    # Write profile .env without deprecated TERMINAL_CWD (now set via terminal.cwd in config.yaml)
+    for target_profile in root_profiles:
+        with open(os.path.join(target_profile, ".env"), "w", encoding="utf-8") as f:
+            f.write(f"TELEGRAM_BOT_TOKEN={TELEGRAM_BOT_TOKEN}\n")
+            f.write(f"TELEGRAM_ALLOWED_USERS={TELEGRAM_USER_ID}\n")
+            f.write("GATEWAY_ALLOW_ALL_USERS=true\n")
+            f.write(f"WIKI_PATH={VAULT_DIR}\n")
+            f.write(f"OBSIDIAN_VAULT_PATH={VAULT_DIR}\n")
+            f.write(f"HERMES_CUSTOM_FIRST_TIME_API_KEY={OMNIROUTE_API_KEY}\n")
+            f.write(f"OMNIROUTE_API_KEY={OMNIROUTE_API_KEY}\n")
+            if GOOGLE_API_KEY:
+                f.write(f"GOOGLE_API_KEY={GOOGLE_API_KEY}\n")
+                f.write(f"GEMINI_API_KEY={GOOGLE_API_KEY}\n")
+            f.write(f"HERMES_LOCAL_STT_COMMAND={stt_cmd}\n")
+            f.write(f"AETHELGARD_DIR={SCRIPT_DIR}\n")
+
+    for target_home in root_homes + root_profiles:
+        _strip_deprecated_env_keys(os.path.join(target_home, ".env"))
 
     if GOOGLE_API_KEY:
         home_env = os.path.join(HERMES_HOME, ".env")
@@ -587,6 +790,7 @@ def init_hermes():
             ["hermes", "-p", HERMES_PROFILE, "config", "set", "providers.first-time.model", MODEL_DEFAULT],
             ["hermes", "-p", HERMES_PROFILE, "config", "set", "providers.first-time.discover_models", "false"],
             ["hermes", "-p", HERMES_PROFILE, "config", "set", "terminal.timeout", "300"],
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", "terminal.cwd", SCRIPT_DIR],
             ["hermes", "-p", HERMES_PROFILE, "config", "set", "slash_commands.confirm_new", "false"],
             ["hermes", "-p", HERMES_PROFILE, "config", "set", "slash_commands.confirm_reset", "false"],
             ["hermes", "-p", HERMES_PROFILE, "config", "set", "compression.enabled", "false"],
@@ -615,7 +819,8 @@ def init_hermes():
 
         # Authoritative sync of profile/config.yaml (pure Antigravity Pro configuration)
         if os.path.exists(cfg_src):
-            shutil.copy2(cfg_src, os.path.join(HERMES_PROFILE_DIR, "config.yaml"))
+            for target_profile in root_profiles:
+                _write_profile_config(cfg_src, os.path.join(target_profile, "config.yaml"), SCRIPT_DIR)
             print("✅ Hermes config.yaml authoritative sync complete (pure Antigravity Pro configuration).")
 
         print("✅ Hermes profile configured: LOW mode (sub-second) locked as default brain.")
