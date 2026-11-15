@@ -32,15 +32,23 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 try:
-    from telethon import TelegramClient, events
+    from telethon import TelegramClient, errors, events
     from telethon.tl import functions, types
     TELETHON_AVAILABLE = True
 except Exception:
     TelegramClient = None  # type: ignore
+    errors = None  # type: ignore
     events = None  # type: ignore
     functions = None  # type: ignore
     types = None  # type: ignore
     TELETHON_AVAILABLE = False
+
+try:
+    import qrcode
+    QRCODE_AVAILABLE = True
+except Exception:
+    qrcode = None  # type: ignore
+    QRCODE_AVAILABLE = False
 
 try:
     import ntgcalls
@@ -684,7 +692,15 @@ class TelegramP2PCallManager:
 
         self.ntg = ntgcalls.NTgCalls()
         session_path = str(self.cfg.get("session_path") or get_caller_session_path())
-        self.client = TelegramClient(session_path, int(self.cfg["api_id"]), self.cfg["api_hash"], loop=self.loop)
+        self.client = TelegramClient(
+            session_path,
+            int(self.cfg["api_id"]),
+            self.cfg["api_hash"],
+            loop=self.loop,
+            device_model="Ubuntu Workstation",
+            system_version="Linux 6.8",
+            app_version="4.16.0",
+        )
         await self.client.connect()
         if not await self.client.is_user_authorized():
             print("⚠ Telegram Caller session not authorized yet. Run `python telegram_voice_caller.py login` once.")
@@ -1138,26 +1154,135 @@ def start_telegram_caller_background():
     return t
 
 
-def interactive_login() -> int:
-    """Interactive CLI wizard saving Telegram API credentials outside git (`~/.aethelgard/credentials/`)."""
+def _render_qr_halfblock(url: str) -> str:
+    """
+    Renders a compact, high-contrast black-on-white QR code using Unicode half-blocks
+    (2 QR rows per terminal line) so it fits cleanly inside browser SSH windows.
+    """
+    if not QRCODE_AVAILABLE or qrcode is None:
+        return f"Open QR generator for URL:\n{url}"
+    qr = qrcode.QRCode(border=2, box_size=1, error_correction=qrcode.constants.ERROR_CORRECT_L)
+    qr.add_data(url)
+    qr.make(fit=True)
+    matrix = qr.get_matrix()
+    rows = len(matrix)
+    cols = len(matrix[0]) if rows else 0
+    lines: List[str] = []
+    # White paper background + black modules works reliably on dark terminals
+    prefix = "\x1b[30;107m"
+    suffix = "\x1b[0m"
+    for r in range(0, rows, 2):
+        row_chars = []
+        top_row = matrix[r]
+        bot_row = matrix[r + 1] if (r + 1) < rows else [False] * cols
+        for t_cell, b_cell in zip(top_row, bot_row):
+            if t_cell and b_cell:
+                row_chars.append("█")
+            elif t_cell and not b_cell:
+                row_chars.append("▀")
+            elif not t_cell and b_cell:
+                row_chars.append("▄")
+            else:
+                row_chars.append(" ")
+        lines.append(f"{prefix}{''.join(row_chars)}{suffix}")
+    return "\n".join(lines)
+
+
+def _prompt_with_saved(label: str, saved_value: Any = "") -> str:
+    saved_str = str(saved_value or "").strip()
+    suffix = f" [Enter to keep `{saved_str}`]" if saved_str else ""
+    entered = input(f"{label}{suffix}: ").strip()
+    return entered or saved_str
+
+
+def interactive_login(mode: str = "qr") -> int:
+    """
+    Interactive CLI wizard saving Telegram API credentials outside git (`~/.aethelgard/credentials/`).
+    Defaults to QR login (`Settings -> Devices -> Link Desktop Device`) so Telegram never flags OTP codes.
+    Also supports explicit `phone_code_hash` OTP login cleanly without Telethon retry bugs.
+    """
     if not TELETHON_AVAILABLE:
-        print("ERROR: telethon is not installed. Run `pip install telethon ntgcalls`.")
+        print("ERROR: telethon is not installed. Run `pip install telethon ntgcalls qrcode`.")
         return 1
 
+    import getpass
+
+    existing = load_caller_config()
     print("=== Aethelgard Dedicated Telegram Caller Login (+20 / Personal MTProto) ===")
-    api_id = int(input("Telegram api_id (from my.telegram.org): ").strip())
-    api_hash = input("Telegram api_hash: ").strip()
-    phone = input("Dedicated Phone Number (e.g. +2010...): ").strip()
+    api_id = int(_prompt_with_saved("Telegram api_id (from my.telegram.org)", existing.get("api_id")))
+    api_hash = _prompt_with_saved("Telegram api_hash", existing.get("api_hash"))
+    phone = _prompt_with_saved("Dedicated Phone Number (e.g. +2010...)", existing.get("phone"))
 
     cfg = save_caller_config(api_id=api_id, api_hash=api_hash, phone=phone)
     session_path = cfg["session_path"]
 
     async def _auth():
-        client = TelegramClient(session_path, api_id, api_hash)
-        await client.start(phone=phone)
-        me = await client.get_me()
-        print(f"✅ Signed in as {getattr(me, 'first_name', '')} ({getattr(me, 'phone', '')}) -> {session_path}")
-        await client.disconnect()
+        client = TelegramClient(
+            session_path,
+            api_id,
+            api_hash,
+            device_model="Ubuntu Workstation",
+            system_version="Linux 6.8",
+            app_version="4.16.0",
+        )
+        await client.connect()
+        try:
+            if await client.is_user_authorized():
+                me = await client.get_me()
+                print(f"✅ Already signed in as {getattr(me, 'first_name', '')} ({getattr(me, 'phone', '')}) -> {session_path}")
+                return
+
+            use_qr = (mode == "qr") and QRCODE_AVAILABLE
+            if mode == "ask":
+                choice = input("Login method — [1] QR Code (Recommended, no OTP needed) or [2] OTP Code [1]: ").strip()
+                use_qr = (choice != "2") and QRCODE_AVAILABLE
+
+            if use_qr:
+                print("\n📱 On your +20 Telegram phone app:")
+                print("   Open Settings -> Devices -> Link Desktop Device, then scan this QR code:\n")
+                qr_login = await client.qr_login()
+                signed_in = False
+                for attempt in range(4):
+                    print(_render_qr_halfblock(qr_login.url))
+                    print(f"\n⏳ Waiting up to 35s for scan (attempt {attempt + 1}/4)...\n")
+                    try:
+                        await qr_login.wait(timeout=35)
+                        signed_in = True
+                        break
+                    except asyncio.TimeoutError:
+                        if attempt < 3:
+                            print("🔄 QR expired, refreshing...")
+                            await qr_login.recreate()
+                    except errors.SessionPasswordNeededError:
+                        pwd = getpass.getpass("🔐 Two-Step Verification password required: ")
+                        await client.sign_in(password=pwd)
+                        signed_in = True
+                        break
+                if not signed_in:
+                    print("⚠ QR scan timed out. Switching to OTP code login...")
+                    use_qr = False
+
+            if not use_qr:
+                sent = await client.send_code_request(phone)
+                for attempt in range(3):
+                    code = input("Please enter the code you received (do NOT paste it anywhere inside Telegram): ").strip()
+                    try:
+                        await client.sign_in(phone=phone, code=code, phone_code_hash=sent.phone_code_hash)
+                        break
+                    except errors.SessionPasswordNeededError:
+                        pwd = getpass.getpass("🔐 Two-Step Verification password: ")
+                        await client.sign_in(password=pwd)
+                        break
+                    except (errors.PhoneCodeInvalidError, errors.PhoneCodeExpiredError) as exc:
+                        print(f"⚠ {exc}. Requesting a fresh code...")
+                        if attempt >= 2:
+                            raise
+                        sent = await client.send_code_request(phone)
+
+            me = await client.get_me()
+            print(f"✅ Signed in as {getattr(me, 'first_name', '')} ({getattr(me, 'phone', '')}) -> {session_path}")
+        finally:
+            await client.disconnect()
 
     asyncio.run(_auth())
     return 0
@@ -1168,12 +1293,15 @@ def main() -> int:
 
     parser = argparse.ArgumentParser(description="Aethelgard Native Telegram 1-on-1 Voice Caller")
     parser.add_argument("action", nargs="?", choices=["login", "status", "call"], default="status")
+    parser.add_argument("--qr", action="store_true", help="Force QR-code device linking login (recommended)")
+    parser.add_argument("--otp", action="store_true", help="Force OTP phone-code login instead of QR")
     parser.add_argument("--call", metavar="PROMPT", help="Trigger an outgoing 1-on-1 voice call to Omar")
     parser.add_argument("--urgent", action="store_true", help="Override Circadian Sleep Shield for this call")
     args = parser.parse_args()
 
     if args.action == "login":
-        return interactive_login()
+        mode = "otp" if args.otp else "qr"
+        return interactive_login(mode=mode)
     if args.call is not None or args.action == "call":
         res = request_call_via_rpc_or_direct(opening_prompt=args.call or "", urgent=args.urgent)
         print(json.dumps(res, indent=2, ensure_ascii=False))

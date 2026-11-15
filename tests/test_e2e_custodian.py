@@ -1971,6 +1971,11 @@ class TestTier6JarvisV2(unittest.TestCase):
                 self.assertTrue(res_ok["success"])
                 self.assertEqual(res_ok["approved_via"], "telegram_voice_call")
 
+        # 5. Half-block QR code renderer for Telethon qr_login
+        qr_out = telegram_voice_caller._render_qr_halfblock("tg://login?token=AETHELGARD_TEST")
+        self.assertGreater(len(qr_out.splitlines()), 10)
+        self.assertLess(len(qr_out.splitlines()), 25)
+
     def test_58_calendar_bridge_ics_and_shift_fusion(self):
         import calendar_bridge
         import shift_tracker

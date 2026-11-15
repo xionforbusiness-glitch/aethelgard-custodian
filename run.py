@@ -1144,10 +1144,11 @@ def run_gateway_forever():
         try:
             import telethon  # noqa: F401
             import ntgcalls  # noqa: F401
+            import qrcode  # noqa: F401
         except ImportError:
-            print("📦 Installing telethon & ntgcalls for Native Telegram Voice Caller...", flush=True)
+            print("📦 Installing telethon, ntgcalls & qrcode for Native Telegram Voice Caller...", flush=True)
             subprocess.run(
-                [sys.executable, "-m", "pip", "install", "-q", "telethon", "ntgcalls"],
+                [sys.executable, "-m", "pip", "install", "-q", "telethon", "ntgcalls", "qrcode"],
                 timeout=120,
                 check=False,
             )

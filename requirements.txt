@@ -10,3 +10,4 @@ websockets
 pypdf
 telethon
 ntgcalls
+qrcode
