@@ -2208,6 +2208,12 @@ class TestTier6JarvisV2(unittest.TestCase):
         finally:
             dead_loop.close()
 
+        # Verify fast boot helpers exist on run.py
+        import run as custodian_run
+        custodian_run._export_runtime_env(stt_cmd="echo ok")
+        self.assertTrue(os.environ.get("TELEGRAM_ALLOWED_USERS"))
+        self.assertTrue(os.environ.get("AETHELGARD_DIR"))
+
 
 if __name__ == "__main__":
     unittest.main()

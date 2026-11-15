@@ -810,14 +810,8 @@ def _sync_hermes_profile_files(root_homes=None, root_profiles=None):
     return root_homes, root_profiles, cfg_src, stt_cmd
 
 
-def init_hermes():
-    print(f"\n⚙️ [3/4] Configuring Hermes Profile '{HERMES_PROFILE}'...")
-    # Apply Hermes typing lifecycle hotfix & proxy hardening
-    patch_results = patch_hermes_gateway_typing()
-    print(f"⚡ [Hotfix 1] Applied Hermes Gateway typing lifecycle patches: {patch_results}", flush=True)
-
-    _root_homes, root_profiles, cfg_src, stt_cmd = _sync_hermes_profile_files()
-
+def _export_runtime_env(stt_cmd: str = "") -> None:
+    """Exports shared custodian runtime environment variables for background workers and Hermes."""
     os.environ["WIKI_PATH"] = VAULT_DIR
     os.environ["OBSIDIAN_VAULT_PATH"] = VAULT_DIR
     os.environ["TELEGRAM_BOT_TOKEN"] = TELEGRAM_BOT_TOKEN
@@ -833,57 +827,70 @@ def init_hermes():
     else:
         os.environ.pop("GOOGLE_API_KEY", None)
         os.environ.pop("GEMINI_API_KEY", None)
-    os.environ["HERMES_LOCAL_STT_COMMAND"] = stt_cmd
+    if stt_cmd:
+        os.environ["HERMES_LOCAL_STT_COMMAND"] = stt_cmd
     os.environ["AETHELGARD_DIR"] = SCRIPT_DIR
     os.environ["TERMINAL_CWD"] = SCRIPT_DIR
     os.environ["NODE_OPTIONS"] = "--dns-result-order=ipv4first --max-old-space-size=1536"
 
-    # Apply hermes CLI configurations safely
+
+def init_hermes():
+    print(f"\n⚙️ [3/4] Configuring Hermes Profile '{HERMES_PROFILE}'...")
+    # Apply Hermes typing lifecycle hotfix & proxy hardening
+    patch_results = patch_hermes_gateway_typing()
+    print(f"⚡ [Hotfix 1] Applied Hermes Gateway typing lifecycle patches: {patch_results}", flush=True)
+
+    _root_homes, root_profiles, cfg_src, stt_cmd = _sync_hermes_profile_files()
+    _export_runtime_env(stt_cmd=stt_cmd)
+
+    # Apply hermes CLI profile activation cleanly; skip 41 redundant `config set` CLI
+    # invocations when authoritative `profile/config.yaml` is already synced.
     try:
-        commands = [
-            ["hermes", "profile", "use", HERMES_PROFILE],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.provider", "first-time"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.default", MODEL_DEFAULT],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.base_url", f"http://127.0.0.1:{OMNIROUTE_PORT}/v1"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.streaming", "true"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "providers.first-time.streaming", "true"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "voice.auto_tts", "true"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "tts.provider", "edge"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "tts.voice", "en-GB-RyanNeural"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.key_env", "HERMES_CUSTOM_FIRST_TIME_API_KEY"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.context_length", str(CONTEXT_LENGTH)],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "providers.first-time.model", MODEL_DEFAULT],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "providers.first-time.discover_models", "false"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "terminal.timeout", "300"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "terminal.cwd", SCRIPT_DIR],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "slash_commands.confirm_new", "false"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "slash_commands.confirm_reset", "false"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "compression.enabled", "false"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "stt.provider", "local_command"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "agent.intent_ack_continuation", "true"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "agent.tool_use_enforcement", "true"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "agent.execution_guidance", "true"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "agent.stall_guards", "true"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "agent.api_max_retries", "2"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.flash", "antigravity/gemini-3.8-flash-low"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.flash-low", "antigravity/gemini-3.8-flash-low"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.gemini", "antigravity/gemini-3.8-flash-low"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.fast", "antigravity/gemini-3.8-flash-low"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.chat", "antigravity/gemini-3.8-flash-low"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.casual", "antigravity/gemini-3.8-flash-low"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.low", "antigravity/gemini-3.8-flash-low"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.medium", "antigravity/gemini-3.8-flash-medium"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.flash-medium", "antigravity/gemini-3.8-flash-medium"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.custodian", "antigravity/gemini-3.8-flash-high"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.vault", "antigravity/gemini-3.8-flash-high"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.high", "antigravity/gemini-3.8-flash-high"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.thinking", "antigravity/gemini-3.8-flash-high"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.flash-high", "antigravity/gemini-3.8-flash-high"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.pro", "antigravity/gemini-3.8-flash-high"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.claude", "antigravity/claude-sonnet-5-5-high"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.sonnet", "antigravity/claude-sonnet-5-5-high"],
-            ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.opus", "antigravity/claude-opus-5-5-high"],
-        ]
+        commands = [["hermes", "profile", "use", HERMES_PROFILE]]
+        if not os.path.exists(cfg_src):
+            commands.extend([
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.provider", "first-time"],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.default", MODEL_DEFAULT],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.base_url", f"http://127.0.0.1:{OMNIROUTE_PORT}/v1"],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.streaming", "true"],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "providers.first-time.streaming", "true"],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "voice.auto_tts", "true"],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "tts.provider", "edge"],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "tts.voice", "en-GB-RyanNeural"],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.key_env", "HERMES_CUSTOM_FIRST_TIME_API_KEY"],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.context_length", str(CONTEXT_LENGTH)],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "providers.first-time.model", MODEL_DEFAULT],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "providers.first-time.discover_models", "false"],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "terminal.timeout", "300"],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "terminal.cwd", SCRIPT_DIR],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "slash_commands.confirm_new", "false"],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "slash_commands.confirm_reset", "false"],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "compression.enabled", "false"],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "stt.provider", "local_command"],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "agent.intent_ack_continuation", "true"],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "agent.tool_use_enforcement", "true"],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "agent.execution_guidance", "true"],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "agent.stall_guards", "true"],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "agent.api_max_retries", "2"],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.flash", "antigravity/gemini-3.8-flash-low"],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.flash-low", "antigravity/gemini-3.8-flash-low"],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.gemini", "antigravity/gemini-3.8-flash-low"],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.fast", "antigravity/gemini-3.8-flash-low"],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.chat", "antigravity/gemini-3.8-flash-low"],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.casual", "antigravity/gemini-3.8-flash-low"],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.low", "antigravity/gemini-3.8-flash-low"],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.medium", "antigravity/gemini-3.8-flash-medium"],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.flash-medium", "antigravity/gemini-3.8-flash-medium"],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.custodian", "antigravity/gemini-3.8-flash-high"],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.vault", "antigravity/gemini-3.8-flash-high"],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.high", "antigravity/gemini-3.8-flash-high"],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.thinking", "antigravity/gemini-3.8-flash-high"],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.flash-high", "antigravity/gemini-3.8-flash-high"],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.pro", "antigravity/gemini-3.8-flash-high"],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.claude", "antigravity/claude-sonnet-5-5-high"],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.sonnet", "antigravity/claude-sonnet-5-5-high"],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.opus", "antigravity/claude-opus-5-5-high"],
+            ])
         for cmd in commands:
             subprocess.run(cmd, check=False)
 
@@ -1121,23 +1128,27 @@ def antigravity_health_check_worker(interval_sec: int = 7200):
             heal_antigravity_service()
 
 
-def run_gateway_forever():
-    global active_gateway_proc, gateway_start_time
-    print("\n" + "=" * 65)
-    print("🚀 [4/4] LAUNCHING HERMES GATEWAY (24/7 ALWAYS-ON SUPERVISION)")
-    print("=" * 65)
+_BACKGROUND_WORKERS_STARTED = False
+_BACKGROUND_WORKERS_LOCK = threading.Lock()
 
-    threading.Thread(target=auto_sync_worker, daemon=True).start()
-    threading.Thread(target=emergency_reboot_worker, daemon=True).start()
-    threading.Thread(target=antigravity_health_check_worker, daemon=True, name="AntigravityHealthCheck").start()
+
+def _start_voice_and_scheduler_once() -> None:
+    """Starts Proactive Scheduler, Telegram 1-on-1 Caller, and Live Web Bridge once per process."""
+    global _BACKGROUND_WORKERS_STARTED
+    with _BACKGROUND_WORKERS_LOCK:
+        if _BACKGROUND_WORKERS_STARTED:
+            return
+        _BACKGROUND_WORKERS_STARTED = True
+
+    _export_runtime_env()
 
     # ── Launch Proactive Scheduler & Second Brain Librarian ──────────────
     try:
         from proactive_scheduler import proactive_scheduler_daemon
         threading.Thread(target=proactive_scheduler_daemon, args=(VAULT_DIR,), daemon=True).start()
-        print("⏰ Proactive Shift Scheduler & Second Brain Librarian thread active!")
+        print("⏰ Proactive Shift Scheduler & Second Brain Librarian thread active!", flush=True)
     except Exception as se:
-        print(f"⚠ Proactive Scheduler startup notice: {se}")
+        print(f"⚠ Proactive Scheduler startup notice: {se}", flush=True)
 
     # ── Launch Native Telegram 1-on-1 Voice Caller (+20 MTProto Bridge) ──────
     try:
@@ -1154,17 +1165,30 @@ def run_gateway_forever():
             )
         from telegram_voice_caller import start_telegram_caller_background
         start_telegram_caller_background()
-        print("📱 Native Telegram 1-on-1 Voice Caller thread initialized (RPC :20132)!")
+        print("📱 Native Telegram 1-on-1 Voice Caller thread initialized (RPC :20132)!", flush=True)
     except Exception as tce:
-        print(f"⚠ Telegram Voice Caller startup notice: {tce}")
+        print(f"⚠ Telegram Voice Caller startup notice: {tce}", flush=True)
 
     # ── Launch Live Voice Call Web Bridge ──────────────────────────────
     try:
         from live_call_server import start_live_call_server_background
         start_live_call_server_background()
-        print("📞 Live Voice Call Web server active on port 20130!")
+        print("📞 Live Voice Call Web server active on port 20130!", flush=True)
     except Exception as ce:
-        print(f"⚠ Live Call Server startup notice: {ce}")
+        print(f"⚠ Live Call Server startup notice: {ce}", flush=True)
+
+
+def run_gateway_forever():
+    global active_gateway_proc, gateway_start_time
+    print("\n" + "=" * 65)
+    print("🚀 [4/4] LAUNCHING HERMES GATEWAY (24/7 ALWAYS-ON SUPERVISION)")
+    print("=" * 65)
+
+    threading.Thread(target=auto_sync_worker, daemon=True).start()
+    threading.Thread(target=emergency_reboot_worker, daemon=True).start()
+    threading.Thread(target=antigravity_health_check_worker, daemon=True, name="AntigravityHealthCheck").start()
+
+    _start_voice_and_scheduler_once()
 
     send_telegram_startup()
 
@@ -1206,5 +1230,6 @@ if __name__ == "__main__":
     auto_update_self(allow_reexec=True)
     init_vault()
     init_omniroute()
+    _start_voice_and_scheduler_once()
     init_hermes()
     run_gateway_forever()
