@@ -9,10 +9,11 @@ Use `omnichannel_bridge.py` (`GoogleAdapter`) and `vip_inbox_triage.py` to inter
 
 ## Capabilities & Commands
 
-### 1. Search & Read Emails
+### 1. Check Latest, Search & Read Emails
 ```bash
+python omnichannel_bridge.py google --latest 3
 python omnichannel_bridge.py google --search "from:etihad.com OR is:unread"
-python omnichannel_bridge.py google --read <MESSAGE_ID>
+python omnichannel_bridge.py google --read <MESSAGE_ID> [<MESSAGE_ID> ...]
 ```
 
 ### 2. Stage an Outbound Email (Two-Phase Approval Mandatory)

@@ -158,7 +158,8 @@ def unlock_stale_hermes_sessions():
 
     for ld in lock_dirs:
         for lock_f in ["gateway.lock", "gateway_state.json", "gateway-dispatcher.lock",
-                       ".update_prompt.json", ".update_response", ".drain_request.json"]:
+                       ".update_prompt.json", ".update_response", ".drain_request.json",
+                       ".skills_prompt_snapshot.json"]:
             lp = os.path.join(ld, lock_f)
             if os.path.exists(lp):
                 try:
@@ -218,9 +219,75 @@ def unlock_stale_hermes_sessions():
                     print(f"  ✅ Unlocked & sanitized {cleared} session(s) in {os.path.basename(db_p)}.")
 
             cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='sessions';")
+            has_sessions = bool(cur.fetchone())
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages';")
+            has_messages = bool(cur.fetchone())
+
+            poisoned_sids = set()
+            session_cols = set()
+            if has_sessions:
+                cur.execute("PRAGMA table_info(sessions);")
+                session_cols = {r[1] for r in cur.fetchall()}
+                if "system_prompt" in session_cols:
+                    cur.execute(
+                        "SELECT id FROM sessions WHERE system_prompt IS NOT NULL "
+                        "AND system_prompt != '' AND system_prompt NOT LIKE '%omnichannel_bridge.py%';"
+                    )
+                    for r in cur.fetchall():
+                        if r[0]:
+                            poisoned_sids.add(str(r[0]))
+
+            if has_messages:
+                cur.execute("PRAGMA table_info(messages);")
+                msg_cols = {r[1] for r in cur.fetchall()}
+                if "session_id" in msg_cols and "content" in msg_cols:
+                    cur.execute(
+                        "SELECT DISTINCT session_id FROM messages "
+                        "WHERE content LIKE '%don''t currently have an active integration%' "
+                        "OR content LIKE '%Connect a Google Workspace%' "
+                        "OR content LIKE '%don''t have access to your Gmail%' "
+                        "OR content LIKE '%The model provider failed after retries%';"
+                    )
+                    for r in cur.fetchall():
+                        if r[0]:
+                            poisoned_sids.add(str(r[0]))
+
+            if poisoned_sids:
+                try:
+                    placeholders = ",".join("?" for _ in poisoned_sids)
+                    params = list(poisoned_sids)
+                    if has_messages:
+                        cur.execute(f"DELETE FROM messages WHERE session_id IN ({placeholders});", params)
+                    for aux_tbl in ("session_model_usage", "compression_locks", "session_turn_leases", "async_delegations"):
+                        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?;", (aux_tbl,))
+                        if cur.fetchone():
+                            cur.execute(f"DELETE FROM {aux_tbl} WHERE session_id IN ({placeholders});", params)
+                    if has_sessions:
+                        cur.execute(f"DELETE FROM sessions WHERE id IN ({placeholders});", params)
+                    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='gateway_routing';")
+                    if cur.fetchone():
+                        cur.execute("DELETE FROM gateway_routing;")
+                    conn.commit()
+                    print(f"  ✅ Purged {len(poisoned_sids)} poisoned/legacy session(s) in {os.path.basename(db_p)}.")
+                except Exception:
+                    pass
+
+            if has_sessions:
+                try:
+                    set_parts = ["model = ?"]
+                    set_vals = [MODEL_DEFAULT]
+                    for opt_col in ("system_prompt", "system_prompt_hash", "tool_names"):
+                        if opt_col in session_cols:
+                            set_parts.append(f"{opt_col} = NULL")
+                    cur.execute(f"UPDATE sessions SET {', '.join(set_parts)};", set_vals)
+                    conn.commit()
+                except Exception:
+                    pass
+
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='system_prompts';")
             if cur.fetchone():
                 try:
-                    cur.execute("UPDATE sessions SET model = ? WHERE model != ? OR model IS NULL;", (MODEL_DEFAULT, MODEL_DEFAULT))
+                    cur.execute("DELETE FROM system_prompts;")
                     conn.commit()
                 except Exception:
                     pass
@@ -405,14 +472,25 @@ def init_hermes():
 
     soul_src = os.path.join(SCRIPT_DIR, "profile", "SOUL.md")
     if os.path.exists(soul_src):
+        os.makedirs(HERMES_HOME, exist_ok=True)
         shutil.copy2(soul_src, os.path.join(HERMES_PROFILE_DIR, "SOUL.md"))
+        shutil.copy2(soul_src, os.path.join(HERMES_HOME, "SOUL.md"))
 
     skills_src = os.path.join(SCRIPT_DIR, "profile", "skills")
     if os.path.exists(skills_src):
-        skills_dest = os.path.join(HERMES_PROFILE_DIR, "skills")
-        if os.path.exists(skills_dest):
-            shutil.rmtree(skills_dest, ignore_errors=True)
-        shutil.copytree(skills_src, skills_dest)
+        for target_skills in (os.path.join(HERMES_PROFILE_DIR, "skills"), os.path.join(HERMES_HOME, "skills")):
+            if os.path.exists(target_skills):
+                shutil.rmtree(target_skills, ignore_errors=True)
+            shutil.copytree(skills_src, target_skills)
+
+    # Purge cached skills snapshot in both profile and root homes
+    for snap_home in (HERMES_PROFILE_DIR, HERMES_HOME):
+        snap_p = os.path.join(snap_home, ".skills_prompt_snapshot.json")
+        if os.path.exists(snap_p):
+            try:
+                os.remove(snap_p)
+            except Exception:
+                pass
 
     # Sync hooks (Shift sync, Excel delivery, Watchdog heartbeat)
     hooks_src = os.path.join(SCRIPT_DIR, "profile", "hooks")
@@ -461,6 +539,7 @@ def init_hermes():
             f.write(f"GEMINI_API_KEY={GOOGLE_API_KEY}\n")
         f.write(f"HERMES_LOCAL_STT_COMMAND={stt_cmd}\n")
         f.write(f"AETHELGARD_DIR={SCRIPT_DIR}\n")
+        f.write(f"TERMINAL_CWD={SCRIPT_DIR}\n")
 
     if GOOGLE_API_KEY:
         home_env = os.path.join(HERMES_HOME, ".env")
@@ -488,6 +567,7 @@ def init_hermes():
         os.environ.pop("GEMINI_API_KEY", None)
     os.environ["HERMES_LOCAL_STT_COMMAND"] = stt_cmd
     os.environ["AETHELGARD_DIR"] = SCRIPT_DIR
+    os.environ["TERMINAL_CWD"] = SCRIPT_DIR
     os.environ["NODE_OPTIONS"] = "--dns-result-order=ipv4first --max-old-space-size=1536"
 
     # Apply hermes CLI configurations safely
@@ -770,7 +850,7 @@ def run_gateway_forever():
             unlock_stale_hermes_sessions()
             print(f"[{time.strftime('%H:%M:%S')}] Starting Hermes Gateway process...", flush=True)
             gateway_start_time = time.time()
-            active_gateway_proc = subprocess.Popen(cmd, env=dict(os.environ))
+            active_gateway_proc = subprocess.Popen(cmd, cwd=SCRIPT_DIR, env=dict(os.environ))
             active_gateway_proc.wait()
             print(f"⚠ Hermes Gateway exited with code {active_gateway_proc.returncode}. Restarting in 5 seconds...", flush=True)
             unlock_stale_hermes_sessions()

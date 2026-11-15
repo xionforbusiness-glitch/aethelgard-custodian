@@ -330,23 +330,32 @@ class GoogleAdapter:
                     continue
         return results
 
-    def _imap_read_email(self, msg_id: str, max_body_chars: int = MAX_EMAIL_BODY_CHARS) -> Dict[str, Any]:
-        """Reads a single Gmail message by UID via IMAP4_SSL using App Password credentials."""
-        _, sender_email, app_pw = self._has_oauth_and_app_pw()
-        if not app_pw:
-            return {"id": msg_id, "body": "", "subject": "", "sender": ""}
-        raw_bytes = b""
-        with imaplib.IMAP4_SSL("imap.gmail.com", 993) as imap:
-            imap.login(sender_email, app_pw)
-            imap.select("INBOX", readonly=True)
-            status, data = imap.uid("fetch", str(msg_id), "(RFC822)")
-            if status == "OK" and data:
-                for item in data:
-                    if isinstance(item, tuple) and len(item) >= 2 and isinstance(item[1], (bytes, bytearray)):
-                        raw_bytes = bytes(item[1])
-                        break
+    @staticmethod
+    def _extract_imap_bytes(data: Any) -> bytes:
+        """Extracts raw byte payload from an imaplib uid fetch response."""
+        for item in data or []:
+            if isinstance(item, tuple) and len(item) >= 2 and isinstance(item[1], (bytes, bytearray)):
+                return bytes(item[1])
+        return b""
+
+    def _parse_raw_email_bytes(
+        self,
+        msg_id: str,
+        raw_bytes: bytes,
+        max_body_chars: int = MAX_EMAIL_BODY_CHARS,
+    ) -> Dict[str, Any]:
+        """Parses RFC822 bytes into a cleaned email dictionary."""
         if not raw_bytes:
-            return {"id": str(msg_id), "threadId": "", "sender": "", "subject": "", "received_at": "", "snippet": "", "body": "", "truncated": False}
+            return {
+                "id": str(msg_id),
+                "threadId": "",
+                "sender": "",
+                "subject": "",
+                "received_at": "",
+                "snippet": "",
+                "body": "",
+                "truncated": False,
+            }
 
         parsed = BytesParser(policy=policy.default).parsebytes(raw_bytes)
         subject = str(parsed.get("Subject", "(No Subject)"))
@@ -394,6 +403,61 @@ class GoogleAdapter:
             "body": body_text,
             "truncated": truncated,
         }
+
+    def _imap_read_email(self, msg_id: str, max_body_chars: int = MAX_EMAIL_BODY_CHARS) -> Dict[str, Any]:
+        """Reads a single Gmail message by UID via IMAP4_SSL using App Password credentials."""
+        _, sender_email, app_pw = self._has_oauth_and_app_pw()
+        if not app_pw:
+            return {"id": msg_id, "body": "", "subject": "", "sender": ""}
+        raw_bytes = b""
+        with imaplib.IMAP4_SSL("imap.gmail.com", 993) as imap:
+            imap.login(sender_email, app_pw)
+            imap.select("INBOX", readonly=True)
+            status, data = imap.uid("fetch", str(msg_id), "(RFC822)")
+            if status == "OK":
+                raw_bytes = self._extract_imap_bytes(data)
+        return self._parse_raw_email_bytes(str(msg_id), raw_bytes, max_body_chars=max_body_chars)
+
+    def _imap_get_latest_emails(self, count: int = 3, max_body_chars: int = 4000) -> List[Dict[str, Any]]:
+        """Fetches the latest N INBOX emails with cleaned bodies in a single IMAP4_SSL connection."""
+        _, sender_email, app_pw = self._has_oauth_and_app_pw()
+        if not app_pw or count <= 0:
+            return []
+        results: List[Dict[str, Any]] = []
+        with imaplib.IMAP4_SSL("imap.gmail.com", 993) as imap:
+            imap.login(sender_email, app_pw)
+            imap.select("INBOX", readonly=True)
+            status, data = imap.uid("search", None, "ALL")
+            uid_bytes = data[0] if (status == "OK" and data and data[0]) else b""
+            uids = uid_bytes.split()[-count:][::-1]
+            for uid in uids:
+                uid_str = uid.decode("ascii", errors="ignore") if isinstance(uid, (bytes, bytearray)) else str(uid)
+                try:
+                    f_status, f_data = imap.uid("fetch", uid_str, "(RFC822)")
+                    raw_bytes = self._extract_imap_bytes(f_data) if f_status == "OK" else b""
+                    if raw_bytes:
+                        results.append(self._parse_raw_email_bytes(uid_str, raw_bytes, max_body_chars=max_body_chars))
+                except Exception:
+                    continue
+        return results
+
+    def get_latest_emails(
+        self,
+        count: int = 3,
+        query: str = "",
+        max_body_chars: int = 4000,
+    ) -> List[Dict[str, Any]]:
+        """Fetches the latest N emails with cleaned bodies (single IMAP connection for App Password)."""
+        has_oauth, _, app_pw = self._has_oauth_and_app_pw()
+        if not query and app_pw and not has_oauth:
+            return self._imap_get_latest_emails(count=count, max_body_chars=max_body_chars)
+        stubs = self.search_emails(query=query or "", max_results=count)
+        results: List[Dict[str, Any]] = []
+        for stub in stubs[:count]:
+            mid = stub.get("id")
+            if mid:
+                results.append(self.read_email(str(mid), max_body_chars=max_body_chars))
+        return results
 
     def search_emails(self, query: str = "", max_results: int = 10) -> List[Dict[str, Any]]:
         """Searches Gmail messages via REST API or IMAP4_SSL App Password fallback without launching any browser."""
@@ -1126,7 +1190,8 @@ def main() -> int:
 
     g_p = sub.add_parser("google", help="Google Account (Gmail, Calendar, Drive) operations")
     g_p.add_argument("--search", metavar="QUERY", help="Search Gmail messages")
-    g_p.add_argument("--read", metavar="MSG_ID", help="Read specific email by ID")
+    g_p.add_argument("--latest", type=int, metavar="N", help="Fetch latest N emails with cleaned bodies in one call")
+    g_p.add_argument("--read", nargs="+", metavar="MSG_ID", help="Read one or more emails by ID")
     g_p.add_argument("--calendar", action="store_true", help="List upcoming Calendar events")
     g_p.add_argument("--drive", metavar="QUERY", nargs="?", const="", help="List Google Drive files")
     g_p.add_argument("--stage-email", action="store_true", help="Stage an outbound email via Gatekeeper")
@@ -1169,10 +1234,15 @@ def main() -> int:
 
     if args.cmd == "google":
         ga = GoogleAdapter()
-        if args.search is not None:
+        if args.latest is not None:
+            print(json.dumps(ga.get_latest_emails(count=args.latest, query=args.search or ""), indent=2, ensure_ascii=False))
+        elif args.search is not None:
             print(json.dumps(ga.search_emails(args.search), indent=2, ensure_ascii=False))
         elif args.read:
-            print(json.dumps(ga.read_email(args.read), indent=2, ensure_ascii=False))
+            if len(args.read) == 1:
+                print(json.dumps(ga.read_email(args.read[0]), indent=2, ensure_ascii=False))
+            else:
+                print(json.dumps([ga.read_email(mid) for mid in args.read], indent=2, ensure_ascii=False))
         elif args.calendar:
             print(json.dumps(ga.list_calendar_events(), indent=2, ensure_ascii=False))
         elif args.drive is not None:

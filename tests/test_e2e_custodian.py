@@ -1266,6 +1266,97 @@ class TestTier5JobApplicationAndAttachments(unittest.TestCase):
             self.assertEqual(called_reads, ["vip_3"])
             self.assertEqual(triage_res["vip_ingested"], 1)
 
+    @unittest.skipUnless(HAS_OMNICHANNEL and HAS_PROXY, "omnichannel_bridge and antigravity_proxy required")
+    def test_52_session_prompt_cache_invalidation_and_latest_emails(self):
+        """Tier 2.27: Single-call --latest N email fetch, ANTIGRAVITY_DEFAULT_SYSTEM directive, and poisoned state.db cleanup."""
+        import sqlite3
+        from email.message import EmailMessage
+        import run as custodian_run
+
+        def _make_email_bytes(subj: str, html_body: str) -> bytes:
+            m = EmailMessage()
+            m["Subject"] = subj
+            m["From"] = "sender@example.com"
+            m["Date"] = "Sun, 15 Nov 2026 05:00:00 +0000"
+            m.set_content("Plain text version not available")
+            m.add_alternative(html_body, subtype="html")
+            return m.as_bytes()
+
+        e101 = _make_email_bytes("Older Email", "<html><body><p>First order #101</p></body></html>")
+        e102 = _make_email_bytes("Newest Email", "<html><body><p>Latest update &amp; details #102</p></body></html>")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            creds_dir = Path(tmp_dir) / "creds"
+            creds_dir.mkdir(parents=True, exist_ok=True)
+            (creds_dir / "google_oauth.json").write_text(
+                json.dumps({"email": "omar.alnemr04@gmail.com", "app_password": "abcdefghijklmnop"}),
+                encoding="utf-8",
+            )
+            ga = omnichannel_bridge.GoogleAdapter(credentials_dir=str(creds_dir))
+            with patch("imaplib.IMAP4_SSL") as mock_imap:
+                imap_inst = mock_imap.return_value.__enter__.return_value
+                imap_inst.uid.side_effect = [
+                    ("OK", [b"101 102"]),
+                    ("OK", [(b"102 (RFC822 {300}", e102)]),
+                    ("OK", [(b"101 (RFC822 {300}", e101)]),
+                ]
+                latest = ga.get_latest_emails(count=2)
+                mock_imap.assert_called_once_with("imap.gmail.com", 993)
+                self.assertEqual([em["id"] for em in latest], ["102", "101"])
+                self.assertIn("Latest update & details #102", latest[0]["body"])
+                self.assertIn("First order #101", latest[1]["body"])
+
+            # Verify ANTIGRAVITY_DEFAULT_SYSTEM instructs model to call --latest 3
+            self.assertIn("python omnichannel_bridge.py google --latest 3", antigravity_proxy.ANTIGRAVITY_DEFAULT_SYSTEM)
+
+            # Verify unlock_stale_hermes_sessions purges poisoned sessions, system_prompts, and skills snapshot
+            fake_home = Path(tmp_dir) / "hermes_home"
+            fake_profile = fake_home / "profiles" / "llm-wiki"
+            fake_profile.mkdir(parents=True, exist_ok=True)
+            snap_file = fake_profile / ".skills_prompt_snapshot.json"
+            snap_file.write_text('{"skills": []}', encoding="utf-8")
+
+            db_path = fake_profile / "state.db"
+            conn = sqlite3.connect(str(db_path))
+            cur = conn.cursor()
+            cur.execute("CREATE TABLE system_prompts (hash TEXT PRIMARY KEY, prompt TEXT);")
+            cur.execute("INSERT INTO system_prompts VALUES ('h1', 'legacy system prompt');")
+            cur.execute(
+                "CREATE TABLE sessions (id TEXT PRIMARY KEY, model TEXT, system_prompt TEXT, system_prompt_hash TEXT, tool_names TEXT);"
+            )
+            cur.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, role TEXT, content TEXT);")
+            cur.execute("CREATE TABLE gateway_routing (scope TEXT, session_key TEXT, entry_json TEXT);")
+            cur.execute(
+                "INSERT INTO sessions VALUES ('sess_poisoned', 'old-model', 'Old prompt without bridge', 'h1', '[\"terminal\"]');"
+            )
+            cur.execute(
+                "INSERT INTO sessions VALUES ('sess_clean', 'old-model', 'Prompt mentioning omnichannel_bridge.py', 'h1', '[\"terminal\"]');"
+            )
+            cur.execute(
+                "INSERT INTO messages (session_id, role, content) VALUES "
+                "('sess_poisoned', 'assistant', 'I don''t currently have an active integration or tool connected to your Gmail account.');"
+            )
+            cur.execute(
+                "INSERT INTO gateway_routing VALUES ('telegram', 'telegram:1021125594', '{\"model\": \"old-model\"}');"
+            )
+            conn.commit()
+            conn.close()
+
+            with patch.object(custodian_run, "HERMES_HOME", str(fake_home)), \
+                 patch.object(custodian_run, "HERMES_PROFILE_DIR", str(fake_profile)):
+                custodian_run.unlock_stale_hermes_sessions()
+
+            self.assertFalse(snap_file.exists())
+            conn = sqlite3.connect(str(db_path))
+            cur = conn.cursor()
+            self.assertIsNone(cur.execute("SELECT id FROM sessions WHERE id='sess_poisoned';").fetchone())
+            self.assertEqual(cur.execute("SELECT COUNT(*) FROM messages WHERE session_id='sess_poisoned';").fetchone()[0], 0)
+            self.assertEqual(cur.execute("SELECT COUNT(*) FROM gateway_routing;").fetchone()[0], 0)
+            self.assertEqual(cur.execute("SELECT COUNT(*) FROM system_prompts;").fetchone()[0], 0)
+            clean_row = cur.execute("SELECT model, system_prompt, system_prompt_hash, tool_names FROM sessions WHERE id='sess_clean';").fetchone()
+            self.assertEqual(clean_row, (custodian_run.MODEL_DEFAULT, None, None, None))
+            conn.close()
+
 
 if __name__ == "__main__":
     unittest.main()
