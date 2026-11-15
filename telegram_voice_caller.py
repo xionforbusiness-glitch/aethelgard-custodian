@@ -25,6 +25,8 @@ import re
 import sys
 import threading
 import time
+import traceback
+import urllib.error
 import urllib.request
 import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -141,13 +143,27 @@ def is_caller_authorized(user_id: Any) -> bool:
     return uid in get_allowed_caller_ids()
 
 
-def get_caller_status() -> Dict[str, Any]:
+def query_live_daemon_status(timeout: float = 1.5) -> Dict[str, Any]:
+    """Queries the running background daemon RPC `/status` endpoint if listening."""
+    try:
+        req = urllib.request.Request(f"http://{RPC_HOST}:{RPC_PORT}/status", method="GET")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            if isinstance(data, dict):
+                data.setdefault("reachable", True)
+                return data
+            return {"reachable": True, "raw": data}
+    except Exception as exc:
+        return {"reachable": False, "error": str(exc)}
+
+
+def get_caller_status(include_live: bool = False) -> Dict[str, Any]:
     cfg = load_caller_config()
     session_file = Path(cfg.get("session_path") or get_caller_session_path())
     # Telethon adds .session suffix if omitted; check both
     session_exists = session_file.exists() or Path(str(session_file) + ".session").exists()
     configured = bool(cfg.get("api_id") and cfg.get("api_hash") and session_exists)
-    return {
+    out: Dict[str, Any] = {
         "deps_available": CALLER_DEPS_AVAILABLE,
         "telethon_available": TELETHON_AVAILABLE,
         "ntgcalls_available": NTGCALLS_AVAILABLE,
@@ -157,6 +173,9 @@ def get_caller_status() -> Dict[str, Any]:
         "phone_masked": (cfg.get("phone", "")[:4] + "***") if cfg.get("phone") else "",
         "rpc_endpoint": f"http://{RPC_HOST}:{RPC_PORT}",
     }
+    if include_live:
+        out["live_daemon"] = query_live_daemon_status()
+    return out
 
 
 # ==============================================================================
@@ -681,37 +700,188 @@ class TelegramP2PCallManager:
         self.cfg = load_caller_config()
         self.client: Optional[Any] = None
         self.ntg: Optional[Any] = None
+        self.ready: bool = False
+        self.stage: str = "init"
+        self.last_error: str = ""
+        self.self_id: Optional[int] = None
+        self.self_phone: str = ""
+        self.privacy_phone_call: str = ""
+        self.cached_peer_ids: Set[int] = set()
+        self.call_events: List[str] = []
+        self._reconnect_event: Optional[asyncio.Event] = None
         self.active_calls: Dict[int, Dict[str, Any]] = {}  # peer_id -> call state
         self.call_by_tg_id: Dict[int, int] = {}            # phone_call.id -> peer_id
 
+    def _log_event(self, msg: str) -> None:
+        stamp = datetime.datetime.now().strftime("%H:%M:%S")
+        entry = f"[{stamp}] {msg}"
+        self.call_events.append(entry)
+        if len(self.call_events) > 30:
+            self.call_events = self.call_events[-30:]
+        print(f"[Caller] {entry}", flush=True)
+
+    def snapshot_status(self) -> Dict[str, Any]:
+        telethon_conn = False
+        if self.client is not None:
+            try:
+                telethon_conn = bool(self.client.is_connected())
+            except Exception:
+                telethon_conn = False
+        return {
+            "daemon_active": bool(self.client is not None and self.loop.is_running()),
+            "daemon_ready": bool(self.ready and self.client is not None and self.loop.is_running()),
+            "loop_running": bool(self.loop.is_running()),
+            "telethon_connected": telethon_conn,
+            "stage": self.stage,
+            "last_error": self.last_error,
+            "self_id": self.self_id,
+            "self_phone_masked": (self.self_phone[:4] + "***") if self.self_phone else "",
+            "privacy_phone_call": self.privacy_phone_call,
+            "cached_peer_ids": sorted(self.cached_peer_ids),
+            "active_call_count": len(self.active_calls),
+            "call_events": list(self.call_events[-10:]),
+        }
+
+    async def _resolve_target_entity(self, client: Any, uid: int) -> Any:
+        try:
+            return await client.get_input_entity(uid)
+        except ValueError:
+            pass
+
+        # Warm dialogs + contacts from Telegram server on fresh QR sessions
+        try:
+            await client.get_dialogs(limit=60)
+        except Exception:
+            pass
+        try:
+            await client(functions.contacts.GetContactsRequest(hash=0))
+        except Exception:
+            pass
+        try:
+            return await client.get_input_entity(uid)
+        except ValueError:
+            pass
+
+        hints = [
+            self.cfg.get("target_username"),
+            os.environ.get("TELEGRAM_OWNER_USERNAME"),
+            self.cfg.get("target_phone"),
+            os.environ.get("TELEGRAM_OWNER_PHONE"),
+        ]
+        for hint in hints:
+            clean = str(hint or "").strip()
+            if not clean:
+                continue
+            try:
+                return await client.get_input_entity(clean)
+            except Exception:
+                pass
+
+        raise ValueError(
+            f"Telegram user {uid} has no cached access_hash on this +20 account yet. "
+            "Open Telegram on your personal account, send one 'Hi' message to the +20 account (or add it as a contact), then retry."
+        )
+
     async def start(self) -> bool:
+        self.ready = False
+        self.cfg = load_caller_config()
         if not CALLER_DEPS_AVAILABLE:
+            self.stage = "deps_missing"
+            self.last_error = "telethon or ntgcalls missing"
             return False
         if not (self.cfg.get("api_id") and self.cfg.get("api_hash")):
+            self.stage = "needs_auth"
+            self.last_error = "api_id or api_hash not configured"
             return False
 
-        self.ntg = ntgcalls.NTgCalls()
-        session_path = str(self.cfg.get("session_path") or get_caller_session_path())
-        self.client = TelegramClient(
-            session_path,
-            int(self.cfg["api_id"]),
-            self.cfg["api_hash"],
-            loop=self.loop,
-            device_model="Ubuntu Workstation",
-            system_version="Linux 6.8",
-            app_version="4.16.0",
-        )
-        await self.client.connect()
-        if not await self.client.is_user_authorized():
-            print("⚠ Telegram Caller session not authorized yet. Run `python telegram_voice_caller.py login` once.")
-            return False
+        self.stage = "connecting"
+        self.last_error = ""
+        client = None
+        try:
+            self.ntg = ntgcalls.NTgCalls()
+            session_path = str(self.cfg.get("session_path") or get_caller_session_path())
+            client = TelegramClient(
+                session_path,
+                int(self.cfg["api_id"]),
+                self.cfg["api_hash"],
+                loop=self.loop,
+                timeout=15,
+                request_retries=2,
+                connection_retries=3,
+                device_model="Ubuntu Workstation",
+                system_version="Linux 6.8",
+                app_version="4.16.0",
+            )
+            await client.connect()
+            if not await client.is_user_authorized():
+                self.stage = "needs_auth"
+                self.last_error = "Telegram Caller session not authorized yet"
+                self._log_event(self.last_error)
+                await client.disconnect()
+                return False
 
-        self._register_ntg_callbacks()
-        self._register_telethon_handlers()
-        return True
+            self.stage = "warming_entities"
+            me = await client.get_me()
+            self.self_id = getattr(me, "id", None)
+            self.self_phone = str(getattr(me, "phone", "") or "")
+
+            try:
+                await client.get_dialogs(limit=50)
+            except Exception as de:
+                self._log_event(f"Dialog warmup notice: {de}")
+
+            resolved: Set[int] = set()
+            for uid in sorted(get_allowed_caller_ids()):
+                try:
+                    await self._resolve_target_entity(client, uid)
+                    resolved.add(uid)
+                except Exception as pe:
+                    self._log_event(f"Entity warmup note for {uid}: {pe}")
+            self.cached_peer_ids = resolved
+
+            try:
+                priv = await client(functions.account.GetPrivacyRequest(key=types.InputPrivacyKeyPhoneCall()))
+                rule_names = [type(r).__name__.replace("PrivacyValue", "") for r in (getattr(priv, "rules", None) or [])]
+                self.privacy_phone_call = ",".join(rule_names) or "unknown"
+            except Exception as pve:
+                self.privacy_phone_call = f"check_failed:{type(pve).__name__}"
+
+            try:
+                await client.catch_up()
+            except Exception:
+                pass
+
+            self.client = client
+            self._register_ntg_callbacks()
+            self._register_telethon_handlers()
+            self.ready = True
+            self.stage = "listening"
+            self._log_event(
+                f"Listening as id={self.self_id} privacy={self.privacy_phone_call} cached_peers={sorted(self.cached_peer_ids)}"
+            )
+            return True
+        except Exception as exc:
+            self.ready = False
+            self.client = None
+            self.stage = "error"
+            self.last_error = f"{type(exc).__name__}: {exc}"
+            self._log_event(f"Start failed: {self.last_error}")
+            traceback.print_exc()
+            if client is not None:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+            return False
 
     def _register_ntg_callbacks(self) -> None:
         assert self.ntg is not None
+
+        def _on_signaling_done(fut: Any) -> None:
+            try:
+                fut.result()
+            except Exception as exc:
+                self._log_event(f"SendSignalingData error: {exc}")
 
         def _on_signaling(peer_id: int, data: bytes) -> None:
             ctx = self.active_calls.get(peer_id)
@@ -720,10 +890,11 @@ class TelegramP2PCallManager:
             input_call = ctx.get("input_call")
             if not input_call:
                 return
-            asyncio.run_coroutine_threadsafe(
+            fut = asyncio.run_coroutine_threadsafe(
                 self.client(functions.phone.SendSignalingDataRequest(peer=input_call, data=data)),
                 self.loop,
             )
+            fut.add_done_callback(_on_signaling_done)
 
         def _on_frames(peer_id: int, mode: Any, device: Any, frames: list) -> None:
             ctx = self.active_calls.get(peer_id)
@@ -753,9 +924,10 @@ class TelegramP2PCallManager:
 
         def _on_conn_change(peer_id: int, info: Any) -> None:
             ctx = self.active_calls.get(peer_id)
+            state = getattr(info, "state", None)
+            self._log_event(f"WebRTC state peer={peer_id}: {state}")
             if not ctx:
                 return
-            state = getattr(info, "state", None)
             if state == ntgcalls.ConnectionState.CONNECTED and not ctx.get("greeted"):
                 ctx["greeted"] = True
                 opening = ctx.get("opening_prompt") or "Hello Omar, Aethelgard online. Go ahead."
@@ -772,15 +944,30 @@ class TelegramP2PCallManager:
 
         @self.client.on(events.Raw)
         async def _raw_phone_handler(event):
-            if isinstance(event, types.UpdatePhoneCallSignalingData):
-                peer_id = self.call_by_tg_id.get(event.phone_call_id)
-                if peer_id and self.ntg:
-                    await self.ntg.send_signaling_data(peer_id, event.data)
-            elif isinstance(event, types.UpdatePhoneCall):
-                await self._on_phone_call_update(event.phone_call)
+            try:
+                if isinstance(event, types.UpdatePhoneCallSignalingData):
+                    peer_id = self.call_by_tg_id.get(event.phone_call_id)
+                    if peer_id and self.ntg:
+                        await self.ntg.send_signaling_data(peer_id, event.data)
+                elif isinstance(event, types.UpdatePhoneCall):
+                    self._log_event(
+                        f"UpdatePhoneCall type={type(event.phone_call).__name__} id={getattr(event.phone_call, 'id', None)}"
+                    )
+                    await self._on_phone_call_update(event.phone_call)
+            except Exception as exc:
+                self.last_error = f"{type(exc).__name__}: {exc}"
+                self._log_event(f"Raw update error: {self.last_error}")
+                traceback.print_exc()
 
     async def _prepare_ntg_peer(self, peer_id: int) -> None:
         assert self.ntg is not None
+        if peer_id in self.active_calls:
+            await self._cleanup_call(peer_id)
+        else:
+            try:
+                await self.ntg.stop(peer_id)
+            except Exception:
+                pass
         await self.ntg.create_p2p_call(peer_id)
         ad = ntgcalls.AudioDescription(ntgcalls.MediaSource.EXTERNAL, VOICE_SAMPLE_RATE, 1, "", False)
         await self.ntg.set_stream_sources(
@@ -806,83 +993,118 @@ class TelegramP2PCallManager:
                 password=getattr(c, "password", None),
                 turn=bool(getattr(c, "turn", False)),
                 stun=bool(getattr(c, "stun", False)),
-                tcp=False,
+                tcp=bool(getattr(c, "tcp", False)),
                 peer_tag=getattr(c, "peer_tag", None),
             )
             for c in (getattr(phone_call, "connections", None) or [])
         ]
         proto = getattr(phone_call, "protocol", None)
         versions = list(getattr(proto, "library_versions", None) or self.ntg.get_protocol().library_versions)
-        p2p_allowed = bool(getattr(phone_call, "p2p_allowed", True))
+        raw_p2p = getattr(phone_call, "p2p_allowed", None)
+        p2p_allowed = True if raw_p2p is None else bool(raw_p2p)
         custom_params = getattr(getattr(phone_call, "custom_parameters", None), "data", None)
+        self._log_event(
+            f"connect_p2p peer={peer_id} servers={len(servers)} p2p_allowed={p2p_allowed} versions={versions[:4]}"
+        )
         await self.ntg.connect_p2p(peer_id, servers, versions, p2p_allowed, custom_params)
 
     async def _on_phone_call_update(self, phone_call: Any) -> None:
         assert self.client is not None and self.ntg is not None
 
-        if isinstance(phone_call, types.PhoneCallRequested):
-            caller_id = int(phone_call.admin_id)
-            if not is_caller_authorized(caller_id):
-                await self.client(functions.phone.DiscardCallRequest(
-                    peer=types.InputPhoneCall(id=phone_call.id, access_hash=phone_call.access_hash),
-                    duration=0,
-                    reason=types.PhoneCallDiscardReasonBusy(),
-                    connection_id=0,
+        try:
+            if isinstance(phone_call, types.PhoneCallRequested):
+                caller_id = int(phone_call.admin_id)
+                input_call = types.InputPhoneCall(id=phone_call.id, access_hash=phone_call.access_hash)
+                self._log_event(f"Incoming PhoneCallRequested id={phone_call.id} from={caller_id}")
+                if not is_caller_authorized(caller_id):
+                    self._log_event(f"Rejecting unauthorized caller={caller_id}")
+                    await self.client(functions.phone.DiscardCallRequest(
+                        peer=input_call,
+                        duration=0,
+                        reason=types.PhoneCallDiscardReasonBusy(),
+                        connection_id=0,
+                    ))
+                    return
+
+                self.cached_peer_ids.add(caller_id)
+                try:
+                    await self.client(functions.phone.ReceivedCallRequest(peer=input_call))
+                except Exception as rce:
+                    self._log_event(f"ReceivedCallRequest notice: {rce}")
+
+                dh_res = await self.client(functions.messages.GetDhConfigRequest(version=0, random_length=256))
+                dh_cfg = ntgcalls.DhConfig(dh_res.g, dh_res.p, os.urandom(256))
+                await self._prepare_ntg_peer(caller_id)
+                g_b = await self.ntg.init_exchange(caller_id, dh_cfg, phone_call.g_a_hash)
+
+                self._init_call_context(
+                    caller_id,
+                    input_call,
+                    phone_call.id,
+                    opening_prompt="Aethelgard listening, Omar. Go ahead.",
+                )
+
+                ntg_proto = self.ntg.get_protocol()
+                accepted = await self.client(functions.phone.AcceptCallRequest(
+                    peer=input_call,
+                    g_b=g_b,
+                    protocol=types.PhoneCallProtocol(
+                        udp_p2p=ntg_proto.udp_p2p,
+                        udp_reflector=ntg_proto.udp_reflector,
+                        min_layer=ntg_proto.min_layer,
+                        max_layer=ntg_proto.max_layer,
+                        library_versions=ntg_proto.library_versions,
+                    ),
                 ))
-                return
+                self._log_event(
+                    f"AcceptCallRequest ok -> {type(accepted.phone_call).__name__} (id={phone_call.id})"
+                )
+                if isinstance(accepted.phone_call, (types.PhoneCall, types.PhoneCallAccepted, types.PhoneCallDiscarded)):
+                    await self._on_phone_call_update(accepted.phone_call)
 
-            dh_res = await self.client(functions.messages.GetDhConfigRequest(version=0, random_length=256))
-            dh_cfg = ntgcalls.DhConfig(dh_res.g, dh_res.p, os.urandom(256))
-            await self._prepare_ntg_peer(caller_id)
-            g_b = await self.ntg.init_exchange(caller_id, dh_cfg, phone_call.g_a_hash)
+            elif isinstance(phone_call, types.PhoneCallAccepted):
+                peer_id = self.call_by_tg_id.get(phone_call.id)
+                if not peer_id:
+                    self._log_event(f"Ignoring PhoneCallAccepted for unknown id={phone_call.id}")
+                    return
+                self._log_event(f"PhoneCallAccepted id={phone_call.id} peer={peer_id} -> confirming")
+                auth = await self.ntg.exchange_keys(peer_id, phone_call.g_b, 0)
+                ctx = self.active_calls[peer_id]
+                ntg_proto = self.ntg.get_protocol()
+                confirmed = await self.client(functions.phone.ConfirmCallRequest(
+                    peer=ctx["input_call"],
+                    g_a=auth.g_a_or_b,
+                    key_fingerprint=auth.key_fingerprint,
+                    protocol=types.PhoneCallProtocol(
+                        udp_p2p=ntg_proto.udp_p2p,
+                        udp_reflector=ntg_proto.udp_reflector,
+                        min_layer=ntg_proto.min_layer,
+                        max_layer=ntg_proto.max_layer,
+                        library_versions=ntg_proto.library_versions,
+                    ),
+                ))
+                self._log_event(f"ConfirmCallRequest ok -> {type(confirmed.phone_call).__name__}")
+                await self._connect_webrtc(peer_id, confirmed.phone_call)
 
-            input_call = types.InputPhoneCall(id=phone_call.id, access_hash=phone_call.access_hash)
-            self._init_call_context(caller_id, input_call, phone_call.id, opening_prompt="Aethelgard listening, Omar. Go ahead.")
+            elif isinstance(phone_call, types.PhoneCall):
+                peer_id = self.call_by_tg_id.get(phone_call.id)
+                if not peer_id:
+                    return
+                self._log_event(f"PhoneCall active id={phone_call.id} peer={peer_id}")
+                await self.ntg.exchange_keys(peer_id, phone_call.g_a_or_b, phone_call.key_fingerprint)
+                await self._connect_webrtc(peer_id, phone_call)
 
-            ntg_proto = self.ntg.get_protocol()
-            accepted = await self.client(functions.phone.AcceptCallRequest(
-                peer=input_call,
-                g_b=g_b,
-                protocol=types.PhoneCallProtocol(
-                    udp_p2p=ntg_proto.udp_p2p,
-                    udp_reflector=ntg_proto.udp_reflector,
-                    min_layer=ntg_proto.min_layer,
-                    max_layer=ntg_proto.max_layer,
-                    library_versions=ntg_proto.library_versions,
-                ),
-            ))
-            await self._on_phone_call_update(accepted.phone_call)
-
-        elif isinstance(phone_call, types.PhoneCallAccepted):
-            peer_id = self.call_by_tg_id.get(phone_call.id)
-            if not peer_id:
-                return
-            auth = await self.ntg.exchange_keys(peer_id, phone_call.g_b, 0)
-            ctx = self.active_calls[peer_id]
-            ntg_proto = self.ntg.get_protocol()
-            confirmed = await self.client(functions.phone.ConfirmCallRequest(
-                peer=ctx["input_call"],
-                g_a=auth.g_a_or_b,
-                key_fingerprint=auth.key_fingerprint,
-                protocol=types.PhoneCallProtocol(
-                    udp_p2p=ntg_proto.udp_p2p,
-                    udp_reflector=ntg_proto.udp_reflector,
-                    min_layer=ntg_proto.min_layer,
-                    max_layer=ntg_proto.max_layer,
-                    library_versions=ntg_proto.library_versions,
-                ),
-            ))
-            await self._connect_webrtc(peer_id, confirmed.phone_call)
-
-        elif isinstance(phone_call, types.PhoneCall):
-            peer_id = self.call_by_tg_id.get(phone_call.id)
-            if not peer_id:
-                return
-            await self.ntg.exchange_keys(peer_id, phone_call.g_a_or_b, phone_call.key_fingerprint)
-            await self._connect_webrtc(peer_id, phone_call)
-
-        elif isinstance(phone_call, types.PhoneCallDiscarded):
-            peer_id = self.call_by_tg_id.get(phone_call.id)
+            elif isinstance(phone_call, types.PhoneCallDiscarded):
+                reason_name = type(getattr(phone_call, "reason", None)).__name__
+                self._log_event(f"PhoneCallDiscarded id={phone_call.id} reason={reason_name}")
+                peer_id = self.call_by_tg_id.get(phone_call.id)
+                if peer_id:
+                    await self._cleanup_call(peer_id)
+        except Exception as exc:
+            self.last_error = f"{type(exc).__name__}: {exc}"
+            self._log_event(f"Call update error: {self.last_error}")
+            traceback.print_exc()
+            peer_id = self.call_by_tg_id.get(getattr(phone_call, "id", None))
             if peer_id:
                 await self._cleanup_call(peer_id)
 
@@ -913,42 +1135,51 @@ class TelegramP2PCallManager:
         return ctx
 
     async def initiate_outgoing_call(self, opening_prompt: str = "", target_user_id: Optional[int] = None) -> Dict[str, Any]:
-        if not self.client or not self.ntg:
-            return {"success": False, "error": "Telegram Caller client not connected"}
+        if not self.ready or not self.client or not self.ntg:
+            return {"success": False, "error": self.last_error or f"Telegram Caller daemon not ready (stage={self.stage})"}
 
         uid = int(target_user_id or next(iter(sorted(get_allowed_caller_ids()))))
         if not is_caller_authorized(uid):
             return {"success": False, "error": "Target user is outside TELEGRAM_ALLOWED_USERS"}
 
-        entity = await self.client.get_input_entity(uid)
-        dh_res = await self.client(functions.messages.GetDhConfigRequest(version=0, random_length=256))
-        dh_cfg = ntgcalls.DhConfig(dh_res.g, dh_res.p, os.urandom(256))
-        await self._prepare_ntg_peer(uid)
-        g_a_hash = await self.ntg.init_exchange(uid, dh_cfg, None)
+        try:
+            self._log_event(f"Initiating outgoing call to uid={uid}")
+            entity = await self._resolve_target_entity(self.client, uid)
+            self.cached_peer_ids.add(uid)
+            dh_res = await self.client(functions.messages.GetDhConfigRequest(version=0, random_length=256))
+            dh_cfg = ntgcalls.DhConfig(dh_res.g, dh_res.p, os.urandom(256))
+            await self._prepare_ntg_peer(uid)
+            g_a_hash = await self.ntg.init_exchange(uid, dh_cfg, None)
 
-        ntg_proto = self.ntg.get_protocol()
-        res = await self.client(functions.phone.RequestCallRequest(
-            user_id=entity,
-            random_id=random.randint(1, 0x7FFFFFFF),
-            g_a_hash=g_a_hash,
-            protocol=types.PhoneCallProtocol(
-                udp_p2p=ntg_proto.udp_p2p,
-                udp_reflector=ntg_proto.udp_reflector,
-                min_layer=ntg_proto.min_layer,
-                max_layer=ntg_proto.max_layer,
-                library_versions=ntg_proto.library_versions,
-            ),
-            video=False,
-        ))
-        call = res.phone_call
-        input_call = types.InputPhoneCall(id=call.id, access_hash=call.access_hash)
-        self._init_call_context(
-            uid,
-            input_call,
-            call.id,
-            opening_prompt=opening_prompt or "Omar, Aethelgard on the line. Go ahead whenever you're ready.",
-        )
-        return {"success": True, "call_id": call.id, "target_user_id": uid}
+            ntg_proto = self.ntg.get_protocol()
+            res = await self.client(functions.phone.RequestCallRequest(
+                user_id=entity,
+                random_id=random.randint(1, 0x7FFFFFFF),
+                g_a_hash=g_a_hash,
+                protocol=types.PhoneCallProtocol(
+                    udp_p2p=ntg_proto.udp_p2p,
+                    udp_reflector=ntg_proto.udp_reflector,
+                    min_layer=ntg_proto.min_layer,
+                    max_layer=ntg_proto.max_layer,
+                    library_versions=ntg_proto.library_versions,
+                ),
+                video=False,
+            ))
+            call = res.phone_call
+            input_call = types.InputPhoneCall(id=call.id, access_hash=call.access_hash)
+            self._init_call_context(
+                uid,
+                input_call,
+                call.id,
+                opening_prompt=opening_prompt or "Omar, Aethelgard on the line. Go ahead whenever you're ready.",
+            )
+            self._log_event(f"RequestCallRequest sent id={call.id} state={type(call).__name__}")
+            return {"success": True, "call_id": call.id, "target_user_id": uid, "state": type(call).__name__}
+        except Exception as exc:
+            self.last_error = f"{type(exc).__name__}: {exc}"
+            self._log_event(f"Outgoing call failed: {self.last_error}")
+            await self._cleanup_call(uid)
+            return {"success": False, "error": self.last_error}
 
     async def _speak_text(self, peer_id: int, text: str) -> None:
         import voice_engine
@@ -1045,13 +1276,25 @@ def _make_rpc_handler(manager: Optional[TelegramP2PCallManager]):
 
         def do_GET(self):
             if self.path == "/status":
-                st = get_caller_status()
-                st["daemon_active"] = bool(manager and manager.client)
+                st = get_caller_status(include_live=False)
+                if manager is not None:
+                    st.update(manager.snapshot_status())
+                else:
+                    st["daemon_active"] = False
+                    st["daemon_ready"] = False
                 self._json(200, st)
             else:
                 self._json(404, {"error": "Not found"})
 
         def do_POST(self):
+            if self.path == "/reconnect":
+                if manager and manager._reconnect_event and manager.loop.is_running():
+                    manager.loop.call_soon_threadsafe(manager._reconnect_event.set)
+                    self._json(200, {"success": True, "message": "Reconnect triggered"})
+                else:
+                    self._json(503, {"success": False, "error": "Daemon loop not running"})
+                return
+
             if self.path == "/call":
                 length = int(self.headers.get("Content-Length", "0") or "0")
                 raw = self.rfile.read(length) if length > 0 else b"{}"
@@ -1059,19 +1302,28 @@ def _make_rpc_handler(manager: Optional[TelegramP2PCallManager]):
                     data = json.loads(raw.decode("utf-8"))
                 except Exception:
                     data = {}
-                if not manager or not manager.client:
-                    self._json(503, {"success": False, "error": "Telegram caller daemon not connected"})
+                if not manager or not manager.ready or not manager.client or not manager.loop.is_running():
+                    snap = manager.snapshot_status() if manager else {}
+                    self._json(503, {
+                        "success": False,
+                        "error": snap.get("last_error") or f"Telegram caller daemon not ready (stage={snap.get('stage', 'offline')})",
+                        "daemon": snap,
+                    })
                     return
                 opening = str(data.get("opening_prompt") or "")
                 fut = asyncio.run_coroutine_threadsafe(
-                    manager.initiate_outgoing_call(opening_prompt=opening),
+                    asyncio.wait_for(manager.initiate_outgoing_call(opening_prompt=opening), timeout=12),
                     manager.loop,
                 )
                 try:
-                    res = fut.result(timeout=15)
+                    res = fut.result(timeout=14)
                     self._json(200 if res.get("success") else 500, res)
                 except Exception as exc:
-                    self._json(500, {"success": False, "error": str(exc)})
+                    self._json(500, {
+                        "success": False,
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "daemon": manager.snapshot_status(),
+                    })
             else:
                 self._json(404, {"error": "Not found"})
 
@@ -1104,8 +1356,23 @@ def request_call_via_rpc_or_direct(
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=20) as resp:
             return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as http_exc:
+        raw_body = ""
+        parsed: Dict[str, Any] = {}
+        try:
+            raw_body = http_exc.read().decode("utf-8", errors="replace")
+            parsed = json.loads(raw_body) if raw_body else {}
+        except Exception:
+            parsed = {}
+        return {
+            "success": False,
+            "fallback": "telegram_voice_note",
+            "http_status": http_exc.code,
+            "reason": parsed.get("error") or raw_body or str(http_exc),
+            "daemon": parsed.get("daemon"),
+        }
     except Exception as exc:
         return {
             "success": False,
@@ -1131,23 +1398,55 @@ def start_telegram_caller_background():
             rpc_srv = ThreadingHTTPServer((RPC_HOST, RPC_PORT), _make_rpc_handler(mgr))
             threading.Thread(target=rpc_srv.serve_forever, daemon=True, name="TelegramCallerRPC").start()
         except Exception as re_err:
-            print(f"⚠ Telegram Caller RPC notice: {re_err}")
+            print(f"⚠ Telegram Caller RPC notice: {re_err}", flush=True)
 
-        st = get_caller_status()
-        if st.get("status") != "connected":
-            print(f"📞 Telegram Voice Caller standby ({st.get('status')}): run `python telegram_voice_caller.py login` once to link +20 account.")
-            return
+        async def _supervisor_loop():
+            mgr._reconnect_event = asyncio.Event()
+            standby_logged = False
+            while True:
+                st = get_caller_status(include_live=False)
+                if st.get("status") != "connected":
+                    mgr.ready = False
+                    mgr.client = None
+                    mgr.stage = f"standby_{st.get('status')}"
+                    if not standby_logged:
+                        print(
+                            f"📞 Telegram Voice Caller standby ({st.get('status')}): run `./venv/bin/python3 telegram_voice_caller.py login` once to link +20 account.",
+                            flush=True,
+                        )
+                        standby_logged = True
+                    mgr._reconnect_event.clear()
+                    try:
+                        await asyncio.wait_for(mgr._reconnect_event.wait(), timeout=5.0)
+                    except asyncio.TimeoutError:
+                        pass
+                    continue
 
-        async def _runner():
-            ok = await mgr.start()
-            if ok and mgr.client:
-                print(f"📞 Native Telegram 1-on-1 Voice Caller ACTIVE on RPC :{RPC_PORT}!")
-                await mgr.client.run_until_disconnected()
+                standby_logged = False
+                ok = await mgr.start()
+                if ok and mgr.client:
+                    print(f"📞 Native Telegram 1-on-1 Voice Caller ACTIVE on RPC :{RPC_PORT}!", flush=True)
+                    try:
+                        await mgr.client.run_until_disconnected()
+                    except Exception as dce:
+                        mgr.last_error = f"{type(dce).__name__}: {dce}"
+                        mgr._log_event(f"Telethon disconnected: {mgr.last_error}")
+
+                mgr.ready = False
+                old_client = mgr.client
+                mgr.client = None
+                if old_client is not None:
+                    try:
+                        await old_client.disconnect()
+                    except Exception:
+                        pass
+                mgr.stage = "reconnecting"
+                await asyncio.sleep(5.0)
 
         try:
-            loop.run_until_complete(_runner())
+            loop.run_until_complete(_supervisor_loop())
         except Exception as ce:
-            print(f"⚠ Telegram Voice Caller runtime notice: {ce}")
+            print(f"⚠ Telegram Voice Caller runtime notice: {ce}", flush=True)
 
     t = threading.Thread(target=_worker, daemon=True, name="TelegramVoiceCaller")
     t.start()
@@ -1285,6 +1584,12 @@ def interactive_login(mode: str = "qr") -> int:
             await client.disconnect()
 
     asyncio.run(_auth())
+    # Best-effort nudge to any already-running background daemon so it connects immediately
+    try:
+        req = urllib.request.Request(f"http://{RPC_HOST}:{RPC_PORT}/reconnect", data=b"{}", method="POST")
+        urllib.request.urlopen(req, timeout=1.5).close()
+    except Exception:
+        pass
     return 0
 
 
@@ -1307,7 +1612,7 @@ def main() -> int:
         print(json.dumps(res, indent=2, ensure_ascii=False))
         return 0 if res.get("success") else 1
 
-    print(json.dumps(get_caller_status(), indent=2, ensure_ascii=False))
+    print(json.dumps(get_caller_status(include_live=True), indent=2, ensure_ascii=False))
     return 0
 
 

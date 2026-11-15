@@ -2165,6 +2165,49 @@ class TestTier6JarvisV2(unittest.TestCase):
                 self.assertEqual(maint["staged_followups"], 0)
                 self.assertEqual(len(sent_alerts), 0)
 
+    def test_63_caller_rpc_dead_loop_and_error_reporting(self):
+        import asyncio
+        import threading
+        import time
+        from http.server import ThreadingHTTPServer
+        import telegram_voice_caller
+
+        dead_loop = asyncio.new_event_loop()
+        try:
+            mgr = telegram_voice_caller.TelegramP2PCallManager(dead_loop)
+            # Simulate failed connect leaving non-None client but non-ready / stopped loop
+            mgr.client = MagicMock()
+            mgr.stage = "error"
+            mgr.last_error = "SqliteLockTest: mock startup failure"
+
+            srv = ThreadingHTTPServer(("127.0.0.1", 0), telegram_voice_caller._make_rpc_handler(mgr))
+            port = srv.server_address[1]
+            t = threading.Thread(target=srv.serve_forever, daemon=True)
+            t.start()
+            try:
+                with patch.object(telegram_voice_caller, "RPC_PORT", port):
+                    t0 = time.monotonic()
+                    res = telegram_voice_caller.request_call_via_rpc_or_direct(
+                        opening_prompt="Hello Omar",
+                        urgent=True,
+                    )
+                    elapsed = time.monotonic() - t0
+                    self.assertLess(elapsed, 2.0)
+                    self.assertFalse(res["success"])
+                    self.assertEqual(res.get("http_status"), 503)
+                    self.assertIn("SqliteLockTest", res.get("reason", ""))
+                    self.assertFalse(res["daemon"]["loop_running"])
+                    self.assertFalse(res["daemon"]["daemon_ready"])
+
+                    st = telegram_voice_caller.get_caller_status(include_live=True)
+                    self.assertTrue(st["live_daemon"]["reachable"])
+                    self.assertEqual(st["live_daemon"]["last_error"], "SqliteLockTest: mock startup failure")
+            finally:
+                srv.shutdown()
+                srv.server_close()
+        finally:
+            dead_loop.close()
+
 
 if __name__ == "__main__":
     unittest.main()
