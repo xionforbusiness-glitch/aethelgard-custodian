@@ -900,9 +900,9 @@ def init_hermes():
                 ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.thinking", "antigravity/gemini-3.8-flash-high"],
                 ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.flash-high", "antigravity/gemini-3.8-flash-high"],
                 ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.pro", "antigravity/gemini-3.8-flash-high"],
-                ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.claude", "antigravity/claude-sonnet-5-5-high"],
-                ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.sonnet", "antigravity/claude-sonnet-5-5-high"],
-                ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.opus", "antigravity/claude-opus-5-5-high"],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.claude", "antigravity/claude-sonnet-4-6"],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.sonnet", "antigravity/claude-sonnet-4-6"],
+                ["hermes", "-p", HERMES_PROFILE, "config", "set", "model.aliases.opus", "antigravity/claude-opus-4-6-thinking"],
             ])
         for cmd in commands:
             subprocess.run(cmd, check=False)

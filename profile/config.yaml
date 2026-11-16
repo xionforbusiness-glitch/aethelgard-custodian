@@ -21,9 +21,9 @@ model:
     flash-high: antigravity/gemini-3.8-flash-high
     thinking: antigravity/gemini-3.8-flash-high
     pro: antigravity/gemini-3.8-flash-high
-    claude: antigravity/claude-sonnet-5-5-high
-    sonnet: antigravity/claude-sonnet-5-5-high
-    opus: antigravity/claude-opus-5-5-high
+    claude: antigravity/claude-sonnet-4-6
+    sonnet: antigravity/claude-sonnet-4-6
+    opus: antigravity/claude-opus-4-6-thinking
 
 providers:
   first-time:
@@ -39,11 +39,11 @@ fallback_providers:
     base_url: http://127.0.0.1:20128/v1
     key_env: HERMES_CUSTOM_FIRST_TIME_API_KEY
   - provider: first-time
-    model: antigravity/claude-sonnet-5-5-low
+    model: antigravity/gemini-3.8-flash-high
     base_url: http://127.0.0.1:20128/v1
     key_env: HERMES_CUSTOM_FIRST_TIME_API_KEY
   - provider: first-time
-    model: antigravity/gemini-3.8-flash-high
+    model: antigravity/claude-sonnet-4-6
     base_url: http://127.0.0.1:20128/v1
     key_env: HERMES_CUSTOM_FIRST_TIME_API_KEY
 

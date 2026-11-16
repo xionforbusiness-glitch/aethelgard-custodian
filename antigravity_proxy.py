@@ -20,9 +20,11 @@ import sys
 import json
 import time
 import uuid
+import base64
 import threading
 import urllib.request
 import urllib.error
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from antigravity_token_manager import fetch_fresh_google_token
@@ -95,17 +97,23 @@ MODEL_ALIAS_MAP = {
     "gemini-3.6-flash-low": "gemini-3.8-flash-low",
     "gemini-3.6-flash-medium": "gemini-3.8-flash-medium",
     "gemini-3.6-flash-high": "gemini-3.8-flash-high",
-    # Claude aliases (bare Claude 5.5 404s on Antigravity; tier suffix is mandatory)
-    "claude": "claude-sonnet-5-5-high",
-    "sonnet": "claude-sonnet-5-5-high",
-    "claude-sonnet-4-6": "claude-sonnet-5-5-high",
-    "claude-sonnet-4-5": "claude-sonnet-5-5-high",
-    "claude-sonnet-4-5-thinking": "claude-sonnet-5-5-high",
-    "claude-sonnet-5-5": "claude-sonnet-5-5-high",
-    "opus": "claude-opus-5-5-high",
-    "claude-opus-4-6-thinking": "claude-opus-5-5-high",
-    "claude-opus-4-5-thinking": "claude-opus-5-5-high",
-    "claude-opus-5-5": "claude-opus-5-5-high",
+    # Claude aliases (live Google Antigravity Claude models: claude-sonnet-4-6 and claude-opus-4-6-thinking)
+    "claude": "claude-sonnet-4-6",
+    "sonnet": "claude-sonnet-4-6",
+    "claude-sonnet-4-6": "claude-sonnet-4-6",
+    "claude-sonnet-4-5": "claude-sonnet-4-6",
+    "claude-sonnet-4-5-thinking": "claude-sonnet-4-6",
+    "claude-sonnet-5-5": "claude-sonnet-4-6",
+    "claude-sonnet-5-5-low": "claude-sonnet-4-6",
+    "claude-sonnet-5-5-medium": "claude-sonnet-4-6",
+    "claude-sonnet-5-5-high": "claude-sonnet-4-6",
+    "opus": "claude-opus-4-6-thinking",
+    "claude-opus-4-6-thinking": "claude-opus-4-6-thinking",
+    "claude-opus-4-5-thinking": "claude-opus-4-6-thinking",
+    "claude-opus-5-5": "claude-opus-4-6-thinking",
+    "claude-opus-5-5-low": "claude-opus-4-6-thinking",
+    "claude-opus-5-5-medium": "claude-opus-4-6-thinking",
+    "claude-opus-5-5-high": "claude-opus-4-6-thinking",
     "gpt-oss-120b": "gpt-oss-120b-medium",
 }
 
@@ -114,7 +122,7 @@ DEFAULT_FAILOVER_MODELS = [
     "gemini-3.8-flash-medium",
     "gemini-3.8-flash-tiered",
     "gemini-3.8-flash-high",
-    "claude-sonnet-5-5-high",
+    "claude-sonnet-4-6",
 ]
 
 ADVERTISED_MODELS = [
@@ -122,14 +130,16 @@ ADVERTISED_MODELS = [
     "gemini-3.8-flash-medium",
     "gemini-3.8-flash-high",
     "gemini-3.8-flash-tiered",
+    "claude-sonnet-4-6",
+    "claude-opus-4-6-thinking",
+    "gpt-oss-120b-medium",
+    # Legacy / alias compatibility
     "claude-sonnet-5-5-low",
     "claude-sonnet-5-5-medium",
     "claude-sonnet-5-5-high",
     "claude-opus-5-5-low",
     "claude-opus-5-5-medium",
     "claude-opus-5-5-high",
-    "gpt-oss-120b-medium",
-    # Also advertise legacy IDs so client pre-checks never fail
     "gemini-3.7-flash-low",
     "gemini-3.7-flash-medium",
     "gemini-3.7-flash-high",
@@ -292,6 +302,82 @@ def extract_text_from_content(content) -> str:
     return str(content)
 
 
+def _resolve_image_to_inlinedata(item: dict) -> dict | None:
+    """Extracts image data and converts to Gemini inlineData from data URI, file path, http URL, or Anthropic source."""
+    if not isinstance(item, dict):
+        return None
+
+    # 1. Anthropic format: {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "..."}}
+    source = item.get("source")
+    if isinstance(source, dict):
+        if source.get("type") == "base64" and source.get("data"):
+            b64_data = str(source["data"]).strip()
+            mime_type = str(source.get("media_type") or "image/jpeg").lower()
+            if mime_type == "image/jpg":
+                mime_type = "image/jpeg"
+            return {"inlineData": {"mimeType": mime_type, "data": b64_data}}
+        if source.get("url"):
+            item = {"image_url": source["url"]}
+
+    # 2. OpenAI format: {"type": "image_url", "image_url": ...} or {"type": "image", "image_url": ...}
+    img_obj = item.get("image_url") or item.get("image") or item.get("url")
+    url_str = img_obj.get("url", "") if isinstance(img_obj, dict) else str(img_obj or "")
+    url_str = url_str.strip()
+
+    if not url_str:
+        raw_b64 = str(item.get("data") or "").strip()
+        if raw_b64:
+            m_type = str(item.get("mimeType") or item.get("media_type") or "image/jpeg").lower()
+            if m_type == "image/jpg":
+                m_type = "image/jpeg"
+            return {"inlineData": {"mimeType": m_type, "data": raw_b64}}
+        return None
+
+    # Case A: data URI (data:image/jpeg;base64,...)
+    if url_str.startswith("data:"):
+        m = re.match(r"data:([^;]+);base64,(.+)", url_str, re.DOTALL)
+        if m:
+            m_type = m.group(1).lower().strip()
+            if m_type == "image/jpg":
+                m_type = "image/jpeg"
+            return {"inlineData": {"mimeType": m_type, "data": m.group(2).strip()}}
+        return None
+
+    # Case B: Local file path or file:// URL
+    file_path = url_str
+    if file_path.startswith("file://"):
+        file_path = file_path[7:]
+        if file_path.startswith("/") and len(file_path) > 3 and file_path[2] == ":":
+            file_path = file_path[1:]
+    try:
+        p = Path(file_path)
+        if p.exists() and p.is_file():
+            raw_bytes = p.read_bytes()
+            ext = p.suffix.lower().lstrip(".")
+            ext_map = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp", "heic": "image/heic", "gif": "image/gif"}
+            m_type = ext_map.get(ext, "image/jpeg")
+            return {"inlineData": {"mimeType": m_type, "data": base64.b64encode(raw_bytes).decode("ascii")}}
+    except Exception:
+        pass
+
+    # Case C: http:// or https:// URL
+    if url_str.startswith(("http://", "https://")):
+        try:
+            req = urllib.request.Request(url_str, headers={"User-Agent": "AntigravityVision/1.0"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                raw_bytes = r.read()
+                c_type = str(r.headers.get("Content-Type") or "").lower().split(";")[0].strip()
+                if not c_type.startswith("image/"):
+                    c_type = "image/jpeg"
+                elif c_type == "image/jpg":
+                    c_type = "image/jpeg"
+                return {"inlineData": {"mimeType": c_type, "data": base64.b64encode(raw_bytes).decode("ascii")}}
+        except Exception:
+            pass
+
+    return None
+
+
 def convert_openai_content_to_gemini_parts(content) -> list[dict]:
     if content is None:
         return []
@@ -325,18 +411,16 @@ def convert_openai_content_to_gemini_parts(content) -> list[dict]:
                                 "data": b64_data,
                             }
                         })
-                elif itype == "image_url":
-                    img_url = item.get("image_url", {})
-                    url_str = img_url.get("url", "") if isinstance(img_url, dict) else str(img_url)
-                    if url_str.startswith("data:"):
-                        m = re.match(r"data:([^;]+);base64,(.+)", url_str, re.DOTALL)
-                        if m:
-                            g_parts.append({
-                                "inlineData": {
-                                    "mimeType": m.group(1),
-                                    "data": m.group(2).strip()
-                                }
-                            })
+                elif itype in ("image_url", "image", "input_image"):
+                    img_part = _resolve_image_to_inlinedata(item)
+                    if img_part:
+                        g_parts.append(img_part)
+                elif item.get("image_url") or item.get("image"):
+                    img_part = _resolve_image_to_inlinedata(item)
+                    if img_part:
+                        g_parts.append(img_part)
+        if not g_parts:
+            return [{"text": "[Image attachment received]"}]
         return g_parts
     return [{"text": str(content)}]
 
