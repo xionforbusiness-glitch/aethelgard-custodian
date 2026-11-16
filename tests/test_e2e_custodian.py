@@ -3390,6 +3390,93 @@ class TestTier7AutonomyAndStreaming(unittest.TestCase):
 
                 asyncio.run(_check_no_drop())
 
+    def test_77_low_cpu_live_tts_cloud_fallback_coalescing_and_miniaudio(self):
+        import array
+        import asyncio
+        from types import SimpleNamespace
+        import voice_engine
+
+        prev_block = voice_engine._EDGE_TTS_BLOCKED_UNTIL
+        try:
+            # 1) prefer_cloud_fallback=True must route Edge-TTS 403/timeout to fast Google TTS, skipping 9.6s CPU Piper
+            voice_engine._EDGE_TTS_BLOCKED_UNTIL = 0.0
+
+            class _TimeoutCommunicate:
+                def __init__(self, text, voice, **kwargs):
+                    pass
+
+                async def stream(self):
+                    if False:
+                        yield {}
+                    raise asyncio.TimeoutError("simulated slow Bing socket")
+
+            fake_gtts_proc = MagicMock(returncode=0, stdout=b"\x01\x00" * 64, stderr=b"")
+            tok = voice_engine._LOW_CPU_TTS_CTX.set(True)
+            try:
+                with patch.object(voice_engine.edge_tts, "Communicate", _TimeoutCommunicate), \
+                     patch.object(voice_engine, "_synthesize_google_tts_mp3_sync", return_value=b"FAKE_GTTS") as gmock, \
+                     patch.object(voice_engine, "_synthesize_piper_wav_sync", return_value=b"FAKE_WAV") as pmock, \
+                     patch.object(voice_engine, "_kickoff_piper_prefetch_async") as kpmock, \
+                     patch("subprocess.run", return_value=fake_gtts_proc):
+                    pcm = asyncio.run(voice_engine.synthesize_pcm_bytes("Good evening Omar."))
+            finally:
+                voice_engine._LOW_CPU_TTS_CTX.reset(tok)
+
+            self.assertGreater(len(pcm), 0)
+            gmock.assert_called_once()
+            pmock.assert_not_called()
+            kpmock.assert_not_called()
+            self.assertGreater(voice_engine._EDGE_TTS_BLOCKED_UNTIL, 0.0)
+
+            # 2) Short multi-sentence replies coalesce into ONE TTS call when coalesce_chars=260
+            synth_calls = []
+
+            async def _fake_bytes(sent, voice="auto", sample_rate=48000, channels=1):
+                synth_calls.append(sent)
+                return b"\x02\x00" * 480
+
+            async def _collect_coalesced():
+                frames = []
+                async for fr in voice_engine.synthesize_pcm_frames(
+                    "Aethelgard listening, Omar. Go ahead.",
+                    sample_rate=48000,
+                    frame_ms=20,
+                    prefer_cloud_fallback=True,
+                    coalesce_chars=260,
+                ):
+                    frames.append(fr)
+                return frames
+
+            with patch.object(voice_engine, "synthesize_pcm_bytes", side_effect=_fake_bytes):
+                out_frames = asyncio.run(_collect_coalesced())
+
+            self.assertEqual(len(synth_calls), 1)
+            self.assertEqual(synth_calls[0], "Aethelgard listening, Omar. Go ahead.")
+            self.assertEqual(len(out_frames), 1)
+
+            # 3) _fast_mp3_to_s16le_inprocess decodes real ID3-headed MP3 via miniaudio and ignores small FAKE_MP3 mocks
+            fake_samples = array.array("h", [1000] * 16)
+            fake_miniaudio = SimpleNamespace(
+                SampleFormat=SimpleNamespace(SIGNED16="S16"),
+                decode=MagicMock(return_value=SimpleNamespace(samples=fake_samples)),
+            )
+            with patch.dict(sys.modules, {"miniaudio": fake_miniaudio}):
+                self.assertIsNone(voice_engine._fast_mp3_to_s16le_inprocess(b"FAKE_MP3", 48000, 1, "volume=0.88"))
+                decoded_pcm = voice_engine._fast_mp3_to_s16le_inprocess(
+                    b"ID3\x03\x00" + b"\x00" * 160,
+                    48000,
+                    1,
+                    "volume=0.50",
+                )
+            self.assertIsNotNone(decoded_pcm)
+            self.assertEqual(len(decoded_pcm), 32)
+            out_vals = array.array("h")
+            out_vals.frombytes(decoded_pcm)
+            self.assertEqual(out_vals[0], 500)
+            fake_miniaudio.decode.assert_called_once()
+        finally:
+            voice_engine._EDGE_TTS_BLOCKED_UNTIL = prev_block
+
 
 if __name__ == "__main__":
     unittest.main()

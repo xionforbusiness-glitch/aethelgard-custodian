@@ -1225,21 +1225,35 @@ def _start_voice_and_scheduler_once() -> None:
                 timeout=120,
                 check=False,
             )
+        try:
+            import miniaudio  # noqa: F401
+        except ImportError:
+            print("📦 Installing miniaudio (C-speed in-process MP3 decoder)...", flush=True)
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "-q", "miniaudio"],
+                timeout=90,
+                check=False,
+            )
         from telegram_voice_caller import start_telegram_caller_background
         start_telegram_caller_background()
         print("📱 Native Telegram 1-on-1 Voice Caller thread initialized (RPC :20132)!", flush=True)
     except Exception as tce:
         print(f"⚠ Telegram Voice Caller startup notice: {tce}", flush=True)
 
-    # ── Pre-warm Offline British Male Neural Voice Backup & JARVIS Earcons ──
+    # ── Pre-warm single lightweight JARVIS earcon (skip heavy boot Piper/10x TTS flood on 1-vCPU VMs) ──
     try:
         import voice_engine
-        voice_engine._kickoff_piper_prefetch_async(voice_engine.PIPER_VOICE_ENGLISH)
-        threading.Thread(
-            target=voice_engine.preload_jarvis_earcons,
-            name="JarvisEarconPreload",
-            daemon=True,
-        ).start()
+        if os.environ.get("AETHELGARD_PRELOAD_PIPER", "0") == "1":
+            voice_engine._kickoff_piper_prefetch_async(voice_engine.PIPER_VOICE_ENGLISH)
+        if os.environ.get("AETHELGARD_PRELOAD_EARCONS", "1") != "0":
+            threading.Thread(
+                target=lambda: voice_engine.preload_jarvis_earcons(
+                    kinds=["checking"],
+                    include_arabic=False,
+                ),
+                name="JarvisEarconPreload",
+                daemon=True,
+            ).start()
     except Exception as pfe:
         print(f"⚠ Piper backup prefetch notice: {pfe}", flush=True)
 

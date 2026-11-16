@@ -5,6 +5,7 @@ pillow
 pyyaml
 edge-tts>=7.3.1
 piper-tts>=1.3.0
+miniaudio>=1.61
 openpyxl
 google-genai
 websockets

@@ -1,8 +1,10 @@
 import os
 import io
 import re
+import sys
 import wave
 import shutil
+import contextvars
 import threading
 import time
 import uuid
@@ -38,6 +40,9 @@ _EDGE_TTS_BLOCKED_UNTIL = 0.0
 _EDGE_TTS_COOLDOWN_SEC = 120.0
 _TTS_TLS_LOCAL = threading.local()
 _PIPER_LOCK = threading.Lock()
+_FFMPEG_PROC_LOCK = threading.Lock()
+_LOW_CPU_TTS_CTX: contextvars.ContextVar[bool] = contextvars.ContextVar("aethelgard_low_cpu_tts", default=False)
+_COALESCE_CHARS_CTX: contextvars.ContextVar[int] = contextvars.ContextVar("aethelgard_tts_coalesce_chars", default=0)
 _PIPER_VOICE_CACHE: dict[str, object] = {}
 _PIPER_DOWNLOAD_LOCK = threading.Lock()
 _PIPER_DOWNLOADING: set[str] = set()
@@ -231,7 +236,9 @@ def _synthesize_piper_wav_sync(text: str, is_ar: bool, allow_blocking_download: 
 async def _synthesize_edge_mp3(clean_text: str, voice: str, is_ar: bool) -> bytes:
     global _EDGE_TTS_BLOCKED_UNTIL
     if time.monotonic() < _EDGE_TTS_BLOCKED_UNTIL:
-        raise RuntimeError("edge-tts temporarily circuit-broken after 403")
+        raise RuntimeError("edge-tts temporarily circuit-broken after error")
+    low_cpu = bool(_LOW_CPU_TTS_CTX.get() or os.environ.get("AETHELGARD_LOW_CPU_TTS", "0") == "1")
+    timeout_sec = 4.5 if low_cpu else 8.0
     pitch = "-1Hz" if is_ar else JARVIS_PITCH
     rate = "+0%" if is_ar else JARVIS_RATE
     try:
@@ -243,7 +250,7 @@ async def _synthesize_edge_mp3(clean_text: str, voice: str, is_ar: bool) -> byte
                 if chunk.get("type") == "audio" and chunk.get("data"):
                     mp3_chunks.append(chunk["data"])
 
-        await asyncio.wait_for(_collect_edge_audio(), timeout=8.0)
+        await asyncio.wait_for(_collect_edge_audio(), timeout=timeout_sec)
         payload = b"".join(mp3_chunks)
         if not payload:
             raise RuntimeError("edge-tts returned empty audio stream")
@@ -253,8 +260,40 @@ async def _synthesize_edge_mp3(clean_text: str, voice: str, is_ar: bool) -> byte
         print(f"[Voice] Edge-TTS error ({voice}): {type(exc).__name__}: {msg[:160]}", flush=True)
         if "403" in msg or "Invalid response status" in msg:
             _EDGE_TTS_BLOCKED_UNTIL = time.monotonic() + _EDGE_TTS_COOLDOWN_SEC
-            _kickoff_piper_prefetch_async(PIPER_VOICE_ARABIC if is_ar else PIPER_VOICE_ENGLISH)
+            if not low_cpu and os.environ.get("AETHELGARD_PRELOAD_PIPER", "0") == "1":
+                _kickoff_piper_prefetch_async(PIPER_VOICE_ARABIC if is_ar else PIPER_VOICE_ENGLISH)
+        elif low_cpu and isinstance(exc, (asyncio.TimeoutError, TimeoutError, OSError)):
+            # Briefly skip slow/hanging Bing socket during live calls so 0.27s cloud fallback kicks in immediately.
+            _EDGE_TTS_BLOCKED_UNTIL = max(_EDGE_TTS_BLOCKED_UNTIL, time.monotonic() + 60.0)
         raise
+
+
+def _scale_pcm16_volume(pcm: bytes, audio_filter: str = "") -> bytes:
+    """Scales s16le PCM amplitude using C audioop (Python 3.11) with pure-Python array fallback (3.13+)."""
+    if not pcm or not audio_filter:
+        return pcm
+    match = re.fullmatch(r"volume=([0-9.]+)", audio_filter.strip())
+    if not match:
+        return pcm
+    vol = float(match.group(1))
+    if not (0.0 <= vol <= 2.0) or abs(vol - 1.0) <= 1e-3:
+        return pcm
+    try:
+        import audioop  # type: ignore
+        return audioop.mul(pcm, 2, vol)
+    except Exception:
+        import array
+        usable = len(pcm) - (len(pcm) % 2)
+        if usable <= 0:
+            return pcm
+        samples = array.array("h")
+        samples.frombytes(pcm[:usable])
+        if sys.byteorder != "little":
+            samples.byteswap()
+        scaled = array.array("h", (max(-32768, min(32767, int(s * vol))) for s in samples))
+        if sys.byteorder != "little":
+            scaled.byteswap()
+        return scaled.tobytes()
 
 
 def _fast_wav_to_s16le_inprocess(
@@ -293,11 +332,49 @@ def _fast_wav_to_s16le_inprocess(
             pcm = audioop.tostereo(pcm, 2, 1.0, 1.0)
         if src_rate != sample_rate:
             pcm, _ = audioop.ratecv(pcm, 2, channels, src_rate, sample_rate, None)
-        if audio_filter and audio_filter.strip().startswith("volume="):
-            vol = float(audio_filter.strip().split("=", 1)[1])
-            if 0.0 <= vol <= 2.0 and abs(vol - 1.0) > 1e-3:
-                pcm = audioop.mul(pcm, 2, vol)
-        return pcm
+        return _scale_pcm16_volume(pcm, audio_filter)
+    except Exception:
+        return None
+
+
+def _fast_mp3_to_s16le_inprocess(
+    payload: bytes,
+    sample_rate: int,
+    channels: int,
+    audio_filter: str = "",
+) -> bytes | None:
+    """
+    Zero-subprocess MP3 -> s16le decoder using optional C extension `miniaudio` (dr_mp3)
+    + C/array gain scaling to eliminate ~3s ffmpeg cold spawns on 1-vCPU VMs.
+    """
+    if not payload or len(payload) < 128:
+        return None
+    is_mp3 = payload.startswith(b"ID3") or (len(payload) >= 2 and payload[0] == 0xFF and (payload[1] & 0xE0) == 0xE0)
+    if not is_mp3:
+        return None
+    if audio_filter and not re.fullmatch(r"volume=[0-9.]+", audio_filter.strip()):
+        return None
+    try:
+        import miniaudio  # type: ignore
+    except Exception:
+        return None
+    try:
+        decoded = miniaudio.decode(
+            payload,
+            output_format=miniaudio.SampleFormat.SIGNED16,
+            nchannels=int(channels),
+            sample_rate=int(sample_rate),
+        )
+        samples = decoded.samples
+        if hasattr(samples, "tobytes"):
+            if sys.byteorder != "little":
+                samples.byteswap()
+            pcm = samples.tobytes()
+        else:
+            pcm = bytes(samples)
+        if not pcm:
+            return b""
+        return _scale_pcm16_volume(pcm, audio_filter)
     except Exception:
         return None
 
@@ -314,6 +391,10 @@ def _ffmpeg_transcode(
         fast = _fast_wav_to_s16le_inprocess(payload, sample_rate, channels, audio_filter=audio_filter)
         if fast is not None:
             return fast
+    if input_fmt == "mp3" and output_fmt == "s16le":
+        fast_mp3 = _fast_mp3_to_s16le_inprocess(payload, sample_rate, channels, audio_filter=audio_filter)
+        if fast_mp3 is not None:
+            return fast_mp3
 
     cmd = [
         "ffmpeg",
@@ -321,12 +402,22 @@ def _ffmpeg_transcode(
         "-hide_banner",
         "-loglevel",
         "error",
+        "-threads",
+        "1",
         "-f",
         input_fmt,
         "-i",
         "pipe:0",
     ]
-    if audio_filter:
+    post_vol: float | None = None
+    if (
+        input_fmt == "mp3"
+        and output_fmt == "s16le"
+        and audio_filter
+        and re.fullmatch(r"volume=[0-9.]+", audio_filter.strip())
+    ):
+        post_vol = float(audio_filter.strip().split("=", 1)[1])
+    elif audio_filter:
         cmd.extend(["-af", audio_filter])
     if output_fmt == "s16le":
         cmd.extend(["-f", "s16le", "-acodec", "pcm_s16le", "-ac", str(channels), "-ar", str(sample_rate)])
@@ -338,10 +429,14 @@ def _ffmpeg_transcode(
         cmd.extend(["-f", output_fmt])
     cmd.append("pipe:1")
 
-    proc = subprocess.run(cmd, input=payload, capture_output=True, check=False)
+    with _FFMPEG_PROC_LOCK:
+        proc = subprocess.run(cmd, input=payload, capture_output=True, check=False)
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.decode("utf-8", errors="replace").strip() or "ffmpeg transcode failed")
-    return proc.stdout
+    out = proc.stdout
+    if post_vol is not None and out:
+        out = _scale_pcm16_volume(out, audio_filter)
+    return out
 
 
 def _fallback_audio_filter(tier: str, is_ar: bool) -> str:
@@ -362,9 +457,15 @@ async def _synthesize_speech_payload_async(
     clean_text: str,
     voice: str,
     is_ar: bool,
+    prefer_cloud_fallback: bool = False,
 ) -> tuple[bytes, str, str, Exception | None]:
-    """4-tier male JARVIS synthesis: Edge-TTS -> Piper neural -> shaped Google TTS -> espeak-ng."""
+    """4-tier male JARVIS synthesis: Edge-TTS -> (Google/Piper based on CPU mode) -> espeak-ng."""
     edge_err: Exception | None = None
+    low_cpu = bool(
+        prefer_cloud_fallback
+        or _LOW_CPU_TTS_CTX.get()
+        or os.environ.get("AETHELGARD_LOW_CPU_TTS", "0") == "1"
+    )
     try:
         payload = await _synthesize_edge_mp3(clean_text, voice, is_ar)
         if payload:
@@ -372,19 +473,33 @@ async def _synthesize_speech_payload_async(
     except Exception as exc:
         edge_err = exc
 
-    try:
-        piper_wav = await asyncio.to_thread(_synthesize_piper_wav_sync, clean_text, is_ar)
-        if piper_wav:
-            return piper_wav, "wav", _fallback_audio_filter("piper", is_ar), edge_err
-    except Exception:
-        pass
+    if low_cpu:
+        try:
+            gtts_mp3 = await asyncio.to_thread(_synthesize_google_tts_mp3_sync, clean_text, is_ar)
+            if gtts_mp3:
+                return gtts_mp3, "mp3", _fallback_audio_filter("google_tts", is_ar), edge_err
+        except Exception:
+            pass
+        try:
+            piper_wav = await asyncio.to_thread(_synthesize_piper_wav_sync, clean_text, is_ar)
+            if piper_wav:
+                return piper_wav, "wav", _fallback_audio_filter("piper", is_ar), edge_err
+        except Exception:
+            pass
+    else:
+        try:
+            piper_wav = await asyncio.to_thread(_synthesize_piper_wav_sync, clean_text, is_ar)
+            if piper_wav:
+                return piper_wav, "wav", _fallback_audio_filter("piper", is_ar), edge_err
+        except Exception:
+            pass
 
-    try:
-        gtts_mp3 = await asyncio.to_thread(_synthesize_google_tts_mp3_sync, clean_text, is_ar)
-        if gtts_mp3:
-            return gtts_mp3, "mp3", _fallback_audio_filter("google_tts", is_ar), edge_err
-    except Exception:
-        pass
+        try:
+            gtts_mp3 = await asyncio.to_thread(_synthesize_google_tts_mp3_sync, clean_text, is_ar)
+            if gtts_mp3:
+                return gtts_mp3, "mp3", _fallback_audio_filter("google_tts", is_ar), edge_err
+        except Exception:
+            pass
 
     try:
         espeak_wav = await asyncio.to_thread(_synthesize_espeak_wav_sync, clean_text, is_ar)
@@ -488,6 +603,7 @@ async def synthesize_pcm_bytes(
     voice: str = "auto",
     sample_rate: int = 48000,
     channels: int = 1,
+    prefer_cloud_fallback: bool = False,
 ) -> bytes:
     """
     Synthesizes speech via 4-tier male JARVIS fallback (edge-tts -> piper-tts ->
@@ -501,7 +617,14 @@ async def synthesize_pcm_bytes(
     if not clean_text:
         return b""
 
-    payload, input_fmt, audio_filter, edge_err = await _synthesize_speech_payload_async(clean_text, voice, is_ar)
+    low_cpu = bool(prefer_cloud_fallback or _LOW_CPU_TTS_CTX.get())
+    tok = _LOW_CPU_TTS_CTX.set(low_cpu)
+    try:
+        payload, input_fmt, audio_filter, edge_err = await _synthesize_speech_payload_async(
+            clean_text, voice, is_ar, prefer_cloud_fallback=low_cpu
+        )
+    finally:
+        _LOW_CPU_TTS_CTX.reset(tok)
     if not payload:
         if edge_err is not None:
             raise edge_err
@@ -512,38 +635,85 @@ async def synthesize_pcm_bytes(
     )
 
 
+def _coalesce_speakable_clauses(clauses: list[str], max_chars: int) -> list[str]:
+    """Merges adjacent short sentences into batches up to max_chars to avoid per-sentence TTS/ffmpeg overhead."""
+    if max_chars <= 0 or len(clauses) <= 1:
+        return clauses
+    merged: list[str] = []
+    cur = ""
+    for clause in clauses:
+        part = clause.strip()
+        if not part:
+            continue
+        if not cur:
+            cur = part
+        elif len(cur) + 1 + len(part) <= max_chars:
+            cur = f"{cur} {part}"
+        else:
+            merged.append(cur)
+            cur = part
+    if cur:
+        merged.append(cur)
+    return merged
+
+
 async def synthesize_pcm_frames(
     text: str,
     voice: str = "auto",
     sample_rate: int = 48000,
     channels: int = 1,
     frame_ms: int = 20,
+    prefer_cloud_fallback: bool = False,
+    coalesce_chars: int = 0,
 ):
     """
     Async generator yielding fixed-duration s16le PCM frames (default 20ms = 1920 bytes @ 48kHz mono)
-    sentence-by-sentence with next-sentence lookahead prefetch for seamless live voice playback.
+    sentence-by-sentence with optional low-CPU batch coalescing and sequential VM-safe execution.
     """
     frame_bytes = (sample_rate * 2 * channels * frame_ms) // 1000
     sentences = split_speakable_sentences(text)
     if not sentences:
         return
-
-    next_task = asyncio.create_task(
-        synthesize_pcm_bytes(sentences[0], voice=voice, sample_rate=sample_rate, channels=channels)
+    eff_coalesce = int(coalesce_chars or _COALESCE_CHARS_CTX.get() or 0)
+    if eff_coalesce > 0:
+        sentences = _coalesce_speakable_clauses(sentences, eff_coalesce)
+    low_cpu = bool(
+        prefer_cloud_fallback
+        or _LOW_CPU_TTS_CTX.get()
+        or os.environ.get("AETHELGARD_LOW_CPU_TTS", "0") == "1"
     )
-    for idx in range(len(sentences)):
-        pcm = await next_task
-        if idx + 1 < len(sentences):
+    tok = _LOW_CPU_TTS_CTX.set(low_cpu)
+    try:
+        if low_cpu or len(sentences) == 1:
+            # Avoid overlapping concurrent ffmpeg/network spawns on 0.25-vCPU e2-micro VMs.
+            for sent in sentences:
+                pcm = await synthesize_pcm_bytes(sent, voice=voice, sample_rate=sample_rate, channels=channels)
+                if not pcm:
+                    continue
+                for offset in range(0, len(pcm), frame_bytes):
+                    frame = pcm[offset : offset + frame_bytes]
+                    if len(frame) < frame_bytes:
+                        frame = frame + b"\x00" * (frame_bytes - len(frame))
+                    yield frame
+        else:
             next_task = asyncio.create_task(
-                synthesize_pcm_bytes(sentences[idx + 1], voice=voice, sample_rate=sample_rate, channels=channels)
+                synthesize_pcm_bytes(sentences[0], voice=voice, sample_rate=sample_rate, channels=channels)
             )
-        if not pcm:
-            continue
-        for offset in range(0, len(pcm), frame_bytes):
-            frame = pcm[offset : offset + frame_bytes]
-            if len(frame) < frame_bytes:
-                frame = frame + b"\x00" * (frame_bytes - len(frame))
-            yield frame
+            for idx in range(len(sentences)):
+                pcm = await next_task
+                if idx + 1 < len(sentences):
+                    next_task = asyncio.create_task(
+                        synthesize_pcm_bytes(sentences[idx + 1], voice=voice, sample_rate=sample_rate, channels=channels)
+                    )
+                if not pcm:
+                    continue
+                for offset in range(0, len(pcm), frame_bytes):
+                    frame = pcm[offset : offset + frame_bytes]
+                    if len(frame) < frame_bytes:
+                        frame = frame + b"\x00" * (frame_bytes - len(frame))
+                    yield frame
+    finally:
+        _LOW_CPU_TTS_CTX.reset(tok)
 
 
 # ---------------------------------------------------------------------------
@@ -598,15 +768,17 @@ async def preload_jarvis_earcons_async(
     channels: int = 1,
     frame_ms: int = 10,
     kinds: list[str] | None = None,
+    include_arabic: bool = True,
 ) -> int:
-    """Pre-synthesize British male (and Arabic) earcon PCM frames into RAM cache."""
+    """Pre-synthesize British male (and optional Arabic) earcon PCM frames into RAM cache."""
     target_kinds = kinds or list(EARCON_PHRASES.keys())
+    lang_slots = ((0, False), (1, True)) if include_arabic else ((0, False),)
     loaded = 0
     for kind in target_kinds:
         pair = EARCON_PHRASES.get(kind)
         if not pair:
             continue
-        for idx, is_ar in ((0, False), (1, True)):
+        for idx, is_ar in lang_slots:
             key = (kind, is_ar, int(sample_rate), int(channels), int(frame_ms))
             with _EARCON_CACHE_LOCK:
                 if _EARCON_PCM_CACHE.get(key):
@@ -614,8 +786,14 @@ async def preload_jarvis_earcons_async(
                     continue
             text = pair[idx]
             voice = VOICE_ARABIC if is_ar else VOICE_ENGLISH
+            tok = _LOW_CPU_TTS_CTX.set(True)
             try:
-                pcm = await synthesize_pcm_bytes(text, voice=voice, sample_rate=sample_rate, channels=channels)
+                pcm = await synthesize_pcm_bytes(
+                    text,
+                    voice=voice,
+                    sample_rate=sample_rate,
+                    channels=channels,
+                )
                 frames = _slice_pcm_frames(pcm, sample_rate=sample_rate, channels=channels, frame_ms=frame_ms)
                 if frames:
                     with _EARCON_CACHE_LOCK:
@@ -623,16 +801,32 @@ async def preload_jarvis_earcons_async(
                     loaded += 1
             except Exception:
                 pass
+            finally:
+                _LOW_CPU_TTS_CTX.reset(tok)
     return loaded
 
 
-def preload_jarvis_earcons(sample_rate: int = 48000, channels: int = 1, frame_ms: int = 10) -> int:
+def preload_jarvis_earcons(
+    sample_rate: int = 48000,
+    channels: int = 1,
+    frame_ms: int = 10,
+    kinds: list[str] | None = None,
+    include_arabic: bool = True,
+) -> int:
     """Synchronous wrapper to warm pre-cached JARVIS earcons into memory."""
     try:
         asyncio.get_running_loop()
         # Running inside an active loop; caller should await preload_jarvis_earcons_async.
         return 0
     except RuntimeError:
-        return asyncio.run(preload_jarvis_earcons_async(sample_rate=sample_rate, channels=channels, frame_ms=frame_ms))
+        return asyncio.run(
+            preload_jarvis_earcons_async(
+                sample_rate=sample_rate,
+                channels=channels,
+                frame_ms=frame_ms,
+                kinds=kinds,
+                include_arabic=include_arabic,
+            )
+        )
 
 

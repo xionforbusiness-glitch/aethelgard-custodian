@@ -2286,26 +2286,36 @@ class TelegramP2PCallManager:
         try:
             self._log_event(f"TTS synthesizing peer={peer_id}: {text[:80]}")
             batch: List[bytes] = []
-            async for frame in voice_engine.synthesize_pcm_frames(
-                text,
-                voice="auto",
-                sample_rate=VOICE_SAMPLE_RATE,
-                frame_ms=FRAME_MS,
-            ):
-                if ctx.get("generation") != gen_at_start or peer_id not in self.active_calls:
-                    return
-                batch.append(frame)
-                # Enqueue full warmup batch (>=80ms) before starting playback to prevent WebRTC underruns.
-                if queued == 0 and len(batch) >= 12:
-                    for b_frame in batch:
-                        ctx["out_queue"].put_nowait(b_frame)
-                        queued += 1
-                    batch.clear()
-                elif queued > 0 and len(batch) >= 25:
-                    for b_frame in batch:
-                        ctx["out_queue"].put_nowait(b_frame)
-                        queued += 1
-                    batch.clear()
+            t_low = getattr(voice_engine, "_LOW_CPU_TTS_CTX", None)
+            t_coal = getattr(voice_engine, "_COALESCE_CHARS_CTX", None)
+            tok_low = t_low.set(True) if t_low is not None else None
+            tok_coal = t_coal.set(260) if t_coal is not None else None
+            try:
+                async for frame in voice_engine.synthesize_pcm_frames(
+                    text,
+                    voice="auto",
+                    sample_rate=VOICE_SAMPLE_RATE,
+                    frame_ms=FRAME_MS,
+                ):
+                    if ctx.get("generation") != gen_at_start or peer_id not in self.active_calls:
+                        return
+                    batch.append(frame)
+                    # Enqueue full warmup batch (>=120ms) before starting playback to prevent WebRTC underruns.
+                    if queued == 0 and len(batch) >= 12:
+                        for b_frame in batch:
+                            ctx["out_queue"].put_nowait(b_frame)
+                            queued += 1
+                        batch.clear()
+                    elif queued > 0 and len(batch) >= 25:
+                        for b_frame in batch:
+                            ctx["out_queue"].put_nowait(b_frame)
+                            queued += 1
+                        batch.clear()
+            finally:
+                if t_coal is not None and tok_coal is not None:
+                    t_coal.reset(tok_coal)
+                if t_low is not None and tok_low is not None:
+                    t_low.reset(tok_low)
             for b_frame in batch:
                 if ctx.get("generation") != gen_at_start or peer_id not in self.active_calls:
                     return
@@ -2423,14 +2433,20 @@ class TelegramP2PCallManager:
                 def _enqueue_prefetch() -> None:
                     if ctx.get("generation") != gen_start or peer_id not in self.active_calls:
                         return
-                    task = self.loop.create_task(
-                        voice_engine.synthesize_pcm_bytes(
-                            clean,
-                            voice="auto",
-                            sample_rate=VOICE_SAMPLE_RATE,
-                            channels=1,
+                    t_low = getattr(voice_engine, "_LOW_CPU_TTS_CTX", None)
+                    tok_low = t_low.set(True) if t_low is not None else None
+                    try:
+                        task = self.loop.create_task(
+                            voice_engine.synthesize_pcm_bytes(
+                                clean,
+                                voice="auto",
+                                sample_rate=VOICE_SAMPLE_RATE,
+                                channels=1,
+                            )
                         )
-                    )
+                    finally:
+                        if t_low is not None and tok_low is not None:
+                            t_low.reset(tok_low)
                     speech_q.put_nowait((clean, task))
 
                 try:
