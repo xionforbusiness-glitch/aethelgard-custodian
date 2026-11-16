@@ -1240,12 +1240,12 @@ def _start_voice_and_scheduler_once() -> None:
     except Exception as tce:
         print(f"⚠ Telegram Voice Caller startup notice: {tce}", flush=True)
 
-    # ── Pre-warm single lightweight JARVIS earcon (skip heavy boot Piper/10x TTS flood on 1-vCPU VMs) ──
+    # ── Optional boot warmup (disabled by default to preserve 1GB e2-micro RAM & clean 907a9ac call latency) ──
     try:
         import voice_engine
         if os.environ.get("AETHELGARD_PRELOAD_PIPER", "0") == "1":
             voice_engine._kickoff_piper_prefetch_async(voice_engine.PIPER_VOICE_ENGLISH)
-        if os.environ.get("AETHELGARD_PRELOAD_EARCONS", "1") != "0":
+        if os.environ.get("AETHELGARD_PRELOAD_EARCONS", "0") == "1":
             threading.Thread(
                 target=lambda: voice_engine.preload_jarvis_earcons(
                     kinds=["checking"],
@@ -1269,6 +1269,11 @@ def _start_voice_and_scheduler_once() -> None:
     def _supervise_whatsapp_bridge() -> None:
         if os.environ.get("AETHELGARD_DISABLE_WA_BRIDGE") == "1":
             return
+        cred_base = Path(os.environ.get("AETHELGARD_CREDENTIALS_DIR") or (Path.home() / ".aethelgard" / "credentials"))
+        wa_linked = (cred_base / "whatsapp_auth" / "creds.json").exists()
+        if not wa_linked and os.environ.get("AETHELGARD_ENABLE_WA_BRIDGE") != "1":
+            # Avoid burning ~98 MB RSS + Node CPU on 1GB e2-micro until WhatsApp is actually paired
+            return
         import shutil
         node_bin = shutil.which("node")
         bridge_dir = Path(SCRIPT_DIR) / "whatsapp_bridge"
@@ -1277,11 +1282,14 @@ def _start_voice_and_scheduler_once() -> None:
             return
         if not (bridge_dir / "node_modules").exists():
             return
+        wa_env = os.environ.copy()
+        wa_env["NODE_OPTIONS"] = "--dns-result-order=ipv4first --max-old-space-size=160"
         while True:
             try:
                 proc = subprocess.Popen(
                     [node_bin, str(server_js)],
                     cwd=str(bridge_dir),
+                    env=wa_env,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.STDOUT,
                 )

@@ -819,11 +819,43 @@ class WhatsAppAdapter:
             "details": "Use `/connect whatsapp <phone>` for 8-digit pairing code or QR code",
         }
 
+    def _ensure_bridge_running(self) -> None:
+        """Lazily boots the Node Baileys sidecar on pairing requests when idle-disabled on 1GB VMs."""
+        if os.environ.get("AETHELGARD_DISABLE_WA_BRIDGE") == "1" or os.environ.get("PYTEST_CURRENT_TEST"):
+            return
+        if self._bridge_request("/status", timeout=1.0) is not None:
+            return
+        import shutil
+        import subprocess
+        node_bin = shutil.which("node")
+        bridge_dir = Path(__file__).resolve().parent / "whatsapp_bridge"
+        server_js = bridge_dir / "server.js"
+        if not node_bin or not server_js.exists() or not (bridge_dir / "node_modules").exists():
+            return
+        wa_env = os.environ.copy()
+        wa_env["NODE_OPTIONS"] = "--dns-result-order=ipv4first --max-old-space-size=160"
+        try:
+            subprocess.Popen(
+                [node_bin, str(server_js)],
+                cwd=str(bridge_dir),
+                env=wa_env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.STDOUT,
+            )
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                if self._bridge_request("/status", timeout=0.8) is not None:
+                    break
+                time.sleep(0.4)
+        except Exception:
+            pass
+
     def get_qr_or_pairing_code(self, phone: str = "") -> Dict[str, Any]:
         """
         Requests a real WhatsApp Multi-Device 8-digit phone pairing code or QR string
         from the Baileys Node sidecar, falling back deterministically if sidecar is offline.
         """
+        self._ensure_bridge_running()
         clean_phone = re.sub(r"[^\d+]", "", phone or "")
         live = self._bridge_request("/pair", method="POST", payload={"phone": clean_phone}, timeout=12.0)
         if isinstance(live, dict) and (live.get("pairing_code") or live.get("qr") or live.get("connected")):

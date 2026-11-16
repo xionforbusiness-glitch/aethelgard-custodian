@@ -2285,7 +2285,6 @@ class TelegramP2PCallManager:
         queued = 0
         try:
             self._log_event(f"TTS synthesizing peer={peer_id}: {text[:80]}")
-            batch: List[bytes] = []
             t_low = getattr(voice_engine, "_LOW_CPU_TTS_CTX", None)
             t_coal = getattr(voice_engine, "_COALESCE_CHARS_CTX", None)
             tok_low = t_low.set(True) if t_low is not None else None
@@ -2298,29 +2297,14 @@ class TelegramP2PCallManager:
                     frame_ms=FRAME_MS,
                 ):
                     if ctx.get("generation") != gen_at_start or peer_id not in self.active_calls:
-                        return
-                    batch.append(frame)
-                    # Enqueue full warmup batch (>=120ms) before starting playback to prevent WebRTC underruns.
-                    if queued == 0 and len(batch) >= 12:
-                        for b_frame in batch:
-                            ctx["out_queue"].put_nowait(b_frame)
-                            queued += 1
-                        batch.clear()
-                    elif queued > 0 and len(batch) >= 25:
-                        for b_frame in batch:
-                            ctx["out_queue"].put_nowait(b_frame)
-                            queued += 1
-                        batch.clear()
+                        break
+                    await ctx["out_queue"].put(frame)
+                    queued += 1
             finally:
                 if t_coal is not None and tok_coal is not None:
                     t_coal.reset(tok_coal)
                 if t_low is not None and tok_low is not None:
                     t_low.reset(tok_low)
-            for b_frame in batch:
-                if ctx.get("generation") != gen_at_start or peer_id not in self.active_calls:
-                    return
-                ctx["out_queue"].put_nowait(b_frame)
-                queued += 1
             self._log_event(f"TTS queued {queued} PCM frames ({FRAME_MS}ms) peer={peer_id}")
         except Exception as exc:
             self._log_event(f"Live call TTS error: {type(exc).__name__}: {exc}")
@@ -2375,7 +2359,6 @@ class TelegramP2PCallManager:
             ctx["out_queue"].put_nowait(frame)
 
     async def _handle_utterance(self, peer_id: int, pcm_16k: bytes) -> None:
-        import voice_engine
         ctx = self.active_calls.get(peer_id)
         if not ctx:
             return
@@ -2391,115 +2374,11 @@ class TelegramP2PCallManager:
             wav_bytes = pcm16_to_wav_bytes(pcm_16k, sample_rate=ASR_SAMPLE_RATE)
             brain: VoiceBrainSession = ctx["brain"]
             backfill_task: Optional[asyncio.Task] = None
-            speech_q: asyncio.Queue[Optional[Tuple[str, Optional[asyncio.Task]]]] = asyncio.Queue()
-            streamed_any = [False]
-            earcon_sent = [False]
-            gen_start = ctx.get("generation", 0)
-            use_sentence_stream = os.environ.get("AETHELGARD_VOICE_STREAM", "0") == "1"
-            prev_text = ""
-            if brain.turns:
-                prev_text = str(brain.turns[-1].get("aethelgard") or brain.turns[-1].get("omar") or "")
-            is_ar = any("\u0600" <= c <= "\u06ff" for c in prev_text)
-
-            def _earcon_kind(tool_name: str) -> str:
-                if tool_name in ("launch_mission", "control_mission", "get_mission_status", "list_missions", "queue_async_task"):
-                    return "mission"
-                if tool_name == "portal_apply":
-                    return "portal"
-                if tool_name in ("web_search", "search_vault"):
-                    return "searching"
-                if tool_name in ("save_gmail_draft", "stage_outbound_draft"):
-                    return "drafting"
-                return "checking"
-
-            def _on_tool_start(tool_name: str) -> None:
-                if earcon_sent[0]:
-                    return
-                earcon_sent[0] = True
-                kind = _earcon_kind(tool_name)
-                try:
-                    self.loop.call_soon_threadsafe(
-                        lambda k=kind: self.loop.create_task(self._play_earcon(peer_id, k, is_ar=is_ar))
-                    )
-                except Exception:
-                    pass
-
-            def _on_speak_chunk(sentence: str) -> None:
-                clean = (sentence or "").strip()
-                if not clean:
-                    return
-                streamed_any[0] = True
-
-                def _enqueue_prefetch() -> None:
-                    if ctx.get("generation") != gen_start or peer_id not in self.active_calls:
-                        return
-                    t_low = getattr(voice_engine, "_LOW_CPU_TTS_CTX", None)
-                    tok_low = t_low.set(True) if t_low is not None else None
-                    try:
-                        task = self.loop.create_task(
-                            voice_engine.synthesize_pcm_bytes(
-                                clean,
-                                voice="auto",
-                                sample_rate=VOICE_SAMPLE_RATE,
-                                channels=1,
-                            )
-                        )
-                    finally:
-                        if t_low is not None and tok_low is not None:
-                            t_low.reset(tok_low)
-                    speech_q.put_nowait((clean, task))
-
-                try:
-                    self.loop.call_soon_threadsafe(_enqueue_prefetch)
-                except Exception:
-                    pass
-
-            async def _speak_consumer() -> None:
-                while True:
-                    item = await speech_q.get()
-                    if item is None:
-                        break
-                    chunk_text, prefetch_task = item
-                    if prefetch_task is None:
-                        await self._speak_text(peer_id, chunk_text)
-                        continue
-                    try:
-                        if ctx.get("generation") != gen_start or peer_id not in self.active_calls:
-                            prefetch_task.cancel()
-                            continue
-                        self._log_event(f"TTS synthesizing peer={peer_id}: {chunk_text[:80]}")
-                        pcm = await prefetch_task
-                        if ctx.get("generation") != gen_start or peer_id not in self.active_calls:
-                            continue
-                        if pcm:
-                            frames = voice_engine._slice_pcm_frames(
-                                pcm, sample_rate=VOICE_SAMPLE_RATE, channels=1, frame_ms=FRAME_MS
-                            )
-                            ctx["ai_speaking"] = True
-                            for fr in frames:
-                                ctx["out_queue"].put_nowait(fr)
-                            self._log_event(f"TTS queued {len(frames)} PCM frames ({FRAME_MS}ms) peer={peer_id}")
-                    except asyncio.CancelledError:
-                        break
-                    except Exception as exc:
-                        self._log_event(f"Live call prefetch TTS error: {type(exc).__name__}: {exc}")
-
-            speaker_task = self.loop.create_task(_speak_consumer())
             should_backfill = False
             try:
                 self._log_event(f"VoiceBrain turn start peer={peer_id} wav_bytes={len(wav_bytes)}")
-                if "process_user_turn" not in brain.__dict__ and type(brain).process_user_turn is VoiceBrainSession.process_user_turn:
-                    reply = await asyncio.to_thread(
-                        brain.process_user_turn,
-                        wav_bytes=wav_bytes,
-                        on_tool_start=_on_tool_start,
-                        on_speak_chunk=_on_speak_chunk if use_sentence_stream else None,
-                    )
-                else:
-                    reply = await asyncio.to_thread(brain.process_user_turn, wav_bytes=wav_bytes)
+                reply = await asyncio.to_thread(brain.process_user_turn, wav_bytes=wav_bytes)
                 if self.active_calls.get(peer_id) is not call_ctx_ref:
-                    await speech_q.put(None)
-                    await speaker_task
                     return
                 self._log_event(f"VoiceBrain reply peer={peer_id}: {str(reply)[:90]}")
                 turn_idx = max(0, len(brain.turns) - 1)
@@ -2508,18 +2387,11 @@ class TelegramP2PCallManager:
                 self._log_event(f"VoiceBrain turn error peer={peer_id}: {type(bexc).__name__}: {bexc}")
                 traceback.print_exc()
                 reply = "Sorry Omar, I hit a quick reasoning hiccup — say that once more."
-                streamed_any[0] = False
 
             if self.active_calls.get(peer_id) is not call_ctx_ref:
-                await speech_q.put(None)
-                await speaker_task
                 return
-
-            if reply and not streamed_any[0]:
-                await speech_q.put((reply, None))
-            await speech_q.put(None)
-            await speaker_task
-
+            if reply:
+                await self._speak_text(peer_id, reply)
             if should_backfill and self.active_calls.get(peer_id) is call_ctx_ref:
                 async def _backfill_transcript() -> None:
                     try:

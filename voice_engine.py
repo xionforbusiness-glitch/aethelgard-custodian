@@ -347,6 +347,8 @@ def _fast_mp3_to_s16le_inprocess(
     Zero-subprocess MP3 -> s16le decoder using optional C extension `miniaudio` (dr_mp3)
     + C/array gain scaling to eliminate ~3s ffmpeg cold spawns on 1-vCPU VMs.
     """
+    if os.environ.get("AETHELGARD_DISABLE_MINIAUDIO") == "1":
+        return None
     if not payload or len(payload) < 128:
         return None
     is_mp3 = payload.startswith(b"ID3") or (len(payload) >= 2 and payload[0] == 0xFF and (payload[1] & 0xE0) == 0xE0)
