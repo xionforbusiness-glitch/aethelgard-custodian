@@ -349,6 +349,16 @@ def tick_async_jobs(
                 except Exception:
                     due = False
             if due:
+                # Never ring over an active call still winding down / speaking farewell
+                if call_fn is None and job.get("delivery", "call") in ("call", "both"):
+                    try:
+                        import telegram_voice_caller
+                        st = telegram_voice_caller.query_live_daemon_status()
+                        if isinstance(st, dict) and st.get("reachable") and int(st.get("active_call_count") or 0) > 0:
+                            due = False
+                    except Exception:
+                        pass
+            if due:
                 summary = str(payload.get("message") or job.get("title") or "Scheduled callback time reached.")
                 delivery_res = _deliver_job_notification(
                     job, summary, vault_dir=vault_dir, call_fn=call_fn, telegram_fn=telegram_fn

@@ -30,6 +30,11 @@ import urllib.error
 import urllib.request
 import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+try:
+    import audioop as _audioop
+except Exception:
+    _audioop = None  # Python 3.13+ fallback to pure-Python DSP
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
@@ -195,10 +200,17 @@ def get_caller_status(include_live: bool = False) -> Dict[str, Any]:
 # ==============================================================================
 
 def pcm16_rms(pcm_bytes: bytes) -> float:
-    """Computes RMS amplitude of signed 16-bit little-endian PCM bytes."""
+    """Computes RMS amplitude of signed 16-bit little-endian PCM bytes (C-accelerated on Python 3.11)."""
     if not pcm_bytes or len(pcm_bytes) < 2:
         return 0.0
     usable = len(pcm_bytes) - (len(pcm_bytes) % 2)
+    if usable <= 0:
+        return 0.0
+    if _audioop is not None and sys.byteorder == "little":
+        try:
+            return float(_audioop.rms(pcm_bytes[:usable], 2))
+        except Exception:
+            pass
     samples = array.array("h")
     samples.frombytes(pcm_bytes[:usable])
     if sys.byteorder != "little":
@@ -1107,8 +1119,9 @@ class VoiceBrainSession:
                     trigger_at = ""
                     if delay_min is not None or delay_sec is not None:
                         sec = float(delay_sec or 0) + (float(delay_min or 0) * 60.0)
+                        # Ensure immediate callback requests allow time for farewell + clean hangup before dialing
                         trigger_at = (
-                            datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=max(5.0, sec))
+                            datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=max(10.0, sec))
                         ).isoformat()
                     elif detail:
                         # Support both ISO timestamps and fallback if natural language was passed
@@ -1742,6 +1755,7 @@ class TelegramP2PCallManager:
         self.cached_peer_ids: Set[int] = set()
         self.call_events: List[str] = []
         self._reconnect_event: Optional[asyncio.Event] = None
+        self._outgoing_call_lock: asyncio.Lock = asyncio.Lock()
         self.active_calls: Dict[int, Dict[str, Any]] = {}  # peer_id -> call state
         self.call_by_tg_id: Dict[int, int] = {}            # phone_call.id -> peer_id
 
@@ -2214,44 +2228,52 @@ class TelegramP2PCallManager:
         if not is_caller_authorized(uid):
             return {"success": False, "error": "Target user is outside TELEGRAM_ALLOWED_USERS"}
 
-        try:
-            self._log_event(f"Initiating outgoing call to uid={uid}")
-            entity = await self._resolve_target_entity(self.client, uid)
-            self.cached_peer_ids.add(uid)
-            dh_res = await self.client(functions.messages.GetDhConfigRequest(version=0, random_length=256))
-            dh_cfg = ntgcalls.DhConfig(dh_res.g, dh_res.p, os.urandom(256))
-            await self._prepare_ntg_peer(uid)
-            g_a_hash = await self.ntg.init_exchange(uid, dh_cfg, None)
+        async with self._outgoing_call_lock:
+            if uid in self.active_calls:
+                self._log_event(f"Deferred outgoing call: active call still in progress peer={uid}")
+                return {
+                    "success": False,
+                    "call_active": True,
+                    "error": f"Call already active with peer={uid}; waiting for hangup",
+                }
+            try:
+                self._log_event(f"Initiating outgoing call to uid={uid}")
+                entity = await self._resolve_target_entity(self.client, uid)
+                self.cached_peer_ids.add(uid)
+                dh_res = await self.client(functions.messages.GetDhConfigRequest(version=0, random_length=256))
+                dh_cfg = ntgcalls.DhConfig(dh_res.g, dh_res.p, os.urandom(256))
+                await self._prepare_ntg_peer(uid)
+                g_a_hash = await self.ntg.init_exchange(uid, dh_cfg, None)
 
-            ntg_proto = self.ntg.get_protocol()
-            res = await self.client(functions.phone.RequestCallRequest(
-                user_id=entity,
-                random_id=random.randint(1, 0x7FFFFFFF),
-                g_a_hash=g_a_hash,
-                protocol=types.PhoneCallProtocol(
-                    udp_p2p=ntg_proto.udp_p2p,
-                    udp_reflector=ntg_proto.udp_reflector,
-                    min_layer=ntg_proto.min_layer,
-                    max_layer=ntg_proto.max_layer,
-                    library_versions=ntg_proto.library_versions,
-                ),
-                video=False,
-            ))
-            call = res.phone_call
-            input_call = types.InputPhoneCall(id=call.id, access_hash=call.access_hash)
-            self._init_call_context(
-                uid,
-                input_call,
-                call.id,
-                opening_prompt=opening_prompt or "Omar, Aethelgard on the line. Go ahead whenever you're ready.",
-            )
-            self._log_event(f"RequestCallRequest sent id={call.id} state={type(call).__name__}")
-            return {"success": True, "call_id": call.id, "target_user_id": uid, "state": type(call).__name__}
-        except Exception as exc:
-            self.last_error = f"{type(exc).__name__}: {exc}"
-            self._log_event(f"Outgoing call failed: {self.last_error}")
-            await self._cleanup_call(uid)
-            return {"success": False, "error": self.last_error}
+                ntg_proto = self.ntg.get_protocol()
+                res = await self.client(functions.phone.RequestCallRequest(
+                    user_id=entity,
+                    random_id=random.randint(1, 0x7FFFFFFF),
+                    g_a_hash=g_a_hash,
+                    protocol=types.PhoneCallProtocol(
+                        udp_p2p=ntg_proto.udp_p2p,
+                        udp_reflector=ntg_proto.udp_reflector,
+                        min_layer=ntg_proto.min_layer,
+                        max_layer=ntg_proto.max_layer,
+                        library_versions=ntg_proto.library_versions,
+                    ),
+                    video=False,
+                ))
+                call = res.phone_call
+                input_call = types.InputPhoneCall(id=call.id, access_hash=call.access_hash)
+                self._init_call_context(
+                    uid,
+                    input_call,
+                    call.id,
+                    opening_prompt=opening_prompt or "Omar, Aethelgard on the line. Go ahead whenever you're ready.",
+                )
+                self._log_event(f"RequestCallRequest sent id={call.id} state={type(call).__name__}")
+                return {"success": True, "call_id": call.id, "target_user_id": uid, "state": type(call).__name__}
+            except Exception as exc:
+                self.last_error = f"{type(exc).__name__}: {exc}"
+                self._log_event(f"Outgoing call failed: {self.last_error}")
+                await self._cleanup_call(uid)
+                return {"success": False, "error": self.last_error}
 
     async def _speak_text(self, peer_id: int, text: str) -> None:
         import voice_engine
@@ -2338,6 +2360,7 @@ class TelegramP2PCallManager:
             ctx["out_queue"].put_nowait(frame)
 
     async def _handle_utterance(self, peer_id: int, pcm_16k: bytes) -> None:
+        import voice_engine
         ctx = self.active_calls.get(peer_id)
         if not ctx:
             return
@@ -2345,9 +2368,10 @@ class TelegramP2PCallManager:
             wav_bytes = pcm16_to_wav_bytes(pcm_16k, sample_rate=ASR_SAMPLE_RATE)
             brain: VoiceBrainSession = ctx["brain"]
             backfill_task: Optional[asyncio.Task] = None
-            speech_q: asyncio.Queue[Optional[str]] = asyncio.Queue()
+            speech_q: asyncio.Queue[Optional[Tuple[str, Optional[asyncio.Task]]]] = asyncio.Queue()
             streamed_any = [False]
             earcon_sent = [False]
+            gen_start = ctx.get("generation", 0)
             prev_text = ""
             if brain.turns:
                 prev_text = str(brain.turns[-1].get("aethelgard") or brain.turns[-1].get("omar") or "")
@@ -2377,22 +2401,61 @@ class TelegramP2PCallManager:
                     pass
 
             def _on_speak_chunk(sentence: str) -> None:
-                if not sentence or not sentence.strip():
+                clean = (sentence or "").strip()
+                if not clean:
                     return
                 streamed_any[0] = True
+
+                def _enqueue_prefetch() -> None:
+                    if ctx.get("generation") != gen_start or peer_id not in self.active_calls:
+                        return
+                    task = self.loop.create_task(
+                        voice_engine.synthesize_pcm_bytes(
+                            clean,
+                            voice="auto",
+                            sample_rate=VOICE_SAMPLE_RATE,
+                            channels=1,
+                        )
+                    )
+                    speech_q.put_nowait((clean, task))
+
                 try:
-                    self.loop.call_soon_threadsafe(speech_q.put_nowait, sentence.strip())
+                    self.loop.call_soon_threadsafe(_enqueue_prefetch)
                 except Exception:
                     pass
 
             async def _speak_consumer() -> None:
                 while True:
-                    chunk = await speech_q.get()
-                    if chunk is None:
+                    item = await speech_q.get()
+                    if item is None:
                         break
-                    await self._speak_text(peer_id, chunk)
+                    chunk_text, prefetch_task = item
+                    if prefetch_task is None:
+                        await self._speak_text(peer_id, chunk_text)
+                        continue
+                    try:
+                        if ctx.get("generation") != gen_start or peer_id not in self.active_calls:
+                            prefetch_task.cancel()
+                            continue
+                        self._log_event(f"TTS synthesizing peer={peer_id}: {chunk_text[:80]}")
+                        pcm = await prefetch_task
+                        if ctx.get("generation") != gen_start or peer_id not in self.active_calls:
+                            continue
+                        if pcm:
+                            frames = voice_engine._slice_pcm_frames(
+                                pcm, sample_rate=VOICE_SAMPLE_RATE, channels=1, frame_ms=FRAME_MS
+                            )
+                            ctx["ai_speaking"] = True
+                            for fr in frames:
+                                ctx["out_queue"].put_nowait(fr)
+                            self._log_event(f"TTS queued {len(frames)} PCM frames ({FRAME_MS}ms) peer={peer_id}")
+                    except asyncio.CancelledError:
+                        break
+                    except Exception as exc:
+                        self._log_event(f"Live call prefetch TTS error: {type(exc).__name__}: {exc}")
 
             speaker_task = self.loop.create_task(_speak_consumer())
+            should_backfill = False
             try:
                 self._log_event(f"VoiceBrain turn start peer={peer_id} wav_bytes={len(wav_bytes)}")
                 if "process_user_turn" not in brain.__dict__ and type(brain).process_user_turn is VoiceBrainSession.process_user_turn:
@@ -2406,7 +2469,19 @@ class TelegramP2PCallManager:
                     reply = await asyncio.to_thread(brain.process_user_turn, wav_bytes=wav_bytes)
                 self._log_event(f"VoiceBrain reply peer={peer_id}: {str(reply)[:90]}")
                 turn_idx = max(0, len(brain.turns) - 1)
+                should_backfill = True
+            except Exception as bexc:
+                self._log_event(f"VoiceBrain turn error peer={peer_id}: {type(bexc).__name__}: {bexc}")
+                traceback.print_exc()
+                reply = "Sorry Omar, I hit a quick reasoning hiccup — say that once more."
+                streamed_any[0] = False
 
+            if reply and not streamed_any[0]:
+                await speech_q.put((reply, None))
+            await speech_q.put(None)
+            await speaker_task
+
+            if should_backfill:
                 async def _backfill_transcript() -> None:
                     try:
                         spoken = await asyncio.to_thread(brain.transcribe_user_audio_clip, wav_bytes)
@@ -2417,16 +2492,6 @@ class TelegramP2PCallManager:
                         pass
 
                 backfill_task = self.loop.create_task(_backfill_transcript())
-            except Exception as bexc:
-                self._log_event(f"VoiceBrain turn error peer={peer_id}: {type(bexc).__name__}: {bexc}")
-                traceback.print_exc()
-                reply = "Sorry Omar, I hit a quick reasoning hiccup — say that once more."
-                streamed_any[0] = False
-
-            if reply and not streamed_any[0]:
-                await speech_q.put(reply)
-            await speech_q.put(None)
-            await speaker_task
 
             if brain.end_call_requested:
                 self._log_event(f"End-call requested by VoiceBrain peer={peer_id}; draining audio before hangup")

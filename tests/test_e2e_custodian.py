@@ -3351,6 +3351,41 @@ class TestTier7AutonomyAndStreaming(unittest.TestCase):
                 self.assertEqual(second_poll["extra_channel_vip"], 0)  # Deduplicated cleanly via _save_seen_ids
                 self.assertEqual(len(vip_alerts), 1)
 
+                # 5. Active-call redial guard: hold timed_callback until active call closes & never drop active call
+                import asyncio
+                import telegram_voice_caller
+                async_callback_engine.enqueue_async_job(
+                    kind="timed_callback",
+                    title="Redial after hangup",
+                    payload={"trigger_at": (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=1)).isoformat(), "message": "Redial"},
+                    delivery="call",
+                    urgent=True,
+                )
+                deferred_calls = []
+                with patch("telegram_voice_caller.query_live_daemon_status", return_value={"reachable": True, "active_call_count": 1}), \
+                     patch("telegram_voice_caller.request_call_via_rpc_or_direct", side_effect=lambda **kw: deferred_calls.append(kw) or {"success": True}):
+                    while_active = async_callback_engine.tick_async_jobs(vault_dir=str(vault_dir), spawn_workers=False)
+                self.assertEqual(while_active["triggered"], 0)
+                self.assertEqual(len(deferred_calls), 0)
+                with patch("telegram_voice_caller.query_live_daemon_status", return_value={"reachable": True, "active_call_count": 0}), \
+                     patch("telegram_voice_caller.request_call_via_rpc_or_direct", side_effect=lambda **kw: deferred_calls.append(kw) or {"success": True}):
+                    after_hangup = async_callback_engine.tick_async_jobs(vault_dir=str(vault_dir), spawn_workers=False)
+                self.assertEqual(after_hangup["triggered"], 1)
+                self.assertEqual(len(deferred_calls), 1)
+
+                async def _check_no_drop():
+                    mgr = telegram_voice_caller.TelegramP2PCallManager(asyncio.get_running_loop())
+                    mgr.ready = True
+                    mgr.client = object()
+                    mgr.ntg = object()
+                    mgr.active_calls[1021125594] = {"peer_id": 1021125594}
+                    res_guard = await mgr.initiate_outgoing_call("Redial", target_user_id=1021125594)
+                    self.assertFalse(res_guard["success"])
+                    self.assertTrue(res_guard.get("call_active"))
+                    self.assertIn(1021125594, mgr.active_calls)
+
+                asyncio.run(_check_no_drop())
+
 
 if __name__ == "__main__":
     unittest.main()
