@@ -2684,5 +2684,653 @@ class TestTier6JarvisV2(unittest.TestCase):
             voice_engine._PIPER_VOICE_CACHE.update(prev_cache)
 
 
+class TestTier7AutonomyAndStreaming(unittest.TestCase):
+    """Tier 7 E2E tests for sub-3s voice streaming, persistent missions, Playwright portals, scoped gatekeeper & 2-way bridges."""
+
+    def test_68_antigravity_proxy_sse_incremental_streaming(self):
+        import http.server
+        import socketserver
+        import threading
+        import urllib.request
+        import antigravity_proxy
+
+        def _fake_exec(model, payload, **kwargs):
+            cb = getattr(antigravity_proxy._STREAM_LOCAL, "on_delta", None)
+            if cb:
+                cb({"type": "content", "content": "Hello Omar. ", "model": model})
+                cb({"type": "content", "content": "Your Etihad briefing is ready.", "model": model})
+            return {"ok": True, "model": model, "text": "Hello Omar. Your Etihad briefing is ready.", "tool_calls": []}
+
+        class _ReuseTCPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+            allow_reuse_address = True
+
+        server = _ReuseTCPServer(("127.0.0.1", 0), antigravity_proxy.AntigravityGatewayHandler)
+        port = server.server_address[1]
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+        try:
+            with patch.object(antigravity_proxy, "execute_antigravity_request", side_effect=_fake_exec):
+                req = urllib.request.Request(
+                    f"http://127.0.0.1:{port}/v1/chat/completions",
+                    data=json.dumps({
+                        "model": "antigravity/gemini-3.8-flash-low",
+                        "messages": [{"role": "user", "content": "Brief me"}],
+                        "stream": True,
+                    }).encode("utf-8"),
+                    headers={"Content-Type": "application/json", "Authorization": "Bearer test"},
+                )
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    self.assertIn("text/event-stream", resp.headers.get("Content-Type", ""))
+                    raw_lines = [ln.decode("utf-8").strip() for ln in resp if ln.strip()]
+
+            data_lines = [ln[5:].strip() for ln in raw_lines if ln.startswith("data:")]
+            self.assertEqual(data_lines[-1], "[DONE]")
+            deltas = []
+            for dl in data_lines[:-1]:
+                obj = json.loads(dl)
+                content = (((obj.get("choices") or [{}])[0]).get("delta") or {}).get("content")
+                if content:
+                    deltas.append(content)
+            self.assertGreaterEqual(len(deltas), 2)
+            self.assertEqual("".join(deltas), "Hello Omar. Your Etihad briefing is ready.")
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_69_voice_earcons_and_vad_streaming_pipeline(self):
+        import asyncio
+        import array
+        import http.server
+        import socketserver
+        import threading
+        import voice_engine
+        import telegram_voice_caller
+
+        detector = telegram_voice_caller.AudioTurnDetector()
+        self.assertEqual(detector.silence_end_ms, 350)
+        # Echo suppression during AI playback: mild RMS (250) must NOT barge-in or chop speech
+        echo_10ms = array.array("h", [250] * 480).tobytes()
+        for _ in range(40):
+            ev = detector.feed_frame(echo_10ms, ai_speaking=True)
+            self.assertFalse(ev["barge_in"])
+            self.assertFalse(detector.in_speech)
+
+        prev_cache = dict(voice_engine._EARCON_PCM_CACHE)
+        voice_engine._EARCON_PCM_CACHE.clear()
+        try:
+            async def _fake_pcm(text, voice="auto", sample_rate=48000, channels=1):
+                return b"\x02\x00" * 960  # 20ms @ 48kHz mono = two 10ms frames (960 bytes each)
+
+            with patch.object(voice_engine, "synthesize_pcm_bytes", side_effect=_fake_pcm):
+                loaded = asyncio.run(voice_engine.preload_jarvis_earcons_async())
+            self.assertGreaterEqual(loaded, 6)
+            en_frames = voice_engine.get_cached_earcon_frames("checking", is_ar=False)
+            ar_frames = voice_engine.get_cached_earcon_frames("mission", is_ar=True)
+            self.assertEqual(len(en_frames), 2)
+            self.assertEqual(len(ar_frames), 2)
+            self.assertEqual(len(en_frames[0]), telegram_voice_caller.FRAME_BYTES_48K)  # 960 bytes (10ms)
+        finally:
+            voice_engine._EARCON_PCM_CACHE.clear()
+            voice_engine._EARCON_PCM_CACHE.update(prev_cache)
+
+        class _SseMockHandler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, format, *args):
+                pass
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", "0"))
+                _ = self.rfile.read(length)
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                self.end_headers()
+                for txt in ("First sentence ready. ", "Second sentence follows."):
+                    chunk = json.dumps({"choices": [{"delta": {"content": txt}}]})
+                    self.wfile.write(f"data: {chunk}\n\n".encode("utf-8"))
+                    self.wfile.flush()
+                self.wfile.write(b"data: [DONE]\n\n")
+                self.wfile.flush()
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), _SseMockHandler)
+        port = server.server_address[1]
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                vault_dir = Path(tmp) / "vault"
+                vault_dir.mkdir(parents=True, exist_ok=True)
+                with patch.dict(os.environ, {"VAULT_DIR": str(vault_dir), "AETHELGARD_STATE_DIR": str(Path(tmp) / "state")}), \
+                     patch.object(telegram_voice_caller, "PROXY_URL", f"http://127.0.0.1:{port}/v1/chat/completions"):
+                    session = telegram_voice_caller.VoiceBrainSession(vault_dir=str(vault_dir))
+                    emitted = []
+                    reply = session.process_user_turn(
+                        text_prompt="Quick check",
+                        on_speak_chunk=lambda s: emitted.append(s),
+                    )
+                self.assertEqual(emitted, ["First sentence ready.", "Second sentence follows."])
+                self.assertIn("First sentence ready.", reply)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_70_persistent_parallel_mission_engine_lifecycle_and_recovery(self):
+        import mission_engine
+
+        self.assertEqual(mission_engine.MAX_CONCURRENT_MISSIONS, 2)
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp) / "state"
+            vault_dir = Path(tmp) / "vault"
+            vault_dir.mkdir(parents=True, exist_ok=True)
+            with patch.dict(os.environ, {"AETHELGARD_STATE_DIR": str(state_dir), "VAULT_DIR": str(vault_dir)}), \
+                 patch.object(mission_engine, "_notify_mission_terminal", return_value=True):
+                def _fake_llm(messages, model):
+                    return {
+                        "choices": [{
+                            "message": {
+                                "role": "assistant",
+                                "content": "",
+                                "tool_calls": [{
+                                    "id": "call_done",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "complete_mission",
+                                        "arguments": json.dumps({"summary": "Parallel mission completed cleanly."}),
+                                    },
+                                }],
+                            }
+                        }]
+                    }
+
+                with patch.object(mission_engine, "_post_proxy_completion", side_effect=_fake_llm):
+                    m1 = mission_engine.create_and_start_mission("Mission One", "Research ETD dispatch roles", vault_dir=str(vault_dir))
+                    m2 = mission_engine.create_and_start_mission("Mission Two", "Check UoPeople schedule", vault_dir=str(vault_dir))
+                    deadline = time.time() + 8.0
+                    while time.time() < deadline:
+                        s1 = mission_engine.get_mission(m1["mission_id"])["status"]
+                        s2 = mission_engine.get_mission(m2["mission_id"])["status"]
+                        if s1 == "completed" and s2 == "completed":
+                            break
+                        time.sleep(0.05)
+                    self.assertEqual(mission_engine.get_mission(m1["mission_id"])["status"], "completed")
+                    self.assertEqual(mission_engine.get_mission(m2["mission_id"])["status"], "completed")
+                    self.assertTrue((vault_dir / "missions" / f"{m1['mission_id']}.md").exists())
+
+                # Simulate crash recovery of an interrupted 'running' mission
+                interrupted = mission_engine.create_mission("Interrupted Task", "Finish check", vault_dir=str(vault_dir))
+                mission_engine.update_mission(interrupted["mission_id"], vault_dir=str(vault_dir), status="running")
+                restarted_ids = []
+                with patch.object(mission_engine, "start_mission_background", side_effect=lambda mid, vault_dir=None: restarted_ids.append(mid) or True):
+                    recovered = mission_engine.recover_interrupted_missions(vault_dir=str(vault_dir))
+                self.assertIn(interrupted["mission_id"], recovered)
+
+                cmd_list = mission_engine.handle_mission_command("/mission list", vault_dir=str(vault_dir))
+                self.assertIn("Mission One", cmd_list)
+                cmd_pause = mission_engine.handle_mission_command(f"/mission pause {interrupted['mission_id']}", vault_dir=str(vault_dir))
+                self.assertIn("pause", cmd_pause)
+
+    def test_71_portal_automation_signup_gmail_otp_and_browser_close(self):
+        import portal_automation
+        import job_application_engine
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            vault_dir = tmp_path / "vault"
+            vault_dir.mkdir(parents=True, exist_ok=True)
+            cred_dir = tmp_path / "creds"
+            state_dir = tmp_path / "state"
+            drafts_dir = tmp_path / "drafts"
+            cv_path = vault_dir / "Omar_Elnemr_CV.pdf"
+            cv_path.write_bytes(b"%PDF-1.4\n%Mock CV")
+
+            events_log = {"fills": {}, "uploads": [], "closed_browser": False, "closed_context": False}
+
+            class _FakeLocator:
+                def count(self):
+                    return 0
+
+            class _FakePage:
+                def __init__(self):
+                    self.url = "https://careers.etihad.com/signup"
+
+                def set_default_timeout(self, ms):
+                    pass
+
+                def goto(self, url, wait_until="domcontentloaded"):
+                    self.url = url
+                    events_log["last_url"] = url
+
+                def title(self):
+                    return "Etihad Careers Portal"
+
+                def inner_text(self, sel):
+                    return "Create Etihad Careers Account"
+
+                def evaluate(self, js):
+                    return []
+
+                def locator(self, sel):
+                    return _FakeLocator()
+
+                def fill(self, sel, val):
+                    events_log["fills"][sel] = val
+
+                def select_option(self, sel, val):
+                    pass
+
+                def set_input_files(self, sel, files):
+                    events_log["uploads"].extend(files)
+
+                def click(self, sel):
+                    events_log.setdefault("clicks", []).append(sel)
+
+                def screenshot(self, path, full_page=False):
+                    Path(path).write_bytes(b"\x89PNG\r\n\x1a\nMOCKPNG")
+
+            class _FakeContext:
+                def new_page(self):
+                    return _FakePage()
+
+                def storage_state(self, path):
+                    Path(path).write_text("{}", encoding="utf-8")
+
+                def close(self):
+                    events_log["closed_context"] = True
+
+            class _FakeBrowser:
+                def new_context(self, **kwargs):
+                    return _FakeContext()
+
+                def close(self):
+                    events_log["closed_browser"] = True
+
+            class _FakePlaywrightCM:
+                def __enter__(self):
+                    class _PW:
+                        class chromium:
+                            @staticmethod
+                            def launch(headless=True, args=None):
+                                return _FakeBrowser()
+                    return _PW()
+
+                def __exit__(self, *a):
+                    pass
+
+            class _FakeGoogle:
+                def get_status(self):
+                    return {"status": "connected"}
+
+                def search_emails(self, query="", max_results=5):
+                    return [{"id": "otp_msg_1", "subject": "Etihad Careers Verification Code"}]
+
+                def read_email(self, mid, max_body_chars=6000):
+                    return {"id": mid, "subject": "Etihad Verification", "body": "Your verification code is 654321."}
+
+            round_counter = [0]
+
+            def _fake_planner(ctx):
+                round_counter[0] += 1
+                if round_counter[0] == 1:
+                    return {
+                        "done": False,
+                        "actions": [
+                            {"op": "fill", "selector": "#email", "value": "omar.alnemr04@gmail.com"},
+                            {"op": "fill", "selector": "#password", "value": "$PORTAL_PASSWORD"},
+                            {"op": "save_credential", "email": "omar.alnemr04@gmail.com"},
+                            {"op": "wait_email_verification"},
+                        ],
+                    }
+                return {
+                    "done": True,
+                    "summary": "Account created, verified 654321, CV uploaded.",
+                    "actions": [
+                        {"op": "fill", "selector": "#otp", "value": "$OTP_CODE"},
+                        {"op": "upload", "selector": "input[type=file]", "kind": "cv"},
+                        {"op": "click", "selector": "#submit"},
+                    ],
+                }
+
+            with patch.dict(os.environ, {
+                "VAULT_DIR": str(vault_dir),
+                "AETHELGARD_CREDENTIALS_DIR": str(cred_dir),
+                "AETHELGARD_STATE_DIR": str(state_dir),
+                "AETHELGARD_DRAFTS_DIR": str(drafts_dir),
+            }), patch.object(job_application_engine, "locate_career_assets", return_value={"primary_cv": str(cv_path), "certificates": []}):
+                res = job_application_engine.execute_portal_application(
+                    url="https://careers.etihad.com/signup",
+                    instructions="Create account and apply for Flight Dispatcher",
+                    vault_dir=str(vault_dir),
+                    playwright_factory=_FakePlaywrightCM,
+                    google_adapter=_FakeGoogle(),
+                    llm_planner=_fake_planner,
+                    otp_timeout_sec=5.0,
+                )
+
+                self.assertTrue(res["success"])
+                self.assertEqual(res["status"], "completed")
+                self.assertEqual(events_log["fills"]["#otp"], "654321")
+                self.assertIn(str(cv_path), events_log["uploads"])
+                self.assertTrue(events_log["closed_browser"])
+                self.assertTrue(events_log["closed_context"])
+
+                saved = portal_automation.get_portal_credential("careers.etihad.com")
+                self.assertIsNotNone(saved)
+                raw_json = (cred_dir / "portal_accounts.json").read_text(encoding="utf-8")
+                self.assertNotIn(saved["password"], raw_json)  # Password is encrypted, not plaintext
+
+    def test_72_portal_automation_captcha_gate_pauses_cleanly_without_bypass(self):
+        import portal_automation
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            closed = {"browser": False}
+            alerts = []
+
+            class _CaptchaPage:
+                url = "https://careers.etihad.com/challenge"
+
+                def set_default_timeout(self, ms):
+                    pass
+
+                def goto(self, url, wait_until="domcontentloaded"):
+                    pass
+
+                def title(self):
+                    return "Verify you are human — Cloudflare Turnstile"
+
+                def inner_text(self, sel):
+                    return "Please complete the Cloudflare Turnstile CAPTCHA below."
+
+                def evaluate(self, js):
+                    return []
+
+                def screenshot(self, path, full_page=False):
+                    Path(path).write_bytes(b"\x89PNG\r\n\x1a\nCAPTCHA")
+
+            class _FakeContext:
+                def new_page(self):
+                    return _CaptchaPage()
+
+                def close(self):
+                    pass
+
+            class _FakeBrowser:
+                def new_context(self, **kwargs):
+                    return _FakeContext()
+
+                def close(self):
+                    closed["browser"] = True
+
+            class _FakePW:
+                def __enter__(self):
+                    class _PW:
+                        class chromium:
+                            @staticmethod
+                            def launch(**kwargs):
+                                return _FakeBrowser()
+                    return _PW()
+
+                def __exit__(self, *a):
+                    pass
+
+            with patch.dict(os.environ, {"VAULT_DIR": str(tmp_path), "AETHELGARD_CREDENTIALS_DIR": str(tmp_path / "c")}), \
+                 patch.object(portal_automation, "_send_telegram_checkpoint_alert", side_effect=lambda msg, screenshot_path=None: alerts.append((msg, screenshot_path)) or True):
+                res = portal_automation.run_portal_task(
+                    url="https://careers.etihad.com/challenge",
+                    instructions="Apply",
+                    mission_id="mission_cap1",
+                    vault_dir=str(tmp_path),
+                    playwright_factory=_FakePW,
+                )
+
+            self.assertFalse(res["success"])
+            self.assertEqual(res["status"], "waiting_human")
+            self.assertTrue(closed["browser"])
+            self.assertEqual(len(alerts), 1)
+            self.assertIn("/resume mission_cap1", alerts[0][0])
+            self.assertTrue(Path(res["screenshot_path"]).exists())
+
+    def test_73_mission_scoped_gatekeeper_vs_standalone_invariants(self):
+        import mission_engine
+        import approval_gatekeeper
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp) / "state"
+            drafts_dir = Path(tmp) / "drafts"
+            vault_dir = Path(tmp) / "vault"
+            vault_dir.mkdir(parents=True, exist_ok=True)
+            with patch.dict(os.environ, {
+                "AETHELGARD_STATE_DIR": str(state_dir),
+                "AETHELGARD_DRAFTS_DIR": str(drafts_dir),
+                "VAULT_DIR": str(vault_dir),
+            }):
+                # 1. Standalone request (no mission_id) must still pause in pending_approval
+                standalone = approval_gatekeeper.authorize_or_dispatch_mission_action(
+                    platform="gmail",
+                    action="send_email",
+                    recipient_or_target="hr@etihad.com",
+                    subject="Application",
+                    content="Standalone email body",
+                    notify_telegram=False,
+                )
+                self.assertEqual(standalone["status"], "pending_approval")
+                self.assertTrue(standalone["requires_approval"])
+                with self.assertRaises(PermissionError):
+                    approval_gatekeeper.verify_draft_authorized(standalone["draft_id"])
+
+                # 2. Active in-scope mission executes immediately with audit receipt
+                msn = mission_engine.create_mission(
+                    title="Etihad Application Mission",
+                    goal="Apply to Etihad",
+                    allowed_platforms=["gmail"],
+                    allowed_targets=["etihad.com"],
+                    vault_dir=str(vault_dir),
+                )
+                mission_engine.update_mission(msn["mission_id"], vault_dir=str(vault_dir), status="running")
+
+                receipts = []
+                with patch("omnichannel_bridge.dispatch_approved_draft", return_value={"dispatched": True, "id": "sent_1"}) as dmock, \
+                     patch.object(approval_gatekeeper, "send_mission_receipt_to_telegram", side_effect=lambda rec, mid: receipts.append(mid) or True):
+                    in_scope = approval_gatekeeper.authorize_or_dispatch_mission_action(
+                        platform="gmail",
+                        action="send_email",
+                        recipient_or_target="careers@etihad.com",
+                        subject="Dispatcher CV",
+                        content="Mission auto-executed email",
+                        mission_id=msn["mission_id"],
+                        notify_telegram=True,
+                        vault_dir=str(vault_dir),
+                    )
+                self.assertTrue(in_scope["auto_executed"])
+                self.assertEqual(in_scope["status"], "auto_executed_mission")
+                dmock.assert_called_once()
+                self.assertEqual(receipts, [msn["mission_id"]])
+                self.assertEqual(mission_engine.get_mission(msn["mission_id"])["autonomy_scope"]["action_count"], 1)
+
+                # 3. Out-of-scope target on that same mission falls back to Two-Phase approval
+                out_scope = approval_gatekeeper.authorize_or_dispatch_mission_action(
+                    platform="gmail",
+                    action="send_email",
+                    recipient_or_target="stranger@unrelated.org",
+                    subject="Other",
+                    content="Out of scope email",
+                    mission_id=msn["mission_id"],
+                    notify_telegram=False,
+                )
+                self.assertEqual(out_scope["status"], "pending_approval")
+                self.assertFalse(out_scope["auto_executed"])
+
+    def test_74_omnichannel_live_wa_bridge_telegram_mtproto_and_linkedin_post(self):
+        import http.server
+        import threading
+        import omnichannel_bridge
+        import approval_gatekeeper
+
+        wa_calls = []
+
+        class _FakeBaileysHandler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, format, *args):
+                pass
+
+            def do_GET(self):
+                if self.path == "/status":
+                    body = {"connected": True, "phone": "963900000001", "jid": "963900000001@s.whatsapp.net"}
+                else:
+                    body = {"messages": [{"id": "wa_1", "sender": "963900000001", "sender_name": "Ops Lead", "text": "Briefing ready", "from_me": False}]}
+                raw = json.dumps(body).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+            def do_POST(self):
+                data = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))).decode("utf-8"))
+                wa_calls.append((self.path, data))
+                raw = json.dumps({"success": True, "message_id": "msg_99"}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), _FakeBaileysHandler)
+        port = server.server_address[1]
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                tmp_path = Path(tmp)
+                creds = tmp_path / "creds"
+                creds.mkdir(parents=True, exist_ok=True)
+                drafts = tmp_path / "drafts"
+                with patch.dict(os.environ, {"AETHELGARD_CREDENTIALS_DIR": str(creds), "AETHELGARD_DRAFTS_DIR": str(drafts)}):
+                    wa = omnichannel_bridge.WhatsAppAdapter(str(creds), bridge_url=f"http://127.0.0.1:{port}")
+                    self.assertEqual(wa.get_status()["status"], "connected")
+                    msgs = wa.read_messages(query="Briefing")
+                    self.assertEqual(len(msgs), 1)
+                    d_wa = wa.stage_message("+963900000001", "Copy that, on my way.")
+                    approval_gatekeeper.approve_draft(d_wa["draft_id"], execute=False)
+                    sent = wa.send_message_approved(d_wa["draft_id"])
+                    self.assertEqual(sent["mode"], "baileys_http")
+                    self.assertEqual(wa_calls[-1], ("/send", {"to": "+963900000001", "text": "Copy that, on my way."}))
+
+                    # LinkedIn Voyager POST dispatch when li_at configured & draft approved
+                    (creds / "linkedin_session.json").write_text(json.dumps({"li_at": "real_cookie_val", "JSESSIONID": "ajax:1"}), encoding="utf-8")
+                    la = omnichannel_bridge.LinkedInAdapter(str(creds))
+                    voyager_calls = []
+                    d_li = la.stage_post("Aviation safety insight", visibility="PUBLIC")
+                    approval_gatekeeper.approve_draft(d_li["draft_id"], execute=False)
+                    with patch.object(la, "_execute_voyager_request", side_effect=lambda ep, method="GET", payload=None: voyager_calls.append((method, ep, payload)) or {"miniProfile": {"entityUrn": "urn:li:fs_miniProfile:123"}, "id": "ugc_1"}):
+                        pub = la.publish_post_approved(d_li["draft_id"])
+                    self.assertEqual(pub["mode"], "voyager_ugc_post")
+                    self.assertTrue(any(m == "POST" and ep == "/ugcPosts" for m, ep, _ in voyager_calls))
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_75_voice_caller_expanded_tools_and_call_hangup_life_compiler(self):
+        import telegram_voice_caller
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            vault_dir = tmp_path / "vault"
+            vault_dir.mkdir(parents=True, exist_ok=True)
+            state_dir = tmp_path / "state"
+            creds = tmp_path / "creds"
+            creds.mkdir(parents=True, exist_ok=True)
+            with patch.dict(os.environ, {
+                "VAULT_DIR": str(vault_dir),
+                "AETHELGARD_STATE_DIR": str(state_dir),
+                "AETHELGARD_CREDENTIALS_DIR": str(creds),
+            }):
+                brain = telegram_voice_caller.VoiceBrainSession(vault_dir=str(vault_dir))
+                with patch("omnichannel_bridge.WhatsAppAdapter.read_messages", return_value=[{"sender": "Capt", "text": "Flight ready"}]):
+                    r_wa = brain.execute_tool_call("check_whatsapp", {"query": "Flight"})
+                self.assertEqual(r_wa["count"], 1)
+                with patch("mission_engine.list_missions", return_value=[{"mission_id": "msn_1", "title": "Etihad", "status": "running", "steps_completed": 2}]):
+                    r_ms = brain.execute_tool_call("list_missions", {})
+                self.assertEqual(r_ms["count"], 1)
+
+                brain.turns.append({
+                    "turn": 1,
+                    "at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "omar": "I spent 25000 SYP on taxi. Shift tomorrow 08:00-16:00.",
+                    "aethelgard": "Logged, Omar.",
+                    "actions": [],
+                })
+                brain.transcript_log.extend([
+                    "**Omar:** I spent 25000 SYP on taxi. Shift tomorrow 08:00-16:00.",
+                    "**Aethelgard:** Logged, Omar.",
+                ])
+                sync_res = brain.sync_call_log(final=True)
+                self.assertIsNotNone(sync_res.get("vault_note"))
+                self.assertTrue((vault_dir / "log.md").exists())
+                log_txt = (vault_dir / "log.md").read_text(encoding="utf-8")
+                self.assertIn("25000", log_txt)
+
+    def test_76_proactive_multichannel_reply_hunter_and_0715_morning_call(self):
+        import async_callback_engine
+        import proactive_scheduler
+        import circadian_oracle
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            vault_dir = tmp_path / "vault"
+            vault_dir.mkdir(parents=True, exist_ok=True)
+            state_dir = tmp_path / "state"
+            creds = tmp_path / "creds"
+            creds.mkdir(parents=True, exist_ok=True)
+            with patch.dict(os.environ, {
+                "VAULT_DIR": str(vault_dir),
+                "AETHELGARD_STATE_DIR": str(state_dir),
+                "AETHELGARD_CREDENTIALS_DIR": str(creds),
+            }):
+                # 1. Multi-channel watch_reply detects incoming WhatsApp reply cleanly
+                async_callback_engine.enqueue_async_job(
+                    kind="watch_reply",
+                    title="Watch HR WhatsApp reply",
+                    payload={"query": "Etihad", "channel": "whatsapp"},
+                    delivery="telegram",
+                )
+                pushed = []
+                with patch("omnichannel_bridge.WhatsAppAdapter.get_status", return_value={"status": "connected"}), \
+                     patch("omnichannel_bridge.WhatsAppAdapter.read_messages", return_value=[{"id": "w9", "sender_name": "Etihad HR", "text": "Interview confirmed", "from_me": False}]):
+                    res_tick = async_callback_engine.tick_async_jobs(
+                        vault_dir=str(vault_dir),
+                        telegram_fn=lambda m: pushed.append(m) or True,
+                        spawn_workers=False,
+                    )
+                self.assertEqual(res_tick["triggered"], 1)
+                self.assertTrue(any("WhatsApp reply arrived" in p for p in pushed))
+
+                # 2. 07:15 morning briefing places call outside SLEEP_SHIELD and suppresses during SLEEP_SHIELD
+                called = []
+                with patch.object(proactive_scheduler, "send_telegram", return_value=True), \
+                     patch.object(proactive_scheduler, "send_telegram_voice_sync", return_value=True), \
+                     patch.object(proactive_scheduler, "format_damascus_flight_briefing", return_value="OSDI CAVOK"), \
+                     patch("telegram_voice_caller.request_call_via_rpc_or_direct", side_effect=lambda opening_prompt="", vault_dir=None: called.append(opening_prompt) or {"success": True}):
+                    with patch.object(proactive_scheduler, "get_operational_mode", return_value={"mode": "STRATEGIC_WINDOW", "allow_proactive_calls": True}):
+                        proactive_scheduler.trigger_morning_briefing(str(vault_dir))
+                    self.assertEqual(len(called), 1)
+                    with patch.object(proactive_scheduler, "get_operational_mode", return_value={"mode": "SLEEP_SHIELD", "allow_proactive_calls": False}):
+                        proactive_scheduler.trigger_morning_briefing(str(vault_dir))
+                    self.assertEqual(len(called), 1)  # Suppressed during SLEEP_SHIELD
+
+                # 3. User-requested urgent callback MUST pass urgent=True even during SLEEP_SHIELD
+                urgent_calls = []
+                async_callback_engine.enqueue_async_job(
+                    kind="timed_callback",
+                    title="Redial Omar now",
+                    payload={"trigger_at": (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=1)).isoformat(), "message": "Redialing now"},
+                    delivery="call",
+                    urgent=True,
+                )
+                with patch.object(circadian_oracle, "get_operational_mode", return_value={"mode": "SLEEP_SHIELD", "allow_proactive_calls": False}), \
+                     patch("telegram_voice_caller.request_call_via_rpc_or_direct", side_effect=lambda opening_prompt="", urgent=False, vault_dir=None: urgent_calls.append((opening_prompt, urgent)) or {"success": True}):
+                    res_urg = async_callback_engine.tick_async_jobs(vault_dir=str(vault_dir), spawn_workers=False)
+                self.assertEqual(res_urg["triggered"], 1)
+                self.assertEqual(len(urgent_calls), 1)
+                self.assertTrue(urgent_calls[0][1])  # urgent=True propagated to request_call_via_rpc_or_direct
+
+
 if __name__ == "__main__":
     unittest.main()

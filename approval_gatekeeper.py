@@ -32,6 +32,7 @@ SUPPORTED_PLATFORMS = {
     "telegram_user",
     "linkedin",
     "facebook",
+    "portal",
 }
 
 
@@ -196,14 +197,14 @@ def list_pending_drafts() -> List[Dict[str, Any]]:
 
 def verify_draft_authorized(draft_id: str) -> Dict[str, Any]:
     """
-    Verifies that a draft exists and has been explicitly approved by Omar.
+    Verifies that a draft exists and has been explicitly approved by Omar (or auto-executed inside an active Mission).
     Raises PermissionError if the draft is still pending or rejected.
     """
     draft = get_draft(draft_id)
     if not draft:
         raise ValueError(f"Draft '{draft_id}' not found")
     status = draft.get("status")
-    if status not in ("approved", "executed"):
+    if status not in ("approved", "executed", "auto_executed_mission"):
         raise PermissionError(
             f"Outbound transmission blocked by Gatekeeper: draft '{draft_id}' has status '{status}' (must be 'approved')."
         )
@@ -421,6 +422,178 @@ def send_approval_card_to_telegram(
             return resp.status == 200
     except Exception:
         return False
+
+
+def send_mission_receipt_to_telegram(
+    draft: Dict[str, Any],
+    mission_id: str,
+    chat_id: Optional[str] = None,
+    token: Optional[str] = None,
+) -> bool:
+    """Sends a concise audit receipt to Telegram for an autonomous Mission-scoped action."""
+    bot_token = token or os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    target_chat = chat_id or os.environ.get("TELEGRAM_ALLOWED_USERS", "1021125594")
+    if not bot_token or not target_chat:
+        return False
+    p_label = str(draft.get("platform", "unknown")).upper()
+    target = str(draft.get("recipient_or_target") or "unknown")
+    subject = str(draft.get("subject") or "").strip()
+    preview = str(draft.get("content") or "")[:180].strip()
+    lines = [
+        f"🤖 *Mission Action Executed* (`{mission_id}`)",
+        f"• *Receipt:* `{draft.get('draft_id')}`",
+        f"• *Platform:* `{p_label}` (`{draft.get('action', 'send')}`)",
+        f"• *Target:* `{target}`",
+    ]
+    if subject:
+        lines.append(f"• *Subject:* `{subject}`")
+    if preview:
+        lines.append(f"• *Summary:* {preview}")
+    payload = {"chat_id": target_chat, "text": "\n".join(lines), "parse_mode": "Markdown"}
+    try:
+        req = urllib.request.Request(
+            f"https://api.telegram.org/bot{bot_token}/sendMessage",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
+def authorize_or_dispatch_mission_action(
+    platform: str,
+    action: str,
+    recipient_or_target: str,
+    content: str,
+    mission_id: Optional[str] = None,
+    subject: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+    notify_telegram: bool = True,
+    action_kind: str = "message",
+    execute: bool = True,
+    vault_dir: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Mission-Scoped Zero-Pause Gatekeeper:
+    - If `mission_id` resolves to an active mission whose pre-authorized scope covers
+      (`platform`, `recipient_or_target`, `action_kind`), executes immediately with status
+      `'auto_executed_mission'`, records a persistent receipt, and sends a Telegram audit receipt.
+    - Otherwise enforces strict Two-Phase Confirmation via `stage_draft(..., status='pending_approval')`.
+    """
+    norm_platform = str(platform or "").strip().lower()
+    if norm_platform not in SUPPORTED_PLATFORMS:
+        raise ValueError(f"Unsupported platform '{platform}'. Must be one of {sorted(SUPPORTED_PLATFORMS)}")
+
+    allowed = False
+    scope_reason = "Standalone request (no active mission_id)"
+    if mission_id:
+        try:
+            import mission_engine
+            allowed, scope_reason = mission_engine.is_action_within_mission_scope(
+                mission_id,
+                norm_platform,
+                recipient_or_target,
+                action_kind=action_kind,
+            )
+        except Exception as exc:
+            allowed = False
+            scope_reason = f"Scope check error: {exc}"
+
+    meta_dict: Dict[str, Any] = dict(metadata) if isinstance(metadata, dict) else {}
+    if mission_id:
+        meta_dict["mission_id"] = mission_id
+    if subject:
+        meta_dict.setdefault("subject", subject)
+
+    if not allowed:
+        meta_dict.setdefault("scope_fallback_reason", scope_reason)
+        staged = stage_draft(
+            platform=norm_platform,
+            action=action,
+            recipient_or_target=recipient_or_target,
+            content=content,
+            metadata=meta_dict,
+            subject=subject,
+            notify_telegram=notify_telegram,
+        )
+        staged["auto_executed"] = False
+        staged["requires_approval"] = True
+        staged["scope_reason"] = scope_reason
+        return staged
+
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    draft_id = f"draft_{uuid.uuid4().hex[:10]}"
+    while _draft_file_path(draft_id).exists():
+        draft_id = f"draft_{uuid.uuid4().hex[:10]}"
+
+    record: Dict[str, Any] = {
+        "draft_id": draft_id,
+        "status": "auto_executed_mission",
+        "mission_id": mission_id,
+        "platform": norm_platform,
+        "action": str(action or "send").strip(),
+        "recipient_or_target": str(recipient_or_target).strip(),
+        "target": str(recipient_or_target).strip(),
+        "subject": meta_dict.get("subject", ""),
+        "content": content,
+        "metadata": meta_dict,
+        "network_transmitted": False,
+        "created_at": now_utc.isoformat(),
+        "expires_at": (now_utc + datetime.timedelta(hours=24)).isoformat(),
+        "approved_at": now_utc.isoformat(),
+        "approved_via": f"mission:{mission_id}",
+        "rejected_at": None,
+        "executed_at": None,
+        "execution_receipt": None,
+    }
+
+    draft_path = _draft_file_path(draft_id)
+    draft_path.write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
+    _sync_pending_index()
+
+    dispatch_result: Any = {"dispatched": bool(execute), "platform": norm_platform, "draft_id": draft_id}
+    if execute and norm_platform != "portal":
+        try:
+            import omnichannel_bridge
+            if hasattr(omnichannel_bridge, "dispatch_approved_draft"):
+                dispatch_result = omnichannel_bridge.dispatch_approved_draft(record)
+        except Exception as exc:
+            dispatch_result = {"dispatched": False, "platform": norm_platform, "draft_id": draft_id, "notice": str(exc)}
+
+    record["executed_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    record["network_transmitted"] = bool(dispatch_result.get("dispatched", execute)) if isinstance(dispatch_result, dict) else bool(execute)
+    record["execution_receipt"] = dispatch_result
+    draft_path.write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
+    _sync_pending_index()
+
+    try:
+        import mission_engine
+        mission_engine.record_mission_action(
+            str(mission_id),
+            f"[{norm_platform}] {action} -> {recipient_or_target}: {str(subject or content)[:90]}",
+            artifact=str(draft_id),
+            vault_dir=vault_dir,
+        )
+    except Exception:
+        pass
+
+    if notify_telegram:
+        send_mission_receipt_to_telegram(record, str(mission_id))
+
+    return {
+        "success": True,
+        "draft_id": draft_id,
+        "status": "auto_executed_mission",
+        "auto_executed": True,
+        "requires_approval": False,
+        "mission_id": mission_id,
+        "approved_via": f"mission:{mission_id}",
+        "scope_reason": scope_reason,
+        "platform": norm_platform,
+        "result": dispatch_result,
+    }
 
 
 def handle_approval_reply(message_text: str) -> Optional[Dict[str, Any]]:

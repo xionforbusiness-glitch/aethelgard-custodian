@@ -367,48 +367,124 @@ def run_vip_triage_cycle(
     max_results: int = 15,
 ) -> Dict[str, Any]:
     """
-    Polls Gmail for unread messages, filters for VIP senders, ingests matches into
-    the Obsidian Vault, and sends Telegram push alerts.
+    Polls Gmail (plus WhatsApp, Personal Telegram DMs, and LinkedIn when connected)
+    for unread VIP items, ingests email matches into the Obsidian Vault, and sends Telegram push alerts.
     """
-    from omnichannel_bridge import GoogleAdapter
+    from omnichannel_bridge import GoogleAdapter, WhatsAppAdapter, TelegramUserAdapter, LinkedInAdapter
 
-    adapter = GoogleAdapter()
-    status = adapter.get_status()
-    if status.get("status") != "connected":
-        return {"checked": 0, "vip_ingested": 0, "status": "needs_auth"}
-
-    messages = adapter.search_emails(query="is:unread", max_results=max_results)
     sf_path = Path(state_file) if state_file else get_default_state_file()
     seen_ids = set(_load_seen_ids(sf_path))
     vip_count = 0
     checked_count = 0
+    resolved_vault = vault_dir or os.environ.get("VAULT_DIR", os.path.expanduser("~/vault"))
 
-    for msg_stub in messages:
-        msg_id = str(msg_stub.get("id") or "").strip()
-        if not msg_id or msg_id in seen_ids:
-            continue
-        stub_sender = str(msg_stub.get("sender") or "").strip()
-        stub_subject = str(msg_stub.get("subject") or "").strip()
-        if stub_sender and not classify_vip_sender(stub_sender, stub_subject).get("is_vip"):
+    adapter = GoogleAdapter()
+    status = adapter.get_status()
+    gmail_connected = status.get("status") == "connected"
+
+    if gmail_connected:
+        messages = adapter.search_emails(query="is:unread", max_results=max_results)
+        for msg_stub in messages:
+            msg_id = str(msg_stub.get("id") or "").strip()
+            if not msg_id or msg_id in seen_ids:
+                continue
+            stub_sender = str(msg_stub.get("sender") or "").strip()
+            stub_subject = str(msg_stub.get("subject") or "").strip()
+            if stub_sender and not classify_vip_sender(stub_sender, stub_subject).get("is_vip"):
+                checked_count += 1
+                continue
             checked_count += 1
-            continue
-        checked_count += 1
-        full_email = adapter.read_email(msg_id)
-        if not classify_vip_sender(full_email.get("sender", ""), full_email.get("subject", "")).get("is_vip"):
-            continue
-        res = process_incoming_email(
-            full_email,
-            state_file=state_file,
-            vault_dir=vault_dir or os.environ.get("VAULT_DIR", os.path.expanduser("~/vault")),
-            send_alert=send_alerts,
-        )
-        if res.get("processed") and res.get("is_vip"):
-            vip_count += 1
-            seen_ids.add(msg_id)
+            full_email = adapter.read_email(msg_id)
+            if not classify_vip_sender(full_email.get("sender", ""), full_email.get("subject", "")).get("is_vip"):
+                continue
+            res = process_incoming_email(
+                full_email,
+                state_file=state_file,
+                vault_dir=resolved_vault,
+                send_alert=send_alerts,
+            )
+            if res.get("processed") and res.get("is_vip"):
+                vip_count += 1
+                seen_ids.add(msg_id)
+
+    extra_vip = 0
+    try:
+        from proactive_scheduler import send_telegram
+    except Exception:
+        send_telegram = None
+
+    # Lightweight multi-channel VIP triage across connected bridges
+    try:
+        wa = WhatsAppAdapter()
+        if wa.get_status().get("status") == "connected":
+            for m in wa.read_messages(limit=10) or []:
+                if not isinstance(m, dict) or m.get("from_me"):
+                    continue
+                wid = f"wa:{m.get('id') or m.get('timestamp')}"
+                checked_count += 1
+                if wid in seen_ids:
+                    continue
+                sender = str(m.get("sender_name") or m.get("sender") or "")
+                text = str(m.get("text") or "")
+                vip = classify_vip_sender(sender, text)
+                if vip.get("is_vip"):
+                    seen_ids.add(wid)
+                    extra_vip += 1
+                    vip_count += 1
+                    if send_alerts and send_telegram:
+                        send_telegram(f"💬 *VIP WhatsApp Alert ({vip.get('organization')})*\n• *From:* `{sender}`\n• {text[:220]}")
+    except Exception:
+        pass
+
+    try:
+        tu = TelegramUserAdapter()
+        if tu.get_status().get("status") == "connected":
+            for d in tu.list_dialogs(limit=10) or []:
+                if not isinstance(d, dict) or not int(d.get("unread_count") or 0):
+                    continue
+                name = str(d.get("name") or "")
+                snippet = str(d.get("last_message") or "")
+                tid = f"tg:{d.get('id')}:{snippet[:40]}"
+                checked_count += 1
+                if tid in seen_ids:
+                    continue
+                vip = classify_vip_sender(name, snippet)
+                if vip.get("is_vip"):
+                    seen_ids.add(tid)
+                    extra_vip += 1
+                    vip_count += 1
+                    if send_alerts and send_telegram:
+                        send_telegram(f"✈️ *VIP Telegram DM Alert ({vip.get('organization')})*\n• *From:* `{name}`\n• {snippet[:220]}")
+    except Exception:
+        pass
+
+    try:
+        li = LinkedInAdapter()
+        if li.get_status().get("status") == "connected":
+            li_res = li.check_unseen_events()
+            for ev in li_res.get("events", []):
+                checked_count += 1
+                if ev.get("priority") == "HIGH":
+                    extra_vip += 1
+                    vip_count += 1
+                    if send_alerts and send_telegram:
+                        send_telegram(f"💼 *VIP LinkedIn Alert:*\n{ev.get('summary', '')}")
+    except Exception:
+        pass
+
+    if extra_vip:
+        try:
+            _save_seen_ids(sf_path, sorted(seen_ids)[-1000:])
+        except Exception:
+            pass
+
+    if not gmail_connected and extra_vip == 0 and checked_count == 0:
+        return {"checked": 0, "vip_ingested": 0, "status": "needs_auth"}
 
     return {
         "checked": checked_count,
         "vip_ingested": vip_count,
+        "extra_channel_vip": extra_vip,
         "status": "ok",
     }
 

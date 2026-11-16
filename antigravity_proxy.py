@@ -587,7 +587,10 @@ def _split_inline_think_blocks(text: str, reasoning: str) -> tuple[str, str]:
     return text, reasoning
 
 
-def _parse_antigravity_sse_stream(resp, attempt_deadline: float) -> dict:
+_STREAM_LOCAL = threading.local()
+
+
+def _parse_antigravity_sse_stream(resp, attempt_deadline: float, on_delta=None) -> dict:
     """Parse SSE frames from Antigravity upstream without ever promoting thoughts into visible content."""
     text_chunks = []
     reasoning_chunks = []
@@ -595,6 +598,52 @@ def _parse_antigravity_sse_stream(resp, attempt_deadline: float) -> dict:
     finish_reason = None
     saw_finish_reason = False
     usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    in_inline_think = False
+    prefix_buf = ""
+    streaming_visible = False
+
+    def _emit_visible(piece: str) -> None:
+        nonlocal in_inline_think, prefix_buf, streaming_visible
+        if on_delta is None or not piece:
+            return
+        if not streaming_visible:
+            prefix_buf += piece
+            stripped_lead = prefix_buf.lstrip()
+            if not stripped_lead:
+                return
+            if "<think" in stripped_lead[:12].lower() or "<thought" in stripped_lead[:14].lower():
+                in_inline_think = True
+            if not in_inline_think and len(stripped_lead) < 10 and stripped_lead.startswith("<"):
+                return
+            if in_inline_think:
+                end_m = re.search(r"</(?:think|thought)>", prefix_buf, re.IGNORECASE)
+                if not end_m:
+                    return
+                after = prefix_buf[end_m.end():].lstrip()
+                in_inline_think = False
+                prefix_buf = ""
+                streaming_visible = True
+                if after:
+                    on_delta({"type": "content", "content": after})
+                return
+            out = prefix_buf
+            prefix_buf = ""
+            streaming_visible = True
+            on_delta({"type": "content", "content": out})
+            return
+
+        if in_inline_think:
+            prefix_buf += piece
+            end_m = re.search(r"</(?:think|thought)>", prefix_buf, re.IGNORECASE)
+            if end_m:
+                after = prefix_buf[end_m.end():].lstrip()
+                in_inline_think = False
+                prefix_buf = ""
+                if after:
+                    on_delta({"type": "content", "content": after})
+            return
+
+        on_delta({"type": "content", "content": piece})
 
     for raw_line in _iter_sse_lines(resp, attempt_deadline):
         line = raw_line.strip()
@@ -634,7 +683,7 @@ def _parse_antigravity_sse_stream(resp, attempt_deadline: float) -> dict:
                 if fc_name:
                     fc_id = str(fc.get("id") or f"call_{uuid.uuid4().hex[:12]}")
                     fc_args = fc.get("args") if fc.get("args") is not None else {}
-                    tool_calls.append({
+                    tc_obj = {
                         "id": fc_id,
                         "index": len(tool_calls),
                         "type": "function",
@@ -643,12 +692,16 @@ def _parse_antigravity_sse_stream(resp, attempt_deadline: float) -> dict:
                             "arguments": json.dumps(fc_args, ensure_ascii=False)
                             if not isinstance(fc_args, str) else fc_args,
                         },
-                    })
+                    }
+                    tool_calls.append(tc_obj)
+                    if on_delta is not None:
+                        on_delta({"type": "tool_calls", "tool_calls": [tc_obj]})
             elif isinstance(p.get("text"), str):
                 if p.get("thought"):
                     reasoning_chunks.append(p["text"])
                 else:
                     text_chunks.append(p["text"])
+                    _emit_visible(p["text"])
 
         cand_finish = cand.get("finishReason")
         if cand_finish:
@@ -656,6 +709,10 @@ def _parse_antigravity_sse_stream(resp, attempt_deadline: float) -> dict:
             if not tool_calls:
                 cf_lower = str(cand_finish).lower()
                 finish_reason = "length" if cf_lower in ("max_tokens", "length") else "stop"
+
+    if on_delta is not None and prefix_buf and not in_inline_think:
+        on_delta({"type": "content", "content": prefix_buf})
+        prefix_buf = ""
 
     stream_timed_out = time.monotonic() >= attempt_deadline
     full_text, full_reasoning = _split_inline_think_blocks("".join(text_chunks), "".join(reasoning_chunks))
@@ -741,8 +798,19 @@ def execute_antigravity_request(body: dict, requested_model: str) -> dict:
             }
             req = urllib.request.Request(upstream_url, data=payload_bytes, headers=headers)
             try:
+                on_delta_cb = getattr(_STREAM_LOCAL, "on_delta", None)
+                attempt_chunks: list[dict] = []
+
+                def _buffer_or_stream(ev: dict) -> None:
+                    if on_delta_cb is not None:
+                        ev["model"] = candidate_model
+                        on_delta_cb(ev)
+                    else:
+                        attempt_chunks.append(ev)
+
+                cb = _buffer_or_stream if on_delta_cb is not None else None
                 with urllib.request.urlopen(req, timeout=attempt_timeout) as resp:
-                    parsed = _parse_antigravity_sse_stream(resp, attempt_deadline)
+                    parsed = _parse_antigravity_sse_stream(resp, attempt_deadline, on_delta=cb)
                 ok, reason = _validate_candidate_response(parsed, candidate_model, has_tools)
                 if ok:
                     return {
@@ -866,7 +934,83 @@ class AntigravityGatewayHandler(BaseHTTPRequestHandler):
         requested_model = body.get("model") or "antigravity/gemini-3.8-flash-low"
         is_stream = bool(body.get("stream", False))
 
-        result = execute_antigravity_request(body, requested_model)
+        cmpl_id = f"chatcmpl-{uuid.uuid4().hex[:20]}"
+        created_ts = int(time.time())
+        headers_sent = False
+        emitted_live = False
+
+        def _send_sse_headers() -> None:
+            nonlocal headers_sent
+            if headers_sent:
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
+            headers_sent = True
+
+        def _write_sse_chunk(chunk_obj: dict) -> None:
+            _send_sse_headers()
+            raw = f"data: {json.dumps(chunk_obj, ensure_ascii=False)}\n\n".encode("utf-8")
+            self.wfile.write(raw)
+            if hasattr(self.wfile, "flush"):
+                self.wfile.flush()
+
+        def _live_delta_emitter(ev: dict) -> None:
+            nonlocal emitted_live
+            model_name = ev.get("model") or requested_model
+            if not emitted_live:
+                _write_sse_chunk({
+                    "id": cmpl_id,
+                    "object": "chat.completion.chunk",
+                    "created": created_ts,
+                    "model": model_name,
+                    "choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": None}],
+                })
+                emitted_live = True
+            ev_type = ev.get("type")
+            if ev_type == "content" and ev.get("content"):
+                _write_sse_chunk({
+                    "id": cmpl_id,
+                    "object": "chat.completion.chunk",
+                    "created": created_ts,
+                    "model": model_name,
+                    "choices": [{"index": 0, "delta": {"content": ev["content"]}, "finish_reason": None}],
+                })
+            elif ev_type == "tool_calls" and ev.get("tool_calls"):
+                _write_sse_chunk({
+                    "id": cmpl_id,
+                    "object": "chat.completion.chunk",
+                    "created": created_ts,
+                    "model": model_name,
+                    "choices": [{"index": 0, "delta": {"tool_calls": ev["tool_calls"]}, "finish_reason": None}],
+                })
+
+        _STREAM_LOCAL.on_delta = _live_delta_emitter if is_stream else None
+        try:
+            result = execute_antigravity_request(body, requested_model)
+        finally:
+            _STREAM_LOCAL.on_delta = None
+
+        if emitted_live:
+            actual_model = result.get("model") or requested_model
+            finish_reason = result.get("finish_reason") or ("tool_calls" if result.get("tool_calls") else "stop")
+            usage = result.get("usage") or {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+            _write_sse_chunk({
+                "id": cmpl_id,
+                "object": "chat.completion.chunk",
+                "created": created_ts,
+                "model": actual_model,
+                "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
+                "usage": usage,
+            })
+            self.wfile.write(b"data: [DONE]\n\n")
+            if hasattr(self.wfile, "flush"):
+                self.wfile.flush()
+            return
+
         if not result.get("ok"):
             self._send_json(
                 int(result.get("status") or 503),
@@ -880,8 +1024,6 @@ class AntigravityGatewayHandler(BaseHTTPRequestHandler):
             )
             return
 
-        cmpl_id = f"chatcmpl-{uuid.uuid4().hex[:20]}"
-        created_ts = int(time.time())
         actual_model = result["model"]
         text_out = result.get("text") or ""
         reasoning_out = result.get("reasoning") or ""

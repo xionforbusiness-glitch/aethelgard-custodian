@@ -247,9 +247,9 @@ class AudioTurnDetector:
         self,
         speech_rms_threshold: float = 180.0,
         frame_ms: int = 20,
-        barge_in_ms: int = 220,
+        barge_in_ms: int = 280,
         min_speech_ms: int = 220,
-        silence_end_ms: int = 500,
+        silence_end_ms: int = 350,
         max_turn_ms: int = 18000,
     ):
         self.speech_rms_threshold = float(speech_rms_threshold)
@@ -279,7 +279,9 @@ class AudioTurnDetector:
     def feed_frame(self, pcm_48k: bytes, ai_speaking: bool = False) -> Dict[str, Any]:
         step_ms = max(1, (len(pcm_48k) * 1000) // (VOICE_SAMPLE_RATE * 2)) if len(pcm_48k) >= 96 else self.frame_ms
         rms = pcm16_rms(pcm_48k)
-        is_voice = rms >= self.speech_rms_threshold
+        # During AI playback, require substantially stronger energy to suppress acoustic echo / chop-ups.
+        barge_threshold = max(self.speech_rms_threshold * 1.5, 450.0)
+        is_voice = rms >= (barge_threshold if ai_speaking else self.speech_rms_threshold)
         barge_in = False
         utterance_ready = False
         utterance_pcm_16k: Optional[bytes] = None
@@ -580,6 +582,147 @@ VOICE_TOOLS: List[Dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "check_whatsapp",
+            "description": "Search or read Omar's recent WhatsApp messages via the live WhatsApp bridge.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Optional contact name, phone, or keyword filter"},
+                    "limit": {"type": "integer", "description": "Number of recent messages (1-10)"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "check_telegram_dms",
+            "description": "List or read recent messages in Omar's personal Telegram DMs and groups (outside the voice bot).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "chat": {"type": "string", "description": "Optional username, contact name, or chat ID to read from"},
+                    "limit": {"type": "integer", "description": "Number of recent dialogs/messages (1-10)"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "check_linkedin",
+            "description": "Fetch Omar's live LinkedIn profile snapshot or recent LinkedIn feed/updates.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "mode": {"type": "string", "enum": ["profile", "feed"], "description": "profile or feed"},
+                    "count": {"type": "integer", "description": "Number of feed posts (1-5)"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Search the public web for up-to-date company info, portals, career pages, documentation, or news.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Web search query"},
+                    "max_results": {"type": "integer", "description": "Max results (1-5)"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "launch_mission",
+            "description": "Launch a persistent multi-step background mission (can work all day, run web research, portal account signup/applications, draft emails/messages, and call Omar when finished).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Short mission title"},
+                    "goal": {"type": "string", "description": "Full instructions for what the mission must accomplish"},
+                    "allowed_platforms": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Platforms authorized for auto-execution in this mission, e.g. ['gmail', 'portal', 'whatsapp', 'telegram_user', 'linkedin']",
+                    },
+                    "allowed_targets": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Specific authorized domains, emails, handles, or ['*'] when Omar gives broad authorization",
+                    },
+                    "callback_when_done": {"type": "boolean", "description": "Call/notify Omar when complete (default true)"},
+                },
+                "required": ["title", "goal"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_missions",
+            "description": "List Omar's running, waiting, and completed background missions.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "status": {"type": "string", "description": "Optional status filter: queued, running, waiting_human, completed, failed, cancelled"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_mission_status",
+            "description": "Get detailed progress, steps, and summary for a specific mission ID.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "mission_id": {"type": "string"},
+                },
+                "required": ["mission_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "control_mission",
+            "description": "Pause, resume, restart, or cancel a background mission.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "mission_id": {"type": "string"},
+                    "action": {"type": "string", "enum": ["pause", "resume", "restart", "cancel"]},
+                },
+                "required": ["mission_id", "action"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "portal_apply",
+            "description": "Open a career or website portal (e.g., Etihad) via headless browser automation, create an account with Omar's Gmail/profile if needed, read Gmail verification codes automatically, and apply/submit (pausing with a Telegram screenshot ONLY if CAPTCHA/human gate appears).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "Portal URL"},
+                    "instructions": {"type": "string", "description": "Role or portal instructions"},
+                    "mission_id": {"type": "string", "description": "Optional parent mission ID"},
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "end_call",
             "description": "Hang up and close the live Telegram call after speaking a brief farewell when Omar asks to end the call or says goodbye.",
             "parameters": {
@@ -763,9 +906,11 @@ class VoiceBrainSession:
             + (f"- Shared Bot/Vault Memory:\n{shared_ctx}\n" if shared_ctx else "")
             + "- Language: Match Omar seamlessly (crisp British JARVIS English, or natural Syrian Arabic if he speaks Arabic).\n"
             f"- Delivery: {brevity} Never read raw Markdown, asterisks, IDs verbatim unless needed, or JSON aloud.\n"
-            "- Actions in Call: Act immediately using tools! Use check_gmail/read_email for inbox queries, save_gmail_draft to put drafts directly into Gmail Drafts, "
-            "stage_outbound_draft -> read recipient+subject+summary aloud -> confirm_verbal_approval ONLY after Omar confirms to send, "
-            "queue_async_task with delay_minutes/delay_seconds when asked to call back, search_vault for notes/roster/CVs, "
+            "- Actions in Call: Act immediately using tools! Use check_gmail/read_email, check_whatsapp, check_telegram_dms, check_linkedin, web_search, "
+            "save_gmail_draft to put drafts directly into Gmail Drafts, launch_mission for whole-day parallel background workflows (research, outreach, job portals, "
+            "calling back when done), portal_apply (via Playwright + auto-account creation + Gmail verification codes; pause cleanly on CAPTCHA/2FA), "
+            "stage_outbound_draft -> read recipient+subject+summary aloud -> confirm_verbal_approval ONLY after Omar confirms standalone sends, "
+            "queue_async_task with delay_minutes/delay_seconds when asked for a simple callback timer, search_vault for notes/roster/CVs, "
             "and ALWAYS call end_call immediately when Omar says hang up, end the call, bye, or talk later."
         )
 
@@ -1027,6 +1172,104 @@ class VoiceBrainSession:
                 )
                 return _record_action(res)
 
+            if name == "check_whatsapp":
+                from omnichannel_bridge import WhatsAppAdapter
+                wa = WhatsAppAdapter()
+                query = str(args.get("query") or "").strip()
+                limit = max(1, min(int(args.get("limit") or 6), 10))
+                msgs = wa.read_messages(query=query, limit=limit)
+                res = msgs if isinstance(msgs, dict) else {"messages": list(msgs or []), "count": len(msgs or [])}
+                return _record_action(res)
+
+            if name == "check_telegram_dms":
+                from omnichannel_bridge import TelegramUserAdapter
+                tu = TelegramUserAdapter()
+                chat = str(args.get("chat") or "").strip()
+                limit = max(1, min(int(args.get("limit") or 6), 10))
+                if chat:
+                    msgs = tu.read_messages(chat=chat, limit=limit)
+                    res = msgs if isinstance(msgs, dict) else {"messages": list(msgs or []), "count": len(msgs or [])}
+                    return _record_action(res)
+                dlgs = tu.list_dialogs(limit=limit)
+                res = dlgs if isinstance(dlgs, dict) else {"dialogs": list(dlgs or []), "count": len(dlgs or [])}
+                return _record_action(res)
+
+            if name == "check_linkedin":
+                from omnichannel_bridge import LinkedInAdapter
+                li = LinkedInAdapter()
+                mode = str(args.get("mode") or "profile").strip().lower()
+                if mode == "feed":
+                    count = max(1, min(int(args.get("count") or 4), 5))
+                    return _record_action(li.fetch_feed(count=count))
+                return _record_action(li.get_my_profile())
+
+            if name == "web_search":
+                import mission_engine
+                query = str(args.get("query") or "").strip()
+                if not query:
+                    return _record_action({"error": "query required"})
+                max_results = max(1, min(int(args.get("max_results") or 5), 8))
+                hits = mission_engine.web_search_lightweight(query, max_results=max_results)
+                return _record_action({"query": query, "results": hits, "count": len(hits)})
+
+            if name == "launch_mission":
+                import mission_engine
+                title = str(args.get("title") or "Background Mission").strip()
+                goal = str(args.get("goal") or title).strip()
+                res = mission_engine.create_and_start_mission(
+                    title=title,
+                    goal=goal,
+                    allowed_platforms=args.get("allowed_platforms") or ["gmail", "portal", "whatsapp", "telegram_user", "linkedin"],
+                    allowed_targets=args.get("allowed_targets") or ["*"],
+                    callback_when_done=bool(args.get("callback_when_done", True)),
+                    vault_dir=self.vault_dir,
+                    source="telegram_call",
+                )
+                return _record_action(res)
+
+            if name == "list_missions":
+                import mission_engine
+                status = str(args.get("status") or "").strip() or None
+                missions = mission_engine.list_missions(status=status, limit=12)
+                compact = [
+                    {
+                        "mission_id": m.get("mission_id"),
+                        "title": m.get("title"),
+                        "status": m.get("status"),
+                        "progress": m.get("progress"),
+                    }
+                    for m in missions
+                ]
+                return _record_action({"missions": compact, "count": len(compact)})
+
+            if name == "get_mission_status":
+                import mission_engine
+                mid = str(args.get("mission_id") or "").strip()
+                m = mission_engine.get_mission(mid)
+                if not m:
+                    return _record_action({"error": f"Mission {mid} not found"})
+                return _record_action({"mission": m})
+
+            if name == "control_mission":
+                import mission_engine
+                mid = str(args.get("mission_id") or "").strip()
+                act = str(args.get("action") or "").strip().lower()
+                return _record_action(mission_engine.control_mission(mid, act, vault_dir=self.vault_dir))
+
+            if name == "portal_apply":
+                import job_application_engine
+                url = str(args.get("url") or "").strip()
+                if not url:
+                    return _record_action({"error": "url required"})
+                res = job_application_engine.execute_portal_application(
+                    url=url,
+                    instructions=str(args.get("instructions") or ""),
+                    mission_id=str(args.get("mission_id") or "").strip() or None,
+                    auto_submit=True,
+                    vault_dir=self.vault_dir,
+                )
+                return _record_action(res)
+
             if name == "end_call":
                 self.end_call_requested = True
                 farewell = str(args.get("farewell") or "Goodbye Omar. Talk soon.")
@@ -1042,6 +1285,25 @@ class VoiceBrainSession:
             return f"{name} error: {str(res['error'])[:80]}"
         if name == "check_gmail":
             return f"checked Gmail ({len(res.get('emails') or [])} emails, query={args.get('query') or 'latest'})"
+        if name == "check_whatsapp":
+            return f"checked WhatsApp ({res.get('count', len(res.get('messages') or []))} messages)"
+        if name == "check_telegram_dms":
+            return f"checked personal Telegram ({len(res.get('dialogs') or res.get('messages') or [])} items)"
+        if name == "check_linkedin":
+            return f"checked LinkedIn ({args.get('mode') or 'profile'})"
+        if name == "web_search":
+            return f"searched web for '{str(args.get('query') or '')[:40]}' ({res.get('count', 0)} hits)"
+        if name == "launch_mission":
+            return f"launched mission {res.get('mission_id')}: {str(res.get('title') or '')[:45]}"
+        if name == "list_missions":
+            return f"listed {res.get('count', 0)} missions"
+        if name == "get_mission_status":
+            m = res.get("mission") or {}
+            return f"checked mission {m.get('mission_id')} ({m.get('status')})"
+        if name == "control_mission":
+            return f"mission {args.get('mission_id')} -> {res.get('status')}"
+        if name == "portal_apply":
+            return f"portal {args.get('url', '')[:45]} ({res.get('status', 'done')})"
         if name == "read_email":
             em = res.get("email") or {}
             return f"read email '{str(em.get('subject', ''))[:50]}'"
@@ -1086,6 +1348,100 @@ class VoiceBrainSession:
             err_body = exc.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"Proxy HTTP {exc.code}: {err_body[:300]}") from exc
 
+    def _post_proxy_stream(
+        self,
+        messages: List[Dict[str, Any]],
+        use_tools: bool = True,
+        thinking_budget: int = 0,
+        max_tokens: int = 350,
+        on_sentence: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """Streams SSE tokens from the local Antigravity proxy and emits completed sentences immediately."""
+        import voice_engine
+        api_key = os.environ.get("OMNIROUTE_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "sk-omni")
+        payload: Dict[str, Any] = {
+            "model": MODEL_NAME,
+            "messages": messages,
+            "temperature": 0.35,
+            "max_tokens": max_tokens,
+            "thinking_budget": thinking_budget,
+            "stream": True,
+        }
+        if use_tools:
+            payload["tools"] = VOICE_TOOLS
+        req = urllib.request.Request(
+            PROXY_URL,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+        )
+        content_parts: List[str] = []
+        pending_buf = ""
+        tool_acc: Dict[int, Dict[str, Any]] = {}
+        try:
+            with urllib.request.urlopen(req, timeout=25) as resp:
+                ctype = str(resp.headers.get("Content-Type", "") or "").lower()
+                if "text/event-stream" not in ctype:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    txt = str((((data.get("choices") or [{}])[0]).get("message") or {}).get("content") or "").strip()
+                    if txt and on_sentence is not None:
+                        on_sentence(txt)
+                    return data
+                for raw_line in resp:
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data_str = line[5:].strip()
+                    if data_str == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data_str)
+                    except Exception:
+                        continue
+                    delta = ((chunk.get("choices") or [{}])[0]).get("delta") or {}
+                    for tc in (delta.get("tool_calls") or []):
+                        idx = int(tc.get("index", 0))
+                        slot = tool_acc.setdefault(
+                            idx,
+                            {"id": tc.get("id") or f"call_{idx}", "type": "function", "function": {"name": "", "arguments": ""}},
+                        )
+                        if tc.get("id"):
+                            slot["id"] = tc["id"]
+                        fn_d = tc.get("function") or {}
+                        if fn_d.get("name"):
+                            slot["function"]["name"] += str(fn_d["name"])
+                        if fn_d.get("arguments"):
+                            slot["function"]["arguments"] += str(fn_d["arguments"])
+                    piece = delta.get("content")
+                    if piece:
+                        content_parts.append(str(piece))
+                        if on_sentence is not None and not tool_acc:
+                            pending_buf += str(piece)
+                            sentences = voice_engine.split_speakable_sentences(pending_buf)
+                            if len(sentences) > 1:
+                                for s in sentences[:-1]:
+                                    if s.strip():
+                                        on_sentence(s.strip())
+                                pending_buf = sentences[-1]
+                            elif len(pending_buf.strip()) >= 12 and pending_buf.rstrip()[-1] in (".", "!", "?", "\u061f"):
+                                if pending_buf.strip():
+                                    on_sentence(pending_buf.strip())
+                                pending_buf = ""
+        except urllib.error.HTTPError as exc:
+            err_body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Proxy HTTP {exc.code}: {err_body[:300]}") from exc
+
+        if pending_buf.strip() and on_sentence is not None and not tool_acc:
+            on_sentence(pending_buf.strip())
+            pending_buf = ""
+
+        assembled_msg: Dict[str, Any] = {
+            "role": "assistant",
+            "content": "".join(content_parts).strip(),
+        }
+        if tool_acc:
+            assembled_msg["tool_calls"] = [tool_acc[k] for k in sorted(tool_acc.keys())]
+        return {"choices": [{"index": 0, "message": assembled_msg}]}
+
     def transcribe_user_audio_clip(self, wav_bytes: bytes) -> str:
         """Lightweight speech-to-text pass used asynchronously after replying so call history & logs record Omar's words."""
         if not wav_bytes:
@@ -1127,10 +1483,16 @@ class VoiceBrainSession:
                     self.transcript_log[t_idx] = f"**Omar:** {clean}"
         self.sync_call_log(final=False)
 
-    def process_user_turn(self, wav_bytes: Optional[bytes] = None, text_prompt: str = "") -> str:
+    def process_user_turn(
+        self,
+        wav_bytes: Optional[bytes] = None,
+        text_prompt: str = "",
+        on_tool_start: Optional[Any] = None,
+        on_speak_chunk: Optional[Any] = None,
+    ) -> str:
         """
         Executes a live voice turn through Antigravity (`gemini-3.8-flash-low`, `thinking_budget=0`)
-        with real tool loops and updates call logs incrementally.
+        with real tool loops, optional real-time SSE sentence streaming, and incremental call logs.
         """
         content_parts: List[Dict[str, Any]] = []
         if wav_bytes:
@@ -1154,9 +1516,25 @@ class VoiceBrainSession:
             actions_before = len(self.actions_log)
         conv_messages = [{"role": "system", "content": self.build_system_prompt()}] + hist_snapshot + [user_msg]
 
+        use_streaming = (
+            on_speak_chunk is not None
+            and "_post_proxy" not in self.__dict__
+            and type(self)._post_proxy is VoiceBrainSession._post_proxy
+        )
+        emitted_sentences = False
+
+        def _chunk_cb(sent: str) -> None:
+            nonlocal emitted_sentences
+            emitted_sentences = True
+            if on_speak_chunk is not None:
+                on_speak_chunk(sent)
+
         reply_text = ""
         for _ in range(4):
-            resp = self._post_proxy(conv_messages, use_tools=True)
+            if use_streaming:
+                resp = self._post_proxy_stream(conv_messages, use_tools=True, on_sentence=_chunk_cb)
+            else:
+                resp = self._post_proxy(conv_messages, use_tools=True)
             choice = (resp.get("choices") or [{}])[0]
             msg = choice.get("message") or {}
             tool_calls = msg.get("tool_calls") or []
@@ -1169,6 +1547,11 @@ class VoiceBrainSession:
                         t_args = json.loads(fn.get("arguments") or "{}")
                     except Exception:
                         t_args = {}
+                    if on_tool_start is not None:
+                        try:
+                            on_tool_start(t_name)
+                        except Exception:
+                            pass
                     t_res = self.execute_tool_call(t_name, t_args)
                     conv_messages.append({
                         "role": "tool",
@@ -1181,6 +1564,8 @@ class VoiceBrainSession:
 
         if not reply_text:
             reply_text = "Done, Omar."
+            if use_streaming and not emitted_sentences and on_speak_chunk is not None:
+                on_speak_chunk(reply_text)
 
         hist_user_label = text_prompt if text_prompt else "[Omar spoke via live voice]"
         hist_user_msg = {"role": "user", "content": hist_user_label}
@@ -1316,6 +1701,13 @@ class VoiceBrainSession:
                     # Update transcript tail if final sync runs twice cleanly
                     pass
                 note_path = str(note)
+
+                if not already_final and transcript_copy:
+                    try:
+                        import life_compiler
+                        life_compiler.compile_life_dump("\n".join(transcript_copy), vault_dir=self.vault_dir)
+                    except Exception:
+                        pass
 
         return {"latest_json": str(latest_json_path), "vault_note": note_path}
 
@@ -1871,6 +2263,7 @@ class TelegramP2PCallManager:
         queued = 0
         try:
             self._log_event(f"TTS synthesizing peer={peer_id}: {text[:80]}")
+            batch: List[bytes] = []
             async for frame in voice_engine.synthesize_pcm_frames(
                 text,
                 voice="auto",
@@ -1878,8 +2271,23 @@ class TelegramP2PCallManager:
                 frame_ms=FRAME_MS,
             ):
                 if ctx.get("generation") != gen_at_start or peer_id not in self.active_calls:
-                    break
-                await ctx["out_queue"].put(frame)
+                    return
+                batch.append(frame)
+                # Enqueue full warmup batch (>=80ms) before starting playback to prevent WebRTC underruns.
+                if queued == 0 and len(batch) >= 12:
+                    for b_frame in batch:
+                        ctx["out_queue"].put_nowait(b_frame)
+                        queued += 1
+                    batch.clear()
+                elif queued > 0 and len(batch) >= 25:
+                    for b_frame in batch:
+                        ctx["out_queue"].put_nowait(b_frame)
+                        queued += 1
+                    batch.clear()
+            for b_frame in batch:
+                if ctx.get("generation") != gen_at_start or peer_id not in self.active_calls:
+                    return
+                ctx["out_queue"].put_nowait(b_frame)
                 queued += 1
             self._log_event(f"TTS queued {queued} PCM frames ({FRAME_MS}ms) peer={peer_id}")
         except Exception as exc:
@@ -1907,6 +2315,28 @@ class TelegramP2PCallManager:
         await self._cleanup_call(peer_id)
         return True
 
+    async def _play_earcon(self, peer_id: int, kind: str = "checking", is_ar: bool = False) -> None:
+        """Queues pre-cached 10ms British JARVIS PCM earcon frames for instant (<50ms) audio acknowledgment."""
+        import voice_engine
+        ctx = self.active_calls.get(peer_id)
+        if not ctx or ctx.get("ai_speaking"):
+            return
+        frames = voice_engine.get_cached_earcon_frames(
+            kind,
+            is_ar=is_ar,
+            sample_rate=VOICE_SAMPLE_RATE,
+            channels=1,
+            frame_ms=FRAME_MS,
+        )
+        if not frames:
+            return
+        gen_at_start = ctx.get("generation")
+        ctx["ai_speaking"] = True
+        for frame in frames:
+            if ctx.get("generation") != gen_at_start or peer_id not in self.active_calls:
+                break
+            ctx["out_queue"].put_nowait(frame)
+
     async def _handle_utterance(self, peer_id: int, pcm_16k: bytes) -> None:
         ctx = self.active_calls.get(peer_id)
         if not ctx:
@@ -1915,9 +2345,65 @@ class TelegramP2PCallManager:
             wav_bytes = pcm16_to_wav_bytes(pcm_16k, sample_rate=ASR_SAMPLE_RATE)
             brain: VoiceBrainSession = ctx["brain"]
             backfill_task: Optional[asyncio.Task] = None
+            speech_q: asyncio.Queue[Optional[str]] = asyncio.Queue()
+            streamed_any = [False]
+            earcon_sent = [False]
+            prev_text = ""
+            if brain.turns:
+                prev_text = str(brain.turns[-1].get("aethelgard") or brain.turns[-1].get("omar") or "")
+            is_ar = any("\u0600" <= c <= "\u06ff" for c in prev_text)
+
+            def _earcon_kind(tool_name: str) -> str:
+                if tool_name in ("launch_mission", "control_mission", "get_mission_status", "list_missions", "queue_async_task"):
+                    return "mission"
+                if tool_name == "portal_apply":
+                    return "portal"
+                if tool_name in ("web_search", "search_vault"):
+                    return "searching"
+                if tool_name in ("save_gmail_draft", "stage_outbound_draft"):
+                    return "drafting"
+                return "checking"
+
+            def _on_tool_start(tool_name: str) -> None:
+                if earcon_sent[0]:
+                    return
+                earcon_sent[0] = True
+                kind = _earcon_kind(tool_name)
+                try:
+                    self.loop.call_soon_threadsafe(
+                        lambda k=kind: self.loop.create_task(self._play_earcon(peer_id, k, is_ar=is_ar))
+                    )
+                except Exception:
+                    pass
+
+            def _on_speak_chunk(sentence: str) -> None:
+                if not sentence or not sentence.strip():
+                    return
+                streamed_any[0] = True
+                try:
+                    self.loop.call_soon_threadsafe(speech_q.put_nowait, sentence.strip())
+                except Exception:
+                    pass
+
+            async def _speak_consumer() -> None:
+                while True:
+                    chunk = await speech_q.get()
+                    if chunk is None:
+                        break
+                    await self._speak_text(peer_id, chunk)
+
+            speaker_task = self.loop.create_task(_speak_consumer())
             try:
                 self._log_event(f"VoiceBrain turn start peer={peer_id} wav_bytes={len(wav_bytes)}")
-                reply = await asyncio.to_thread(brain.process_user_turn, wav_bytes=wav_bytes)
+                if "process_user_turn" not in brain.__dict__ and type(brain).process_user_turn is VoiceBrainSession.process_user_turn:
+                    reply = await asyncio.to_thread(
+                        brain.process_user_turn,
+                        wav_bytes=wav_bytes,
+                        on_tool_start=_on_tool_start,
+                        on_speak_chunk=_on_speak_chunk,
+                    )
+                else:
+                    reply = await asyncio.to_thread(brain.process_user_turn, wav_bytes=wav_bytes)
                 self._log_event(f"VoiceBrain reply peer={peer_id}: {str(reply)[:90]}")
                 turn_idx = max(0, len(brain.turns) - 1)
 
@@ -1935,8 +2421,13 @@ class TelegramP2PCallManager:
                 self._log_event(f"VoiceBrain turn error peer={peer_id}: {type(bexc).__name__}: {bexc}")
                 traceback.print_exc()
                 reply = "Sorry Omar, I hit a quick reasoning hiccup — say that once more."
-            if reply:
-                await self._speak_text(peer_id, reply)
+                streamed_any[0] = False
+
+            if reply and not streamed_any[0]:
+                await speech_q.put(reply)
+            await speech_q.put(None)
+            await speaker_task
+
             if brain.end_call_requested:
                 self._log_event(f"End-call requested by VoiceBrain peer={peer_id}; draining audio before hangup")
                 wait_deadline = self.loop.time() + 8.0
@@ -1981,8 +2472,8 @@ class TelegramP2PCallManager:
                 delay = next_tick - now
                 if delay > 0:
                     await asyncio.sleep(delay)
-                elif (now - next_tick) > 0.05:
-                    # Only resync clock after real stalls (>50ms); keep 1-3ms asyncio jitter compensated for smooth 100fps TX
+                elif delay < -0.025:
+                    # Resync clock immediately on >25ms VM stall to prevent bursty back-to-back frame flooding
                     next_tick = now
         except asyncio.CancelledError:
             pass

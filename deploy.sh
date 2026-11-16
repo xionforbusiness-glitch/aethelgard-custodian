@@ -81,6 +81,10 @@ fi
 
 "$VENV_DIR/bin/pip" install --upgrade pip
 "$VENV_DIR/bin/pip" install -r requirements.txt
+"$VENV_DIR/bin/playwright" install --with-deps chromium-headless-shell || "$VENV_DIR/bin/playwright" install chromium || true
+if command -v npm >/dev/null 2>&1 && [ -f "whatsapp_bridge/package.json" ]; then
+    (cd whatsapp_bridge && npm install --omit=dev) || true
+fi
 $SUDO ln -sf "$VENV_DIR/bin/hermes" /usr/local/bin/hermes
 echo "✅ Python 3.11 and Hermes Agent installed."
 

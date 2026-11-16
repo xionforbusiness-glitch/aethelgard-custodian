@@ -493,11 +493,84 @@ def stage_job_application(
     }
 
 
+def execute_portal_application(
+    url: str,
+    instructions: str = "",
+    mission_id: Optional[str] = None,
+    auto_submit: bool = True,
+    vault_dir: Optional[str] = None,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """
+    Executes an ephemeral Playwright career portal signup/application (e.g., Etihad Careers)
+    using Omar's verified profile, primary CV PDF, encrypted portal credentials, and automatic
+    Gmail OTP/verification link polling. Strictly pauses with a Telegram screenshot alert if a
+    CAPTCHA or anti-bot gate is encountered (never bypasses human verification).
+    """
+    import mission_engine
+    import portal_automation
+
+    assets = locate_career_assets(vault_dir=vault_dir)
+    primary_cv = str(assets.get("primary_cv") or "")
+    profile_summary = load_vault_profile_summary(vault_dir=vault_dir)
+    enriched_instructions = (
+        f"{instructions.strip()}\n"
+        f"Applicant Identity: {OMAR_IDENTITY.get('name') or OMAR_IDENTITY.get('full_name', 'Omar Elnemr')} | "
+        f"Email: {OMAR_IDENTITY.get('email', 'omar.alnemr04@gmail.com')} | "
+        f"Location: {OMAR_IDENTITY.get('location', 'Damascus, Syria')} | "
+        f"Primary Role: {OMAR_IDENTITY.get('title') or OMAR_IDENTITY.get('headline', 'Flight Dispatcher')}\n"
+        + (f"Primary CV File: {primary_cv}\n" if primary_cv else "")
+        + (f"Career Summary: {profile_summary[:600]}" if profile_summary else "")
+    ).strip()
+
+    with mission_engine.portal_browser_lock(timeout=180.0):
+        res = portal_automation.run_portal_task(
+            url=url,
+            instructions=enriched_instructions,
+            mission_id=mission_id,
+            auto_submit=auto_submit,
+            vault_dir=vault_dir,
+            **kwargs,
+        )
+
+    if res.get("status") == "completed":
+        try:
+            _log_application_to_vault(
+                {
+                    "company": url.split("/")[2] if "://" in url else "Portal",
+                    "role": instructions[:60] or "Portal Application",
+                    "channel": "portal",
+                    "recipient": url,
+                    "job_url": url,
+                    "draft_id": f"portal_{mission_id or 'direct'}",
+                    "attachments": [primary_cv] if primary_cv else [],
+                },
+                vault_dir=vault_dir,
+            )
+        except Exception:
+            pass
+        if mission_id:
+            try:
+                approval_gatekeeper.authorize_or_dispatch_mission_action(
+                    platform="portal",
+                    action="portal_apply",
+                    recipient_or_target=url,
+                    content=str(res.get("summary") or f"Completed portal workflow for {url}"),
+                    mission_id=mission_id,
+                    execute=False,
+                    vault_dir=vault_dir,
+                )
+            except Exception:
+                pass
+    return res
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Aethelgard Autonomous Job Application & Career Engine")
     parser.add_argument("--assets", action="store_true", help="List discovered CV and certificate files")
     parser.add_argument("--profile", action="store_true", help="Print loaded career profile from Vault")
     parser.add_argument("--apply", action="store_true", help="Tailor and stage a job application draft")
+    parser.add_argument("--portal", action="store_true", help="Run Playwright portal auto-signup/application for --url")
     parser.add_argument("--company", default="", help="Target company or airline name")
     parser.add_argument("--role", default="", help="Target role title")
     parser.add_argument("--to", default="", help="Recipient hiring email, WhatsApp number, or profile handle")
@@ -539,6 +612,14 @@ def main() -> int:
         )
         print(json.dumps(res, indent=2, ensure_ascii=False))
         return 0
+
+    if args.portal:
+        if not args.url:
+            print(json.dumps({"success": False, "error": "--url is required with --portal"}))
+            return 2
+        res = execute_portal_application(url=args.url, instructions=args.desc)
+        print(json.dumps(res, indent=2, ensure_ascii=False))
+        return 0 if res.get("status") != "failed" else 1
 
     parser.print_help()
     return 0

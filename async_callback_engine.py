@@ -26,7 +26,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 _ACTIVE_LOCK = threading.Lock()
 _ACTIVE_WORKERS = 0
-MAX_CONCURRENT_WORKERS = 1
+MAX_CONCURRENT_WORKERS = 1  # Keep heavy external Hermes CLI subprocesses bounded to 1 on e2-micro; parallel missions run in mission_engine (MAX_CONCURRENT_MISSIONS=2)
 
 
 def _get_state_dir() -> Path:
@@ -134,12 +134,24 @@ def _deliver_job_notification(
 
     if delivery in ("call", "both"):
         if allow_call:
+            is_urgent = bool(job.get("urgent"))
             try:
                 if call_fn:
                     res = call_fn(spoke_text)
                 else:
                     import telegram_voice_caller
-                    res = telegram_voice_caller.request_call_via_rpc_or_direct(opening_prompt=spoke_text)
+                    res = telegram_voice_caller.request_call_via_rpc_or_direct(
+                        opening_prompt=spoke_text,
+                        urgent=is_urgent,
+                        vault_dir=vault_dir,
+                    )
+                    if not (res and res.get("success")) and "already" in str((res or {}).get("reason") or (res or {}).get("error") or "").lower():
+                        time.sleep(2.5)
+                        res = telegram_voice_caller.request_call_via_rpc_or_direct(
+                            opening_prompt=spoke_text,
+                            urgent=is_urgent,
+                            vault_dir=vault_dir,
+                        )
                 outcome["called"] = bool(res and res.get("success"))
                 outcome["call_result"] = res
             except Exception as exc:
@@ -215,28 +227,85 @@ def _run_hermes_task_worker(
 
 
 def _evaluate_watch_reply(job: Dict[str, Any]) -> Optional[str]:
-    """Checks Gmail (and optional LinkedIn) for a matching reply since job creation."""
+    """Checks Gmail, WhatsApp, Personal Telegram, and LinkedIn for a matching reply since job creation."""
     payload = job.get("payload") or {}
     query = str(payload.get("query") or payload.get("from") or "").strip()
     if not query:
         return None
-    try:
-        from omnichannel_bridge import GoogleAdapter
-        ga = GoogleAdapter()
-        if ga.get_status().get("status") != "connected":
-            return None
-        hits = ga.search_emails(query=query, max_results=3)
-        if not hits:
-            return None
-        seen_ids = set(payload.get("initial_msg_ids") or [])
-        for h in hits:
-            mid = str(h.get("id") or "")
-            if mid and mid not in seen_ids:
-                subj = h.get("subject", "New message")
-                sender = h.get("sender", query)
-                return f"Reply arrived from {sender}: {subj}"
-    except Exception:
-        pass
+    q_low = query.lower()
+    channel = str(payload.get("channel") or payload.get("platform") or "all").strip().lower()
+    seen_ids = set(str(x) for x in (payload.get("initial_msg_ids") or []))
+
+    # 1. Gmail watch
+    if channel in ("all", "gmail", "google"):
+        try:
+            from omnichannel_bridge import GoogleAdapter
+            ga = GoogleAdapter()
+            if ga.get_status().get("status") == "connected":
+                hits = ga.search_emails(query=query, max_results=3) or []
+                for h in hits:
+                    mid = str(h.get("id") or "")
+                    if mid and mid not in seen_ids:
+                        subj = h.get("subject", "New message")
+                        sender = h.get("sender", query)
+                        return f"Gmail reply arrived from {sender}: {subj}"
+        except Exception:
+            pass
+
+    # 2. WhatsApp Baileys bridge watch
+    if channel in ("all", "whatsapp"):
+        try:
+            from omnichannel_bridge import WhatsAppAdapter
+            wa = WhatsAppAdapter()
+            if wa.get_status().get("status") == "connected":
+                msgs = wa.read_messages(query=query if q_low != "*" else "", limit=8) or []
+                for m in msgs:
+                    if not isinstance(m, dict) or m.get("from_me"):
+                        continue
+                    mid = str(m.get("id") or m.get("timestamp") or "")
+                    blob = f"{m.get('sender_name', '')} {m.get('sender', '')} {m.get('text', '')}".lower()
+                    if (q_low == "*" or q_low in blob) and mid not in seen_ids:
+                        who = m.get("sender_name") or m.get("sender") or query
+                        return f"WhatsApp reply arrived from {who}: {str(m.get('text', ''))[:120]}"
+        except Exception:
+            pass
+
+    # 3. Personal Telegram MTProto watch
+    if channel in ("all", "telegram", "telegram_user"):
+        try:
+            from omnichannel_bridge import TelegramUserAdapter
+            tu = TelegramUserAdapter()
+            if tu.get_status().get("status") == "connected":
+                dialogs = tu.list_dialogs(limit=10) or []
+                for d in dialogs:
+                    if not isinstance(d, dict):
+                        continue
+                    name = str(d.get("name") or "")
+                    preview = str(d.get("last_message") or "")
+                    did = f"tg:{d.get('id')}:{preview[:40]}"
+                    if int(d.get("unread_count") or 0) > 0 and (q_low == "*" or q_low in f"{name} {preview}".lower()):
+                        if did not in seen_ids:
+                            return f"Telegram reply arrived from {name}: {preview[:120]}"
+        except Exception:
+            pass
+
+    # 4. LinkedIn inbox watch
+    if channel in ("all", "linkedin"):
+        try:
+            from omnichannel_bridge import LinkedInAdapter
+            la = LinkedInAdapter()
+            if la.get_status().get("status") == "connected":
+                convs = la.get_conversations(limit=6) or []
+                for c in convs:
+                    if not isinstance(c, dict):
+                        continue
+                    cid = str(c.get("entityUrn") or c.get("id") or "")
+                    blob = json.dumps(c, ensure_ascii=False).lower()
+                    if (q_low == "*" or q_low in blob) and cid and cid not in seen_ids:
+                        return f"LinkedIn message arrived matching '{query}'"
+        except Exception:
+            pass
+
     return None
 
 

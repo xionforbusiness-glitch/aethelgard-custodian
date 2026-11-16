@@ -65,6 +65,16 @@ def handle(event_type, context):
                 except Exception as ce:
                     print(f"⚠ [Hook /connect Notice] {ce}", flush=True)
 
+            # 3b. Mission Control (/mission & /resume) Interception
+            if msg == "/mission" or msg.startswith("/mission ") or msg == "/resume" or msg.startswith("/resume "):
+                try:
+                    import mission_engine
+                    from proactive_scheduler import send_telegram
+                    reply_text = mission_engine.handle_mission_command(raw_msg, vault_dir=vault_dir)
+                    send_telegram(reply_text, chat_id=chat_id, token=token)
+                except Exception as me:
+                    print(f"⚠ [Hook /mission Notice] {me}", flush=True)
+
             # 4. Strict Two-Phase Outbound Approval Gatekeeper Interception
             try:
                 import approval_gatekeeper

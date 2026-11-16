@@ -114,6 +114,35 @@ def trigger_morning_briefing(vault_dir):
     )
     send_telegram_voice_sync(voice_greeting, caption=None)
 
+    # Trigger spoken 07:15 AM Executive Briefing Phone Call when outside SLEEP_SHIELD
+    try:
+        op_mode = get_operational_mode(vault_dir=vault_dir, now=now)
+    except Exception:
+        op_mode = {"mode": "STRATEGIC_WINDOW", "allow_proactive_calls": True}
+
+    if op_mode.get("allow_proactive_calls", True):
+        active_missions_note = ""
+        try:
+            import mission_engine
+            ms = mission_engine.list_missions()
+            active = [m for m in ms if m.get("status") in ("running", "queued", "waiting_human")]
+            if active:
+                active_missions_note = f" You also have {len(active)} active background mission(s)."
+        except Exception:
+            pass
+        try:
+            import telegram_voice_caller
+            telegram_voice_caller.request_call_via_rpc_or_direct(
+                opening_prompt=(
+                    f"Good morning Omar. 7:15 AM Damascus executive briefing. "
+                    f"Today is {weekday}; shift is {schedule.get('omar', 'scheduled')}.{active_missions_note} "
+                    f"Would you like your unread emails or mission plan?"
+                ),
+                vault_dir=vault_dir,
+            )
+        except Exception:
+            pass
+
     return sent
 
 def trigger_evening_checkout(vault_dir):
@@ -266,6 +295,13 @@ def run_jarvis_background_maintenance(
     except Exception:
         pass
 
+    missions_res = {}
+    try:
+        import mission_engine
+        missions_res = mission_engine.tick_missions_maintenance(vault_dir=vault_dir)
+    except Exception:
+        pass
+
     staged_followups = 0
     if check_overdue_promises and op_mode.get("allow_proactive_calls", True):
         try:
@@ -297,6 +333,7 @@ def run_jarvis_background_maintenance(
     return {
         "operational_mode": op_mode,
         "async_jobs": async_res,
+        "missions": missions_res,
         "staged_followups": staged_followups,
         "linkedin_events": linkedin_events,
     }
@@ -316,6 +353,18 @@ def proactive_scheduler_daemon(vault_dir):
     last_promise_slot = None
 
     print(f"[{time.strftime('%H:%M:%S')}] ⏰ Full Proactive Autonomy Suite active (Damascus UTC+3)...")
+
+    def _fast_callback_loop() -> None:
+        while True:
+            time.sleep(3)
+            try:
+                import async_callback_engine
+                if async_callback_engine.list_async_jobs(status="pending"):
+                    async_callback_engine.tick_async_jobs(now=get_damascus_now(), vault_dir=vault_dir)
+            except Exception:
+                pass
+
+    threading.Thread(target=_fast_callback_loop, name="AsyncCallbackFastPoller", daemon=True).start()
 
     while True:
         try:

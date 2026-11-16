@@ -12,3 +12,4 @@ pypdf
 telethon
 ntgcalls
 qrcode
+playwright>=1.50.0

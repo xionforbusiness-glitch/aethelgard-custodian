@@ -78,6 +78,8 @@ agent:
   stall_guards: true
   task_completion_guidance: true
   api_max_retries: 2
+  # Note: Hermes native browser/computer_use toolsets stay disabled to preserve 1GB RAM;
+  # website automation runs via ephemeral single-instance Playwright (portal_automation.py / mission_engine.py).
   disabled_toolsets:
     - browser
     - computer_use

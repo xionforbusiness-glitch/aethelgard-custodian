@@ -257,6 +257,51 @@ async def _synthesize_edge_mp3(clean_text: str, voice: str, is_ar: bool) -> byte
         raise
 
 
+def _fast_wav_to_s16le_inprocess(
+    payload: bytes,
+    sample_rate: int,
+    channels: int,
+    audio_filter: str = "",
+) -> bytes | None:
+    """
+    Zero-subprocess WAV -> s16le resampler & gain scaler using C stdlib audioop (Python 3.11)
+    to eliminate per-sentence ffmpeg CPU spikes on 1-vCPU e2-micro VMs during live calls.
+    """
+    if not (payload and payload[:4] == b"RIFF" and len(payload) > 44):
+        return None
+    if audio_filter and not re.fullmatch(r"volume=[0-9.]+", audio_filter.strip()):
+        return None
+    try:
+        import audioop
+        import wave
+    except Exception:
+        return None
+
+    try:
+        with wave.open(io.BytesIO(payload), "rb") as wf:
+            src_ch = wf.getnchannels()
+            src_sw = wf.getsampwidth()
+            src_rate = wf.getframerate()
+            pcm = wf.readframes(wf.getnframes())
+        if not pcm:
+            return b""
+        if src_sw != 2:
+            pcm = audioop.lin2lin(pcm, src_sw, 2)
+        if src_ch == 2 and channels == 1:
+            pcm = audioop.tomono(pcm, 2, 0.5, 0.5)
+        elif src_ch == 1 and channels == 2:
+            pcm = audioop.tostereo(pcm, 2, 1.0, 1.0)
+        if src_rate != sample_rate:
+            pcm, _ = audioop.ratecv(pcm, 2, channels, src_rate, sample_rate, None)
+        if audio_filter and audio_filter.strip().startswith("volume="):
+            vol = float(audio_filter.strip().split("=", 1)[1])
+            if 0.0 <= vol <= 2.0 and abs(vol - 1.0) > 1e-3:
+                pcm = audioop.mul(pcm, 2, vol)
+        return pcm
+    except Exception:
+        return None
+
+
 def _ffmpeg_transcode(
     payload: bytes,
     input_fmt: str,
@@ -265,6 +310,11 @@ def _ffmpeg_transcode(
     channels: int,
     audio_filter: str = "",
 ) -> bytes:
+    if input_fmt == "wav" and output_fmt == "s16le":
+        fast = _fast_wav_to_s16le_inprocess(payload, sample_rate, channels, audio_filter=audio_filter)
+        if fast is not None:
+            return fast
+
     cmd = [
         "ffmpeg",
         "-nostdin",
@@ -494,4 +544,95 @@ async def synthesize_pcm_frames(
             if len(frame) < frame_bytes:
                 frame = frame + b"\x00" * (frame_bytes - len(frame))
             yield frame
+
+
+# ---------------------------------------------------------------------------
+# Pre-Cached JARVIS PCM Earcons (Zero-Latency Tool-Call Feedback)
+# ---------------------------------------------------------------------------
+
+EARCON_PHRASES: dict[str, tuple[str, str]] = {
+    "checking": ("Checking now, sir.", "جاري التحقق الآن."),
+    "drafting": ("Preparing that for you.", "جاري التحضير الآن."),
+    "mission": ("Mission acknowledged.", "تم استلام المهمة."),
+    "portal": ("Opening portal now.", "جاري فتح البوابة الآن."),
+    "searching": ("Searching now.", "جاري البحث الآن."),
+}
+
+_EARCON_PCM_CACHE: dict[tuple[str, bool, int, int], list[bytes]] = {}
+_EARCON_CACHE_LOCK = threading.Lock()
+
+
+def _slice_pcm_frames(pcm: bytes, sample_rate: int = 48000, channels: int = 1, frame_ms: int = 10) -> list[bytes]:
+    if not pcm:
+        return []
+    frame_bytes = int(sample_rate * channels * 2 * (frame_ms / 1000.0))
+    if frame_bytes <= 0:
+        return []
+    frames: list[bytes] = []
+    for offset in range(0, len(pcm), frame_bytes):
+        frame = pcm[offset : offset + frame_bytes]
+        if len(frame) < frame_bytes:
+            frame = frame + b"\x00" * (frame_bytes - len(frame))
+        frames.append(frame)
+    return frames
+
+
+def get_cached_earcon_frames(
+    kind: str,
+    is_ar: bool = False,
+    sample_rate: int = 48000,
+    channels: int = 1,
+    frame_ms: int = 10,
+) -> list[bytes]:
+    """Return pre-cached PCM frames for an earcon kind (10ms default for NTgCalls), or [] if not cached."""
+    key = (str(kind or "checking").strip().lower(), bool(is_ar), int(sample_rate), int(channels), int(frame_ms))
+    with _EARCON_CACHE_LOCK:
+        frames = _EARCON_PCM_CACHE.get(key)
+        if not frames and is_ar:
+            frames = _EARCON_PCM_CACHE.get((key[0], False, key[2], key[3], key[4]))
+        return list(frames) if frames else []
+
+
+async def preload_jarvis_earcons_async(
+    sample_rate: int = 48000,
+    channels: int = 1,
+    frame_ms: int = 10,
+    kinds: list[str] | None = None,
+) -> int:
+    """Pre-synthesize British male (and Arabic) earcon PCM frames into RAM cache."""
+    target_kinds = kinds or list(EARCON_PHRASES.keys())
+    loaded = 0
+    for kind in target_kinds:
+        pair = EARCON_PHRASES.get(kind)
+        if not pair:
+            continue
+        for idx, is_ar in ((0, False), (1, True)):
+            key = (kind, is_ar, int(sample_rate), int(channels), int(frame_ms))
+            with _EARCON_CACHE_LOCK:
+                if _EARCON_PCM_CACHE.get(key):
+                    loaded += 1
+                    continue
+            text = pair[idx]
+            voice = VOICE_ARABIC if is_ar else VOICE_ENGLISH
+            try:
+                pcm = await synthesize_pcm_bytes(text, voice=voice, sample_rate=sample_rate, channels=channels)
+                frames = _slice_pcm_frames(pcm, sample_rate=sample_rate, channels=channels, frame_ms=frame_ms)
+                if frames:
+                    with _EARCON_CACHE_LOCK:
+                        _EARCON_PCM_CACHE[key] = frames
+                    loaded += 1
+            except Exception:
+                pass
+    return loaded
+
+
+def preload_jarvis_earcons(sample_rate: int = 48000, channels: int = 1, frame_ms: int = 10) -> int:
+    """Synchronous wrapper to warm pre-cached JARVIS earcons into memory."""
+    try:
+        asyncio.get_running_loop()
+        # Running inside an active loop; caller should await preload_jarvis_earcons_async.
+        return 0
+    except RuntimeError:
+        return asyncio.run(preload_jarvis_earcons_async(sample_rate=sample_rate, channels=channels, frame_ms=frame_ms))
+
 

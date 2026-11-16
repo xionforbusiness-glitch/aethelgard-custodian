@@ -130,8 +130,14 @@ def handle_connect_command(command_text: str, chat_id: Optional[str] = None) -> 
     if sub in ("whatsapp", "wa"):
         wa = omnichannel_bridge.WhatsAppAdapter(str(cred_dir))
         pair_info = wa.get_qr_or_pairing_code(phone=arg if arg and arg.lower() != "qr" else "")
-        code = pair_info["pairing_code"]
-        qr_data = pair_info["qr_data"]
+        if pair_info.get("connected"):
+            return (
+                "💬 *WhatsApp Multi-Device Bridge Connected*\n\n"
+                f"📱 *Linked Phone:* `{pair_info.get('phone') or 'active'}`\n"
+                "2-way Baileys messaging is live!"
+            )
+        code = pair_info.get("pairing_code") or "Scan QR"
+        qr_data = pair_info.get("qr_data") or ""
         return (
             "💬 *WhatsApp Multi-Device Pairing (Zero Browser)*\n\n"
             f"🔑 *8-Digit Phone Pairing Code:* `{code}`\n\n"
@@ -145,10 +151,45 @@ def handle_connect_command(command_text: str, chat_id: Optional[str] = None) -> 
 
     # 3. PERSONAL TELEGRAM
     if sub in ("telegram", "tg"):
+        ta = omnichannel_bridge.TelegramUserAdapter(str(cred_dir))
         sess_file = cred_dir / "telegram_session.json"
         if arg:
-            sess_data = {"phone": arg, "connected": True}
-            sess_file.write_text(json.dumps(sess_data, indent=2), encoding="utf-8")
+            parts = arg.split()
+            low_first = parts[0].lower()
+            if low_first in ("code", "otp") and len(parts) >= 2:
+                otp = parts[1].strip()
+                pw = parts[2].strip() if len(parts) >= 3 else ""
+                res = ta.complete_phone_login(otp, password=pw)
+                if res.get("success"):
+                    return (
+                        "✈️ *Personal Telegram MTProto Connected!*\n"
+                        f"• *Account:* `{res.get('username') or res.get('phone')}`\n"
+                        f"• Saved isolated `StringSession` to `{sess_file}` alongside `@aethelgard_vault_bot`."
+                    )
+                if res.get("state") == "needs_2fa":
+                    return "🔐 *Telegram 2FA Password Required*\nReply: `/connect telegram code <OTP> <2FA_PASSWORD>`"
+                return f"❌ *Telegram Login Error:* `{res.get('error', 'Failed')}`"
+
+            if arg.strip().isdigit() and ta.pending_login_file.exists():
+                res = ta.complete_phone_login(arg.strip())
+                if res.get("success"):
+                    return (
+                        "✈️ *Personal Telegram MTProto Connected!*\n"
+                        f"• *Account:* `{res.get('username') or res.get('phone')}`\n"
+                        f"• Saved isolated `StringSession` to `{sess_file}`."
+                    )
+                return f"❌ *Telegram OTP Error:* `{res.get('error', 'Failed')}`"
+
+            login_res = ta.start_phone_login(arg)
+            if login_res.get("live_mtproto"):
+                if login_res.get("success"):
+                    return (
+                        f"✈️ *Telegram Login Code Sent to `{arg}`*\n"
+                        "Check your Telegram app for the login code and reply:\n"
+                        "`/connect telegram code <OTP>` (or `/connect telegram code <OTP> <2FA_PASSWORD>`)"
+                    )
+                return f"❌ *Telegram Send Code Failed:* `{login_res.get('error')}`"
+
             return (
                 f"✈️ *Personal Telegram MTProto Session Staged for `{arg}`*\n"
                 f"Session metadata saved to `{sess_file}` alongside `@aethelgard_vault_bot`."
@@ -156,7 +197,7 @@ def handle_connect_command(command_text: str, chat_id: Optional[str] = None) -> 
         return (
             "✈️ *Connect Personal Telegram Account (MTProto)*\n\n"
             "Operates alongside `@aethelgard_vault_bot` using Telethon (< 20MB RAM).\n"
-            "• Reply `/connect telegram +963...` with your phone number, or\n"
+            "• Reply `/connect telegram +963...` with your phone number, then `/connect telegram code <OTP>`, or\n"
             "• Run `Connect_Aethelgard_Accounts.bat` on your Windows PC."
         )
 

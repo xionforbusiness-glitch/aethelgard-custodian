@@ -1,0 +1,12 @@
+{
+  "name": "aethelgard-whatsapp-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Lightweight Node 22 WhatsApp Multi-Device sidecar (baileys) for Aethelgard Custodian",
+  "main": "server.js",
+  "dependencies": {
+    "@hapi/boom": "^10.0.1",
+    "@whiskeysockets/baileys": "^6.7.24",
+    "pino": "^9.0.0"
+  }
+}

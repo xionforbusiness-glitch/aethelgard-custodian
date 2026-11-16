@@ -1224,12 +1224,53 @@ def _start_voice_and_scheduler_once() -> None:
     except Exception as tce:
         print(f"⚠ Telegram Voice Caller startup notice: {tce}", flush=True)
 
-    # ── Pre-warm Offline British Male Neural Voice Backup (Zero Idle RAM) ───
+    # ── Pre-warm Offline British Male Neural Voice Backup & JARVIS Earcons ──
     try:
         import voice_engine
         voice_engine._kickoff_piper_prefetch_async(voice_engine.PIPER_VOICE_ENGLISH)
+        threading.Thread(
+            target=voice_engine.preload_jarvis_earcons,
+            name="JarvisEarconPreload",
+            daemon=True,
+        ).start()
     except Exception as pfe:
         print(f"⚠ Piper backup prefetch notice: {pfe}", flush=True)
+
+    # ── Recover Interrupted Persistent Missions & Start WhatsApp Baileys Sidecar ─
+    try:
+        import mission_engine
+        recovered = mission_engine.recover_interrupted_missions(vault_dir=VAULT_DIR)
+        if recovered:
+            print(f"🛰️ Recovered {len(recovered)} persisted background mission(s): {recovered}", flush=True)
+    except Exception as me:
+        print(f"⚠ Mission recovery notice: {me}", flush=True)
+
+    def _supervise_whatsapp_bridge() -> None:
+        import shutil
+        node_bin = shutil.which("node")
+        bridge_dir = Path(SCRIPT_DIR) / "whatsapp_bridge"
+        server_js = bridge_dir / "server.js"
+        if not node_bin or not server_js.exists():
+            return
+        if not (bridge_dir / "node_modules").exists():
+            return
+        while True:
+            try:
+                proc = subprocess.Popen(
+                    [node_bin, str(server_js)],
+                    cwd=str(bridge_dir),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.STDOUT,
+                )
+                proc.wait()
+            except Exception:
+                pass
+            time.sleep(8)
+
+    try:
+        threading.Thread(target=_supervise_whatsapp_bridge, name="WhatsAppBaileysBridge", daemon=True).start()
+    except Exception:
+        pass
 
     # ── Launch Live Voice Call Web Bridge ──────────────────────────────
     try:

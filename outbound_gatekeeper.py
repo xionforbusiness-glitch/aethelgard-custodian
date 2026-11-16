@@ -16,6 +16,8 @@ from approval_gatekeeper import (
     reject_draft,
     format_approval_card,
     send_approval_card_to_telegram,
+    send_mission_receipt_to_telegram,
+    authorize_or_dispatch_mission_action,
     handle_approval_reply,
     main,
 )
@@ -32,6 +34,8 @@ __all__ = [
     "reject_draft",
     "format_approval_card",
     "send_approval_card_to_telegram",
+    "send_mission_receipt_to_telegram",
+    "authorize_or_dispatch_mission_action",
     "handle_approval_reply",
     "main",
 ]
