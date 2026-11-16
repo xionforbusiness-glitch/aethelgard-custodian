@@ -1,5 +1,7 @@
 import os
+import io
 import re
+import wave
 import shutil
 import threading
 import time
@@ -11,6 +13,7 @@ import subprocess
 import tempfile
 import urllib.parse
 import urllib.request
+from pathlib import Path
 import edge_tts
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_TOKEN_REDACTED")
@@ -21,11 +24,23 @@ VOICE_ARABIC = "ar-SY-LaithNeural"    # Authentic Syrian Male
 JARVIS_PITCH = "-4Hz"                 # Deeper, calm resonance
 JARVIS_RATE = "-2%"                   # Measured cadence
 
-# Circuit breaker so if Bing ReadAloud returns 403 on a cloud IP, subsequent
-# live-call sentences skip the doomed handshake and synthesize immediately.
+PIPER_VOICE_ENGLISH = "en_GB-alan-medium"  # Offline/cloud-proof calm British Male neural voice
+PIPER_VOICE_ARABIC = "ar_JO-kareem-medium"  # Offline/cloud-proof Arabic Male neural voice
+_PIPER_VOICE_FILES = {
+    "en_GB-alan-medium": "en/en_GB/alan/medium/en_GB-alan-medium.onnx",
+    "ar_JO-kareem-medium": "ar/ar_JO/kareem/medium/ar_JO-kareem-medium.onnx",
+}
+_PIPER_HF_BASE = "https://huggingface.co/rhasspy/piper-voices/resolve/main/"
+
+# Circuit breaker so if Bing ReadAloud returns 403 transiently, follow-up
+# sentences skip the doomed handshake briefly and recover automatically.
 _EDGE_TTS_BLOCKED_UNTIL = 0.0
-_EDGE_TTS_COOLDOWN_SEC = 1800.0
+_EDGE_TTS_COOLDOWN_SEC = 120.0
 _TTS_TLS_LOCAL = threading.local()
+_PIPER_LOCK = threading.Lock()
+_PIPER_VOICE_CACHE: dict[str, object] = {}
+_PIPER_DOWNLOAD_LOCK = threading.Lock()
+_PIPER_DOWNLOADING: set[str] = set()
 
 
 def is_arabic(text: str) -> bool:
@@ -119,6 +134,100 @@ def _synthesize_espeak_wav_sync(text: str, is_ar: bool) -> bytes:
     return proc.stdout if proc.returncode == 0 else b""
 
 
+def _get_voices_dir() -> Path:
+    explicit = os.environ.get("AETHELGARD_VOICES_DIR", "").strip()
+    if explicit:
+        path = Path(os.path.expanduser(explicit))
+    else:
+        base = os.environ.get("AETHELGARD_HOME", "").strip()
+        root = Path(os.path.expanduser(base)) if base else (Path.home() / ".aethelgard")
+        path = root / "voices"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def ensure_piper_voice_files(voice_id: str = PIPER_VOICE_ENGLISH, timeout: float = 45.0) -> tuple[Path, Path] | None:
+    """Downloads a Piper ONNX voice + config atomically if missing; returns (onnx_path, json_path)."""
+    rel = _PIPER_VOICE_FILES.get(voice_id)
+    if not rel:
+        return None
+    voices_dir = _get_voices_dir()
+    onnx_path = voices_dir / f"{voice_id}.onnx"
+    cfg_path = voices_dir / f"{voice_id}.onnx.json"
+    if onnx_path.is_file() and onnx_path.stat().st_size > 100_000 and cfg_path.is_file() and cfg_path.stat().st_size > 100:
+        return onnx_path, cfg_path
+
+    for suffix, target_path in (("", onnx_path), (".json", cfg_path)):
+        url = f"{_PIPER_HF_BASE}{rel}{suffix}"
+        part_path = voices_dir / f"{target_path.name}.{uuid.uuid4().hex[:6]}.part"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Aethelgard-VoiceEngine/1.0"})
+            with urllib.request.urlopen(req, timeout=timeout) as resp, open(part_path, "wb") as out_f:
+                shutil.copyfileobj(resp, out_f)
+            if target_path.exists():
+                target_path.unlink(missing_ok=True)
+            os.replace(part_path, target_path)
+        except Exception as exc:
+            part_path.unlink(missing_ok=True)
+            print(f"[Voice] Piper voice fetch notice ({voice_id}{suffix}): {type(exc).__name__}: {exc}", flush=True)
+            return None
+    return onnx_path, cfg_path
+
+
+def _kickoff_piper_prefetch_async(voice_id: str) -> None:
+    """Fetches a missing Piper voice model in a non-blocking daemon thread so live turns never stall."""
+    if os.environ.get("AETHELGARD_NO_AUTO_VOICE_DOWNLOAD") == "1":
+        return
+    with _PIPER_DOWNLOAD_LOCK:
+        if voice_id in _PIPER_DOWNLOADING:
+            return
+        _PIPER_DOWNLOADING.add(voice_id)
+
+    def _bg():
+        try:
+            ensure_piper_voice_files(voice_id)
+        finally:
+            with _PIPER_DOWNLOAD_LOCK:
+                _PIPER_DOWNLOADING.discard(voice_id)
+
+    threading.Thread(target=_bg, daemon=True, name=f"PiperFetch-{voice_id}").start()
+
+
+def _synthesize_piper_wav_sync(text: str, is_ar: bool, allow_blocking_download: bool = False) -> bytes:
+    """Synthesizes calm British/Arabic Male speech locally via piper-tts if cached on disk."""
+    try:
+        from piper.voice import PiperVoice
+    except ImportError:
+        return b""
+
+    voice_id = PIPER_VOICE_ARABIC if is_ar else PIPER_VOICE_ENGLISH
+    voices_dir = _get_voices_dir()
+    onnx_path = voices_dir / f"{voice_id}.onnx"
+    cfg_path = voices_dir / f"{voice_id}.onnx.json"
+    if not (onnx_path.is_file() and cfg_path.is_file()):
+        if allow_blocking_download:
+            res = ensure_piper_voice_files(voice_id)
+            if not res:
+                return b""
+            onnx_path, cfg_path = res
+        else:
+            _kickoff_piper_prefetch_async(voice_id)
+            return b""
+
+    with _PIPER_LOCK:
+        voice_obj = _PIPER_VOICE_CACHE.get(voice_id)
+        if voice_obj is None:
+            # Keep at most 1 ONNX voice in RAM for constrained 1GB e2-micro VMs.
+            _PIPER_VOICE_CACHE.clear()
+            voice_obj = PiperVoice.load(onnx_path, config_path=cfg_path, use_cuda=False)
+            _PIPER_VOICE_CACHE[voice_id] = voice_obj
+
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            voice_obj.synthesize_wav(text, wf)
+        return buf.getvalue()
+
+
 async def _synthesize_edge_mp3(clean_text: str, voice: str, is_ar: bool) -> bytes:
     global _EDGE_TTS_BLOCKED_UNTIL
     if time.monotonic() < _EDGE_TTS_BLOCKED_UNTIL:
@@ -134,19 +243,28 @@ async def _synthesize_edge_mp3(clean_text: str, voice: str, is_ar: bool) -> byte
                 if chunk.get("type") == "audio" and chunk.get("data"):
                     mp3_chunks.append(chunk["data"])
 
-        await asyncio.wait_for(_collect_edge_audio(), timeout=4.0)
+        await asyncio.wait_for(_collect_edge_audio(), timeout=8.0)
         payload = b"".join(mp3_chunks)
         if not payload:
             raise RuntimeError("edge-tts returned empty audio stream")
         return payload
     except Exception as exc:
         msg = str(exc)
+        print(f"[Voice] Edge-TTS error ({voice}): {type(exc).__name__}: {msg[:160]}", flush=True)
         if "403" in msg or "Invalid response status" in msg:
             _EDGE_TTS_BLOCKED_UNTIL = time.monotonic() + _EDGE_TTS_COOLDOWN_SEC
+            _kickoff_piper_prefetch_async(PIPER_VOICE_ARABIC if is_ar else PIPER_VOICE_ENGLISH)
         raise
 
 
-def _ffmpeg_transcode(payload: bytes, input_fmt: str, output_fmt: str, sample_rate: int, channels: int) -> bytes:
+def _ffmpeg_transcode(
+    payload: bytes,
+    input_fmt: str,
+    output_fmt: str,
+    sample_rate: int,
+    channels: int,
+    audio_filter: str = "",
+) -> bytes:
     cmd = [
         "ffmpeg",
         "-nostdin",
@@ -158,10 +276,14 @@ def _ffmpeg_transcode(payload: bytes, input_fmt: str, output_fmt: str, sample_ra
         "-i",
         "pipe:0",
     ]
+    if audio_filter:
+        cmd.extend(["-af", audio_filter])
     if output_fmt == "s16le":
         cmd.extend(["-f", "s16le", "-acodec", "pcm_s16le", "-ac", str(channels), "-ar", str(sample_rate)])
     elif output_fmt == "ogg":
         cmd.extend(["-f", "ogg", "-c:a", "libopus", "-b:a", "48k", "-ac", str(channels), "-ar", str(sample_rate)])
+    elif output_fmt == "mp3":
+        cmd.extend(["-f", "mp3", "-c:a", "libmp3lame", "-q:a", "4", "-ac", str(channels), "-ar", str(sample_rate)])
     else:
         cmd.extend(["-f", output_fmt])
     cmd.append("pipe:1")
@@ -172,39 +294,77 @@ def _ffmpeg_transcode(payload: bytes, input_fmt: str, output_fmt: str, sample_ra
     return proc.stdout
 
 
+def _fallback_audio_filter(tier: str, is_ar: bool) -> str:
+    """Normalizes level and ensures male baritone register if forced onto Google Translate TTS."""
+    if tier == "edge":
+        return "volume=0.88"
+    if tier == "piper":
+        return "volume=0.80"
+    if tier == "google_tts":
+        # Shift bright/loud female Google Translate TTS down into a calm male conversational register.
+        factor = "0.87" if is_ar else "0.85"
+        tempo = "1.1494" if is_ar else "1.17647"
+        return f"aresample=48000,asetrate=48000*{factor},atempo={tempo},aresample=48000,volume=0.62"
+    return "volume=0.72"
+
+
+async def _synthesize_speech_payload_async(
+    clean_text: str,
+    voice: str,
+    is_ar: bool,
+) -> tuple[bytes, str, str, Exception | None]:
+    """4-tier male JARVIS synthesis: Edge-TTS -> Piper neural -> shaped Google TTS -> espeak-ng."""
+    edge_err: Exception | None = None
+    try:
+        payload = await _synthesize_edge_mp3(clean_text, voice, is_ar)
+        if payload:
+            return payload, "mp3", _fallback_audio_filter("edge", is_ar), None
+    except Exception as exc:
+        edge_err = exc
+
+    try:
+        piper_wav = await asyncio.to_thread(_synthesize_piper_wav_sync, clean_text, is_ar)
+        if piper_wav:
+            return piper_wav, "wav", _fallback_audio_filter("piper", is_ar), edge_err
+    except Exception:
+        pass
+
+    try:
+        gtts_mp3 = await asyncio.to_thread(_synthesize_google_tts_mp3_sync, clean_text, is_ar)
+        if gtts_mp3:
+            return gtts_mp3, "mp3", _fallback_audio_filter("google_tts", is_ar), edge_err
+    except Exception:
+        pass
+
+    try:
+        espeak_wav = await asyncio.to_thread(_synthesize_espeak_wav_sync, clean_text, is_ar)
+        if espeak_wav:
+            return espeak_wav, "wav", _fallback_audio_filter("espeak", is_ar), edge_err
+    except Exception:
+        pass
+
+    return b"", "", "", edge_err
+
+
 async def generate_voice_file(text: str, output_path: str, voice: str = "auto") -> str:
-    """Generates an audio voice note file using edge-tts with automatic Google/offline fallback."""
-    global _EDGE_TTS_BLOCKED_UNTIL
+    """Generates an audio voice note file using the 4-tier British/Arabic male JARVIS stack."""
     is_ar = is_arabic(text)
     if voice == "auto":
         voice = VOICE_ARABIC if is_ar else VOICE_ENGLISH
 
     clean_text = _clean_tts_text(text, default="Task completed, sir.")
+    payload, input_fmt, audio_filter, err = await _synthesize_speech_payload_async(clean_text, voice, is_ar)
+    if not payload:
+        raise err or RuntimeError("All TTS backends failed")
 
-    try:
-        pitch = "-1Hz" if is_ar else JARVIS_PITCH
-        rate = "+0%" if is_ar else JARVIS_RATE
-        if time.monotonic() < _EDGE_TTS_BLOCKED_UNTIL:
-            raise RuntimeError("edge-tts temporarily circuit-broken")
-        communicate = edge_tts.Communicate(clean_text, voice, pitch=pitch, rate=rate)
-        await communicate.save(output_path)
-        return output_path
-    except Exception as edge_err:
-        if "403" in str(edge_err) or "Invalid response status" in str(edge_err):
-            _EDGE_TTS_BLOCKED_UNTIL = time.monotonic() + _EDGE_TTS_COOLDOWN_SEC
-        ext = os.path.splitext(output_path)[1].lower().lstrip(".") or "ogg"
-        out_fmt = "mp3" if ext == "mp3" else "ogg"
-        mp3_bytes = await asyncio.to_thread(_synthesize_google_tts_mp3_sync, clean_text, is_ar)
-        if mp3_bytes:
-            if out_fmt == "mp3":
-                with open(output_path, "wb") as f:
-                    f.write(mp3_bytes)
-            else:
-                ogg_bytes = await asyncio.to_thread(_ffmpeg_transcode, mp3_bytes, "mp3", "ogg", 48000, 1)
-                with open(output_path, "wb") as f:
-                    f.write(ogg_bytes)
-            return output_path
-        raise edge_err
+    ext = os.path.splitext(output_path)[1].lower().lstrip(".") or "ogg"
+    out_fmt = "mp3" if ext == "mp3" else "ogg"
+    transcoded = await asyncio.to_thread(
+        _ffmpeg_transcode, payload, input_fmt, out_fmt, 48000, 1, audio_filter=audio_filter
+    )
+    with open(output_path, "wb") as f:
+        f.write(transcoded)
+    return output_path
 
 def send_telegram_voice_sync(text: str, caption: str = None, chat_id: str = TELEGRAM_USER_ID, token: str = TELEGRAM_BOT_TOKEN) -> bool:
     """Synchronously generates and uploads a voice note directly to Telegram."""
@@ -280,8 +440,8 @@ async def synthesize_pcm_bytes(
     channels: int = 1,
 ) -> bytes:
     """
-    Synthesizes speech via 3-tier fallback (edge-tts -> Google TTS HTTPS -> espeak-ng)
-    and decodes audio into raw s16le PCM bytes using ffmpeg.
+    Synthesizes speech via 4-tier male JARVIS fallback (edge-tts -> piper-tts ->
+    pitch/volume-shaped Google TTS -> espeak-ng) and decodes audio into s16le PCM.
     """
     is_ar = is_arabic(text)
     if voice == "auto":
@@ -291,35 +451,15 @@ async def synthesize_pcm_bytes(
     if not clean_text:
         return b""
 
-    payload = b""
-    input_fmt = "mp3"
-    edge_err: Exception | None = None
-
-    try:
-        payload = await _synthesize_edge_mp3(clean_text, voice, is_ar)
-    except Exception as exc:
-        edge_err = exc
-
-    if not payload:
-        try:
-            payload = await asyncio.to_thread(_synthesize_google_tts_mp3_sync, clean_text, is_ar)
-            input_fmt = "mp3"
-        except Exception:
-            payload = b""
-
-    if not payload:
-        try:
-            payload = await asyncio.to_thread(_synthesize_espeak_wav_sync, clean_text, is_ar)
-            input_fmt = "wav"
-        except Exception:
-            payload = b""
-
+    payload, input_fmt, audio_filter, edge_err = await _synthesize_speech_payload_async(clean_text, voice, is_ar)
     if not payload:
         if edge_err is not None:
             raise edge_err
         return b""
 
-    return await asyncio.to_thread(_ffmpeg_transcode, payload, input_fmt, "s16le", sample_rate, channels)
+    return await asyncio.to_thread(
+        _ffmpeg_transcode, payload, input_fmt, "s16le", sample_rate, channels, audio_filter=audio_filter
+    )
 
 
 async def synthesize_pcm_frames(

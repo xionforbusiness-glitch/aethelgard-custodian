@@ -2235,7 +2235,9 @@ class TestTier6JarvisV2(unittest.TestCase):
         prev_block = voice_engine._EDGE_TTS_BLOCKED_UNTIL
         try:
             voice_engine._EDGE_TTS_BLOCKED_UNTIL = 0.0
-            with patch.object(voice_engine.edge_tts, "Communicate", _Fail403Communicate), \
+            with patch.dict(os.environ, {"AETHELGARD_NO_AUTO_VOICE_DOWNLOAD": "1"}), \
+                 patch.object(voice_engine.edge_tts, "Communicate", _Fail403Communicate), \
+                 patch.object(voice_engine, "_synthesize_piper_wav_sync", return_value=b""), \
                  patch.object(voice_engine, "_synthesize_google_tts_mp3_sync", return_value=b"FAKE_GOOGLE_MP3") as gmock, \
                  patch("subprocess.run", return_value=fake_proc):
                 pcm = asyncio.run(voice_engine.synthesize_pcm_bytes("Good evening Omar."))
@@ -2571,6 +2573,115 @@ class TestTier6JarvisV2(unittest.TestCase):
                     self.assertTrue(transcript_files)
 
         asyncio.run(_verify_voice_upgrade())
+
+    def test_67_jarvis_voice_tier_fallback_piper_and_calm_filter(self):
+        """Ensure Edge-TTS >=7.3.1 auto-upgrade, Piper British Male backup, and male/calm Google fallback shaping."""
+        import asyncio
+        import importlib.metadata
+        import subprocess
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        import run
+        import voice_engine
+
+        req_text = (Path(__file__).resolve().parent.parent / "requirements.txt").read_text(encoding="utf-8")
+        self.assertIn("edge-tts>=7.3.1", req_text)
+        self.assertIn("piper-tts>=1.3.0", req_text)
+        self.assertEqual(voice_engine.VOICE_ENGLISH, "en-GB-RyanNeural")
+        self.assertEqual(voice_engine.PIPER_VOICE_ENGLISH, "en_GB-alan-medium")
+
+        class _Fail403Communicate:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def stream(self):
+                raise RuntimeError("403, message='Invalid response status'")
+                yield  # pragma: no cover
+
+        captured_cmds = []
+
+        def _fake_subprocess(cmd, **kwargs):
+            captured_cmds.append(cmd)
+            return MagicMock(returncode=0, stdout=b"\x01\x00" * 480, stderr=b"")
+
+        prev_block = voice_engine._EDGE_TTS_BLOCKED_UNTIL
+        prev_cache = dict(voice_engine._PIPER_VOICE_CACHE)
+        try:
+            # 1. Edge 403 -> Piper British Male Tier 2 (never reaches Google female TTS)
+            voice_engine._EDGE_TTS_BLOCKED_UNTIL = 0.0
+            with patch.dict(os.environ, {"AETHELGARD_NO_AUTO_VOICE_DOWNLOAD": "1"}), \
+                 patch.object(voice_engine.edge_tts, "Communicate", _Fail403Communicate), \
+                 patch.object(voice_engine, "_synthesize_piper_wav_sync", return_value=b"RIFF_PIPER_WAV") as pmock, \
+                 patch.object(voice_engine, "_synthesize_google_tts_mp3_sync") as gmock, \
+                 patch("subprocess.run", side_effect=_fake_subprocess):
+                pcm = asyncio.run(voice_engine.synthesize_pcm_bytes("Good evening Omar."))
+            self.assertEqual(pcm, b"\x01\x00" * 480)
+            pmock.assert_called_once()
+            gmock.assert_not_called()
+            self.assertIn("-af", captured_cmds[-1])
+            self.assertEqual(captured_cmds[-1][captured_cmds[-1].index("-af") + 1], "volume=0.80")
+
+            # 2. If Piper is empty too, Google TTS Tier 3 shapes pitch down + reduces volume
+            voice_engine._EDGE_TTS_BLOCKED_UNTIL = 0.0
+            captured_cmds.clear()
+            with patch.dict(os.environ, {"AETHELGARD_NO_AUTO_VOICE_DOWNLOAD": "1"}), \
+                 patch.object(voice_engine.edge_tts, "Communicate", _Fail403Communicate), \
+                 patch.object(voice_engine, "_synthesize_piper_wav_sync", return_value=b""), \
+                 patch.object(voice_engine, "_synthesize_google_tts_mp3_sync", return_value=b"FAKE_GOOGLE_MP3"), \
+                 patch("subprocess.run", side_effect=_fake_subprocess):
+                pcm = asyncio.run(voice_engine.synthesize_pcm_bytes("Good evening Omar."))
+            self.assertEqual(pcm, b"\x01\x00" * 480)
+            af_val = captured_cmds[-1][captured_cmds[-1].index("-af") + 1]
+            self.assertIn("asetrate=48000*0.85", af_val)
+            self.assertIn("volume=0.62", af_val)
+
+            # 3. Direct Piper synthesis loads cached ONNX model and emits RIFF WAVE bytes
+            with tempfile.TemporaryDirectory() as tmp:
+                vdir = Path(tmp) / "voices"
+                vdir.mkdir(parents=True, exist_ok=True)
+                (vdir / "en_GB-alan-medium.onnx").write_bytes(b"FAKE_ONNX")
+                (vdir / "en_GB-alan-medium.onnx.json").write_text("{}", encoding="utf-8")
+
+                class _FakePiperVoice:
+                    @staticmethod
+                    def load(model_path, config_path=None, use_cuda=False):
+                        return _FakePiperVoice()
+
+                    def synthesize_wav(self, text, wf):
+                        wf.setframerate(22050)
+                        wf.setsampwidth(2)
+                        wf.setnchannels(1)
+                        wf.writeframes(b"\x01\x00" * 100)
+
+                voice_engine._PIPER_VOICE_CACHE.clear()
+                with patch.dict(os.environ, {"AETHELGARD_VOICES_DIR": str(vdir)}), \
+                     patch("piper.voice.PiperVoice", _FakePiperVoice):
+                    wav_out = voice_engine._synthesize_piper_wav_sync("Systems online.", is_ar=False)
+                self.assertTrue(wav_out.startswith(b"RIFF"))
+                self.assertIn(b"WAVE", wav_out[:16])
+                self.assertIn("en_GB-alan-medium", voice_engine._PIPER_VOICE_CACHE)
+
+            # 4. run._ensure_jarvis_tts_packages upgrades old edge-tts (<7.3.1)
+            pip_calls = []
+
+            def _fake_meta_ver(name):
+                return "7.2.8" if name == "edge-tts" else "1.8.0"
+
+            def _fake_pip_run(cmd, **kwargs):
+                pip_calls.append(cmd)
+                return subprocess.CompletedProcess(cmd, 0)
+
+            with patch.object(importlib.metadata, "version", side_effect=_fake_meta_ver), \
+                 patch.object(run.subprocess, "run", side_effect=_fake_pip_run):
+                run._ensure_jarvis_tts_packages()
+
+            self.assertTrue(any("edge-tts>=7.3.1" in " ".join(c) for c in pip_calls))
+        finally:
+            voice_engine._EDGE_TTS_BLOCKED_UNTIL = prev_block
+            voice_engine._PIPER_VOICE_CACHE.clear()
+            voice_engine._PIPER_VOICE_CACHE.update(prev_cache)
 
 
 if __name__ == "__main__":

@@ -1145,6 +1145,44 @@ _BACKGROUND_WORKERS_STARTED = False
 _BACKGROUND_WORKERS_LOCK = threading.Lock()
 
 
+def _ensure_jarvis_tts_packages() -> None:
+    """Auto-upgrades edge-tts>=7.3.1 (fixes Bing 403 Sec-MS-GEC) and ensures piper-tts backup."""
+    import importlib
+    import importlib.metadata
+
+    def _ver_tuple(raw: str) -> tuple[int, ...]:
+        nums = [int(p) for p in re.findall(r"\d+", raw or "")]
+        return tuple(nums[:3]) if nums else (0,)
+
+    try:
+        edge_ver = importlib.metadata.version("edge-tts")
+    except Exception:
+        edge_ver = "0.0.0"
+
+    if _ver_tuple(edge_ver) < (7, 3, 1):
+        print(f"🎙️ Upgrading edge-tts ({edge_ver} -> >=7.3.1) for British JARVIS voice...", flush=True)
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-U", "-q", "edge-tts>=7.3.1"],
+            timeout=120,
+            check=False,
+        )
+        if "edge_tts" in sys.modules:
+            try:
+                importlib.reload(sys.modules["edge_tts"])
+            except Exception:
+                pass
+
+    try:
+        importlib.metadata.version("piper-tts")
+    except Exception:
+        print("🎙️ Installing piper-tts British Male neural backup...", flush=True)
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-q", "piper-tts>=1.3.0"],
+            timeout=120,
+            check=False,
+        )
+
+
 def _start_voice_and_scheduler_once() -> None:
     """Starts Proactive Scheduler, Telegram 1-on-1 Caller, and Live Web Bridge once per process."""
     global _BACKGROUND_WORKERS_STARTED
@@ -1154,6 +1192,10 @@ def _start_voice_and_scheduler_once() -> None:
         _BACKGROUND_WORKERS_STARTED = True
 
     _export_runtime_env()
+    try:
+        _ensure_jarvis_tts_packages()
+    except Exception as tte:
+        print(f"⚠ JARVIS TTS package check notice: {tte}", flush=True)
 
     # ── Launch Proactive Scheduler & Second Brain Librarian ──────────────
     try:
@@ -1181,6 +1223,13 @@ def _start_voice_and_scheduler_once() -> None:
         print("📱 Native Telegram 1-on-1 Voice Caller thread initialized (RPC :20132)!", flush=True)
     except Exception as tce:
         print(f"⚠ Telegram Voice Caller startup notice: {tce}", flush=True)
+
+    # ── Pre-warm Offline British Male Neural Voice Backup (Zero Idle RAM) ───
+    try:
+        import voice_engine
+        voice_engine._kickoff_piper_prefetch_async(voice_engine.PIPER_VOICE_ENGLISH)
+    except Exception as pfe:
+        print(f"⚠ Piper backup prefetch notice: {pfe}", flush=True)
 
     # ── Launch Live Voice Call Web Bridge ──────────────────────────────
     try:
