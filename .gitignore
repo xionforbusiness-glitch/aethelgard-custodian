@@ -11,3 +11,5 @@ vault/
 staging/*
 !staging/.gitkeep
 conversation_state.json
+tests/recordings/*.wav
+tests/recordings/*.mp3
