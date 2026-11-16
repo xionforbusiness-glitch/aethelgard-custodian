@@ -942,6 +942,9 @@ def auto_sync_worker():
             # First, pull any new commits from local desktop / GitHub
             _ensure_repo_remote_auth(VAULT_DIR)
             _abort_stale_git_rebase(VAULT_DIR)
+            # Commit any local VM edits cleanly before pulling so git pull --rebase never stalls on unstaged files
+            subprocess.run(["git", "-C", VAULT_DIR, "add", "."], check=False)
+            pre_chk = subprocess.run(["git", "-C", VAULT_DIR, "commit", "-m", "chore: pre-sync vault state"], capture_output=True, text=True)
             pull_res = subprocess.run(["git", "-C", VAULT_DIR, "pull", "--rebase", "origin", VAULT_BRANCH], check=False)
             if pull_res.returncode != 0:
                 _abort_stale_git_rebase(VAULT_DIR)
@@ -1250,6 +1253,8 @@ def _start_voice_and_scheduler_once() -> None:
         print(f"⚠ Mission recovery notice: {me}", flush=True)
 
     def _supervise_whatsapp_bridge() -> None:
+        if os.environ.get("AETHELGARD_DISABLE_WA_BRIDGE") == "1":
+            return
         import shutil
         node_bin = shutil.which("node")
         bridge_dir = Path(SCRIPT_DIR) / "whatsapp_bridge"

@@ -261,7 +261,7 @@ class AudioTurnDetector:
         frame_ms: int = 20,
         barge_in_ms: int = 280,
         min_speech_ms: int = 220,
-        silence_end_ms: int = 350,
+        silence_end_ms: int = 450,
         max_turn_ms: int = 18000,
     ):
         self.speech_rms_threshold = float(speech_rms_threshold)
@@ -2316,10 +2316,15 @@ class TelegramP2PCallManager:
             self._log_event(f"Live call TTS error: {type(exc).__name__}: {exc}")
             traceback.print_exc()
 
-    async def hangup_call(self, peer_id: int) -> bool:
+    async def hangup_call(self, peer_id: int, expected_call_id: Optional[int] = None) -> bool:
         """Cleanly terminates an active Telegram call via DiscardCallRequest and flushes logs."""
         ctx = self.active_calls.get(peer_id)
         if not ctx:
+            return False
+        if expected_call_id is not None and ctx.get("tg_call_id") != expected_call_id:
+            self._log_event(
+                f"Ignored stale hangup_call for id={expected_call_id} (active id={ctx.get('tg_call_id')})"
+            )
             return False
         input_call = ctx.get("input_call")
         duration = max(1, int(time.monotonic() - float(ctx.get("started_mono") or time.monotonic())))
@@ -2364,7 +2369,15 @@ class TelegramP2PCallManager:
         ctx = self.active_calls.get(peer_id)
         if not ctx:
             return
+        call_ctx_ref = ctx
+        call_id_at_start = ctx.get("tg_call_id")
+        captured_mono = time.monotonic()
         async with ctx["turn_lock"]:
+            if self.active_calls.get(peer_id) is not call_ctx_ref:
+                return
+            if (time.monotonic() - captured_mono) > 12.0:
+                self._log_event(f"Dropped stale queued utterance ({time.monotonic() - captured_mono:.1f}s old) peer={peer_id}")
+                return
             wav_bytes = pcm16_to_wav_bytes(pcm_16k, sample_rate=ASR_SAMPLE_RATE)
             brain: VoiceBrainSession = ctx["brain"]
             backfill_task: Optional[asyncio.Task] = None
@@ -2372,6 +2385,7 @@ class TelegramP2PCallManager:
             streamed_any = [False]
             earcon_sent = [False]
             gen_start = ctx.get("generation", 0)
+            use_sentence_stream = os.environ.get("AETHELGARD_VOICE_STREAM", "0") == "1"
             prev_text = ""
             if brain.turns:
                 prev_text = str(brain.turns[-1].get("aethelgard") or brain.turns[-1].get("omar") or "")
@@ -2463,10 +2477,14 @@ class TelegramP2PCallManager:
                         brain.process_user_turn,
                         wav_bytes=wav_bytes,
                         on_tool_start=_on_tool_start,
-                        on_speak_chunk=_on_speak_chunk,
+                        on_speak_chunk=_on_speak_chunk if use_sentence_stream else None,
                     )
                 else:
                     reply = await asyncio.to_thread(brain.process_user_turn, wav_bytes=wav_bytes)
+                if self.active_calls.get(peer_id) is not call_ctx_ref:
+                    await speech_q.put(None)
+                    await speaker_task
+                    return
                 self._log_event(f"VoiceBrain reply peer={peer_id}: {str(reply)[:90]}")
                 turn_idx = max(0, len(brain.turns) - 1)
                 should_backfill = True
@@ -2476,12 +2494,17 @@ class TelegramP2PCallManager:
                 reply = "Sorry Omar, I hit a quick reasoning hiccup — say that once more."
                 streamed_any[0] = False
 
+            if self.active_calls.get(peer_id) is not call_ctx_ref:
+                await speech_q.put(None)
+                await speaker_task
+                return
+
             if reply and not streamed_any[0]:
                 await speech_q.put((reply, None))
             await speech_q.put(None)
             await speaker_task
 
-            if should_backfill:
+            if should_backfill and self.active_calls.get(peer_id) is call_ctx_ref:
                 async def _backfill_transcript() -> None:
                     try:
                         spoken = await asyncio.to_thread(brain.transcribe_user_audio_clip, wav_bytes)
@@ -2493,10 +2516,10 @@ class TelegramP2PCallManager:
 
                 backfill_task = self.loop.create_task(_backfill_transcript())
 
-            if brain.end_call_requested:
+            if brain.end_call_requested and self.active_calls.get(peer_id) is call_ctx_ref:
                 self._log_event(f"End-call requested by VoiceBrain peer={peer_id}; draining audio before hangup")
                 wait_deadline = self.loop.time() + 8.0
-                while peer_id in self.active_calls and self.loop.time() < wait_deadline:
+                while self.active_calls.get(peer_id) is call_ctx_ref and self.loop.time() < wait_deadline:
                     out_q = ctx.get("out_queue")
                     if (out_q is None or out_q.empty()) and not ctx.get("ai_speaking"):
                         break
@@ -2507,7 +2530,8 @@ class TelegramP2PCallManager:
                     except Exception:
                         pass
                 await asyncio.sleep(0.35)
-                await self.hangup_call(peer_id)
+                if self.active_calls.get(peer_id) is call_ctx_ref:
+                    await self.hangup_call(peer_id)
 
     async def _audio_sender_loop(self, peer_id: int, ctx: Dict[str, Any]) -> None:
         frame_step = FRAME_MS / 1000.0
@@ -2537,8 +2561,8 @@ class TelegramP2PCallManager:
                 delay = next_tick - now
                 if delay > 0:
                     await asyncio.sleep(delay)
-                elif delay < -0.025:
-                    # Resync clock immediately on >25ms VM stall to prevent bursty back-to-back frame flooding
+                elif (now - next_tick) > 0.05:
+                    # Only resync clock after real stalls (>50ms); keep 1-3ms asyncio jitter compensated for smooth 100fps TX
                     next_tick = now
         except asyncio.CancelledError:
             pass

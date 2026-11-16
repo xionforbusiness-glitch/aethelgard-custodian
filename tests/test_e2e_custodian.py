@@ -2747,7 +2747,7 @@ class TestTier7AutonomyAndStreaming(unittest.TestCase):
         import telegram_voice_caller
 
         detector = telegram_voice_caller.AudioTurnDetector()
-        self.assertEqual(detector.silence_end_ms, 350)
+        self.assertEqual(detector.silence_end_ms, 450)
         # Echo suppression during AI playback: mild RMS (250) must NOT barge-in or chop speech
         echo_10ms = array.array("h", [250] * 480).tobytes()
         for _ in range(40):
@@ -3378,10 +3378,14 @@ class TestTier7AutonomyAndStreaming(unittest.TestCase):
                     mgr.ready = True
                     mgr.client = object()
                     mgr.ntg = object()
-                    mgr.active_calls[1021125594] = {"peer_id": 1021125594}
+                    mgr.active_calls[1021125594] = {"peer_id": 1021125594, "tg_call_id": 222}
                     res_guard = await mgr.initiate_outgoing_call("Redial", target_user_id=1021125594)
                     self.assertFalse(res_guard["success"])
                     self.assertTrue(res_guard.get("call_active"))
+                    self.assertIn(1021125594, mgr.active_calls)
+                    # Zombie hangup targeting old call ID 111 must NOT terminate new call ID 222
+                    zombie_hang = await mgr.hangup_call(1021125594, expected_call_id=111)
+                    self.assertFalse(zombie_hang)
                     self.assertIn(1021125594, mgr.active_calls)
 
                 asyncio.run(_check_no_drop())
