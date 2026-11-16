@@ -120,6 +120,8 @@ MODEL_ALIAS_MAP = {
 DEFAULT_FAILOVER_MODELS = [
     "gemini-3.8-flash-low",
     "gemini-3.8-flash-medium",
+    "gemini-2.5-flash",
+    "gemini-3.5-flash-lite",
     "gemini-3.8-flash-tiered",
     "gemini-3.8-flash-high",
     "claude-sonnet-4-6",

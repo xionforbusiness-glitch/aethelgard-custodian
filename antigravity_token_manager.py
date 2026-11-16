@@ -118,21 +118,26 @@ def discover_live_antigravity_models(access_token: str | None = None) -> list[st
     if not token:
         return []
 
-    url = "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels"
+    endpoints = [
+        "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
+        "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
+    ]
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {token}",
         "User-Agent": "antigravity/ide/2.21.1 darwin/arm64"
     }
-    try:
-        req = urllib.request.Request(url, data=b"{}", headers=headers)
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            models = list(data.get("models", {}).keys())
-            return models
-    except Exception as e:
-        print(f"[Token Maintainer] ⚠ Live model catalog probe notice: {e}", flush=True)
-        return []
+    for url in endpoints:
+        try:
+            req = urllib.request.Request(url, data=b"{}", headers=headers)
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                models = list(data.get("models", {}).keys())
+                if models:
+                    return models
+        except Exception:
+            continue
+    return []
 
 
 def find_omniroute_root() -> str | None:
