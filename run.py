@@ -619,6 +619,13 @@ def _abort_stale_git_rebase(repo_dir: str) -> None:
             stale = os.path.join(git_dir, name)
             if os.path.exists(stale):
                 shutil.rmtree(stale, ignore_errors=True)
+    try:
+        chk = subprocess.run(["git", "-C", repo_dir, "diff", "--name-only", "--diff-filter=U"], capture_output=True, text=True, timeout=5)
+        if chk.stdout.strip():
+            subprocess.run(["git", "-C", repo_dir, "checkout", "--ours", "."], check=False, timeout=5)
+            subprocess.run(["git", "-C", repo_dir, "add", "."], check=False, timeout=5)
+    except Exception:
+        pass
 
 
 def init_vault():

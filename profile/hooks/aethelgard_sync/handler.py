@@ -55,6 +55,25 @@ def handle(event_type, context):
                 print(f"[Hook] 📊 Explicit Excel request '{msg}'. Delivering document to Telegram...", flush=True)
                 shift_tracker.send_excel_to_telegram(chat_id=chat_id, token=token, vault_dir=vault_dir)
 
+            # 2b. Remote Supervisor Service /restart & /reboot Interception
+            if msg in ("/restart", "/reboot"):
+                try:
+                    restart_path = "/tmp/hermes_restart_requested" if os.name != "nt" else os.path.join(script_dir, "restart.trigger")
+                    with open(restart_path, "w", encoding="utf-8") as rf:
+                        rf.write("manual_restart_requested")
+                    from proactive_scheduler import send_telegram
+                    send_telegram("🔄 *Restarting Aethelgard Custodian...*\nPulling latest code, clearing stale sessions, and reloading 24/7 background service in 3 seconds.", chat_id=chat_id, token=token)
+                except Exception as r_err:
+                    print(f"⚠ [Hook /restart Notice] {r_err}", flush=True)
+
+            # 2c. Session Reset Guide Interception
+            if msg in ("/clear", "/wipe"):
+                try:
+                    from proactive_scheduler import send_telegram
+                    send_telegram("💡 *Session Reset:* Send `/new` or `/reset` directly in chat to clear all conversational context and start with zero token overhead.", chat_id=chat_id, token=token)
+                except Exception:
+                    pass
+
             # 3. Omnichannel /connect Wizard Interception
             if msg == "/connect" or msg.startswith("/connect "):
                 try:

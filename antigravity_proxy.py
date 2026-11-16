@@ -71,7 +71,10 @@ MODEL_ALIAS_MAP = {
     "gemini-3.7-flash-low": "gemini-3.8-flash-low",
     "gemini-3.7-flash-medium": "gemini-3.8-flash-medium",
     "gemini-3.7-flash-high": "gemini-3.8-flash-high",
-    "gemini-3.7-flash-tiered": "gemini-3.8-flash-tiered",
+    "gemini-3.7-flash-tiered": "gemini-3.8-flash-medium",
+    "gemini-3.8-flash-tiered": "gemini-3.8-flash-medium",
+    "flash-tiered": "gemini-3.8-flash-medium",
+    "tiered": "gemini-3.8-flash-medium",
     # Short aliases
     "flash": "gemini-3.8-flash-low",
     "flash-low": "gemini-3.8-flash-low",
@@ -122,7 +125,6 @@ DEFAULT_FAILOVER_MODELS = [
     "gemini-3.8-flash-medium",
     "gemini-2.5-flash",
     "gemini-3.5-flash-lite",
-    "gemini-3.8-flash-tiered",
     "gemini-3.8-flash-high",
     "claude-sonnet-4-6",
 ]
@@ -436,6 +438,31 @@ def build_antigravity_envelope(
     raw_messages = body.get("messages") or []
     is_claude = "claude" in upstream_model.lower()
     is_gpt_oss = "gpt-oss" in upstream_model.lower()
+
+    # Dynamic sliding-window context compression:
+    # If the session has accumulated > 24 conversation turns, compress old turns to prevent TPM quota exhaustion
+    non_system = [m for m in raw_messages if isinstance(m, dict) and m.get("role") not in ("system", "developer")]
+    if len(non_system) > 24:
+        cut_idx = max(2, len(non_system) - 20)
+        while cut_idx < len(non_system) and non_system[cut_idx].get("role") != "user":
+            cut_idx += 1
+        if cut_idx < len(non_system):
+            pruned_non_sys = (
+                non_system[:2]
+                + [
+                    {
+                        "role": "user",
+                        "content": "[System Note: Prior conversation history compacted to maintain sub-second response latency and quota headroom.]",
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "Understood. Maintaining active context and proceeding with latest queries.",
+                    },
+                ]
+                + non_system[cut_idx:]
+            )
+            system_msgs = [m for m in raw_messages if isinstance(m, dict) and m.get("role") in ("system", "developer")]
+            raw_messages = system_msgs + pruned_non_sys
 
     # Map tool_call_id -> function name across history
     tc_id_to_name = {}
