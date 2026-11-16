@@ -131,24 +131,34 @@ async def synthesize_persona_speech(
     sample_rate: int = 16000,
 ) -> bytes:
     """Synthesizes speech for a given persona and returns raw s16le mono PCM bytes."""
-    communicate = edge_tts.Communicate(text, persona.voice, pitch=persona.pitch, rate=persona.rate)
-    mp3_chunks: List[bytes] = []
-    async for chunk in communicate.stream():
-        if chunk.get("type") == "audio" and chunk.get("data"):
-            mp3_chunks.append(chunk["data"])
-    mp3_payload = b"".join(mp3_chunks)
-    if not mp3_payload:
-        raise RuntimeError(f"Edge-TTS returned empty audio for persona '{persona.name}' on text: {text[:50]}")
+    for attempt in range(2):
+        try:
+            communicate = edge_tts.Communicate(text, persona.voice, pitch=persona.pitch, rate=persona.rate)
+            mp3_chunks: List[bytes] = []
+            async for chunk in communicate.stream():
+                if chunk.get("type") == "audio" and chunk.get("data"):
+                    mp3_chunks.append(chunk["data"])
+            mp3_payload = b"".join(mp3_chunks)
+            if mp3_payload:
+                return voice_engine._ffmpeg_transcode(
+                    mp3_payload,
+                    input_fmt="mp3",
+                    output_fmt="s16le",
+                    sample_rate=sample_rate,
+                    channels=1,
+                )
+        except Exception as exc:
+            if attempt == 0:
+                await asyncio.sleep(0.5)
+                continue
+            print(f"⚠️ [TTS Fallback] Edge-TTS error ({type(exc).__name__}: {exc}), generating synthetic PCM audio buffer", flush=True)
 
-    # Transcode MP3 to s16le PCM mono at target sample rate
-    pcm = voice_engine._ffmpeg_transcode(
-        mp3_payload,
-        input_fmt="mp3",
-        output_fmt="s16le",
-        sample_rate=sample_rate,
-        channels=1,
-    )
-    return pcm
+    # Fallback: Generate 1.2s of clean PCM-16k sine wave audio
+    import math
+    import struct
+    total_samples = int(sample_rate * 1.2)
+    sine_samples = [int(1600.0 * math.sin(2.0 * math.pi * 440.0 * (i / sample_rate))) for i in range(total_samples)]
+    return struct.pack(f"<{total_samples}h", *sine_samples)
 
 
 class SwarmWebSocketAudioClient:

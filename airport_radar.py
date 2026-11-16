@@ -8,7 +8,7 @@ def fetch_damascus_airport_metar():
     url = f"https://aviationweather.gov/api/data/metar?ids={ICAO_DAMASCUS}&format=json"
     req = urllib.request.Request(url, headers={"User-Agent": "AethelgardAirportRadar/1.0"})
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=3.0) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             if data and isinstance(data, list) and len(data) > 0:
                 return data[0]

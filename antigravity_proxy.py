@@ -39,11 +39,10 @@ ANTIGRAVITY_PROJECT = os.environ.get("ANTIGRAVITY_PROJECT", "aicode-consumers")
 
 UPSTREAM_URLS = [
     "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
-    "https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
 ]
 
-UPSTREAM_TIMEOUT = int(os.environ.get("ANTIGRAVITY_UPSTREAM_TIMEOUT", "45"))
-MAX_FAILOVER_BUDGET_SECONDS = int(os.environ.get("ANTIGRAVITY_FAILOVER_BUDGET", "90"))
+UPSTREAM_TIMEOUT = int(os.environ.get("ANTIGRAVITY_UPSTREAM_TIMEOUT", "12"))
+MAX_FAILOVER_BUDGET_SECONDS = int(os.environ.get("ANTIGRAVITY_FAILOVER_BUDGET", "30"))
 MAX_FAILOVER_MODELS = int(os.environ.get("ANTIGRAVITY_MAX_FAILOVER_MODELS", "6"))
 
 
@@ -113,7 +112,6 @@ MODEL_ALIAS_MAP = {
 DEFAULT_FAILOVER_MODELS = [
     "gemini-3.8-flash-low",
     "gemini-3.8-flash-medium",
-    "claude-sonnet-5-5-low",
     "gemini-3.8-flash-tiered",
     "gemini-3.8-flash-high",
     "claude-sonnet-5-5-high",
@@ -148,6 +146,12 @@ _THOUGHT_LEAK_SUBSTRINGS = (
     "the python script will be written and executed",
     "will be written and executed via a code execution tool",
     "thinking process:",
+    "the caller claims",
+    "the caller is trying",
+    "they are trying an extreme",
+    "safety protocols and authorization rules",
+    "respond firmly, professionally",
+    "internal analysis:",
 )
 _DEPRECATED_MODEL_BANNER_RE = re.compile(
     r"\bis no longer available\b.*\b(?:use|upgrade|switch|gemini|deprecated|not available)\b",
@@ -438,14 +442,8 @@ def build_antigravity_envelope(
                     "parts": [{"text": f"[Tool Result ({fn_name})]: {resp_txt}"}]
                 })
 
-    # Relocate client system instructions into first user message (prevents Antigravity 429 on large system prompts)
-    if system_chunks:
-        combined_sys = "\n\n".join(system_chunks)
-        sys_part = {"text": combined_sys}
-        if contents and contents[0]["role"] == "user":
-            contents[0]["parts"].insert(0, sys_part)
-        else:
-            contents.insert(0, {"role": "user", "parts": [sys_part]})
+    # System instruction handling: use caller's system prompt if provided, else default
+    effective_sys = "\n\n".join(system_chunks) if system_chunks else ANTIGRAVITY_DEFAULT_SYSTEM
 
     if not contents:
         contents = [{"role": "user", "parts": [{"text": "Hello"}]}]
@@ -503,7 +501,7 @@ def build_antigravity_envelope(
         "contents": merged_contents,
         "systemInstruction": {
             "role": "system",
-            "parts": [{"text": ANTIGRAVITY_DEFAULT_SYSTEM}]
+            "parts": [{"text": effective_sys}]
         },
         "generationConfig": gen_cfg,
     }
@@ -561,28 +559,42 @@ def _iter_sse_lines(resp, attempt_deadline: float):
 
 
 def _split_inline_think_blocks(text: str, reasoning: str) -> tuple[str, str]:
-    """Move <think>...</think> or truncated trailing <think> segments out of visible text."""
-    if not text or "<think" not in text.lower():
+    """Move <think>...</think>, plain-text scratchpad headers, or truncated trailing <think> segments out of visible text."""
+    if not text:
         return text, reasoning
 
-    extracted = _THINK_BLOCK_RE.findall(text)
-    if extracted:
-        cleaned = _THINK_BLOCK_RE.sub("", text).strip()
-        extra_reasoning = "\n".join(
-            part for part in (
-                re.sub(r"</?think>", "", blk, flags=re.IGNORECASE).strip()
-                for blk in extracted
-            ) if part
-        )
-        merged_reasoning = "\n".join(p for p in (reasoning, extra_reasoning) if p)
-        return cleaned, merged_reasoning
+    if "<think" in text.lower():
+        extracted = _THINK_BLOCK_RE.findall(text)
+        if extracted:
+            cleaned = _THINK_BLOCK_RE.sub("", text).strip()
+            extra_reasoning = "\n".join(
+                part for part in (
+                    re.sub(r"</?think>", "", blk, flags=re.IGNORECASE).strip()
+                    for blk in extracted
+                ) if part
+            )
+            merged_reasoning = "\n".join(p for p in (reasoning, extra_reasoning) if p)
+            return cleaned, merged_reasoning
 
-    idx = text.lower().find("<think>")
-    if idx != -1:
-        before = text[:idx].strip()
-        partial_thought = text[idx + 7:].strip()
-        merged_reasoning = "\n".join(p for p in (reasoning, partial_thought) if p)
-        return before, merged_reasoning
+        idx = text.lower().find("<think>")
+        if idx != -1:
+            before = text[:idx].strip()
+            partial_thought = text[idx + 7:].strip()
+            merged_reasoning = "\n".join(p for p in (reasoning, partial_thought) if p)
+            return before, merged_reasoning
+
+    # Detect and isolate plain-text scratchpad reasoning (e.g. "The caller claims...", "Safety protocols...", "Respond firmly...: <answer>")
+    meta_m = re.search(
+        r"(?:(?:Respond|Response)(?:\s+\w+){0,5}\s*:\s*|Spoken response:\s*|Final response:\s*)([A-Z\u0600-\u06FF].*)",
+        text,
+        re.DOTALL | re.IGNORECASE,
+    )
+    if meta_m:
+        thought_part = text[:meta_m.start()].strip()
+        actual_reply = meta_m.group(1).strip()
+        if len(actual_reply) >= 15:
+            merged_reasoning = "\n".join(p for p in (reasoning, thought_part) if p)
+            return actual_reply, merged_reasoning
 
     return text, reasoning
 
@@ -745,12 +757,12 @@ def _validate_candidate_response(parsed: dict, candidate_model: str, has_tools: 
     if len(clean_text) < 400 and _DEPRECATED_MODEL_BANNER_RE.search(clean_text):
         return False, f"Deprecated model banner returned by {candidate_model}"
 
-    if has_tools:
-        lower_text = clean_text.lower()
-        if any(pat in lower_text for pat in _THOUGHT_LEAK_SUBSTRINGS):
-            return False, f"Thought/planning narration returned instead of tool execution on {candidate_model}"
-        if _PURE_DEFERRAL_ACK_RE.match(clean_text):
-            return False, f"Zero-action deferral stub returned without tool call on {candidate_model}"
+    lower_text = clean_text.lower()
+    if any(pat in lower_text for pat in _THOUGHT_LEAK_SUBSTRINGS):
+        return False, f"Thought/planning narration leaked into visible text on {candidate_model}"
+
+    if has_tools and _PURE_DEFERRAL_ACK_RE.match(clean_text):
+        return False, f"Zero-action deferral stub returned without tool call on {candidate_model}"
 
     return True, ""
 
@@ -859,11 +871,12 @@ def execute_antigravity_request(body: dict, requested_model: str) -> dict:
         if saw_400:
             schema_400_models.append(candidate_model)
             continue
-        # If the primary Gemini model stalled/leaked thinking, retry once with thinking disabled before advancing
+        # If the primary Gemini model leaked thinking, retry once with thinking disabled before advancing
         if (
             idx == 0
             and "gemini" in candidate_model.lower()
             and (total_deadline - time.monotonic()) > 15.0
+            and ("thought" in str(last_error).lower() or "thinking" in str(last_error).lower())
         ):
             retry_res, _ = _run_attempt(candidate_model, include_tools=has_tools, disable_thinking=True)
             if retry_res:
