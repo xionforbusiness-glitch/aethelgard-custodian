@@ -43,9 +43,9 @@ UPSTREAM_URLS = [
     "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
 ]
 
-UPSTREAM_TIMEOUT = int(os.environ.get("ANTIGRAVITY_UPSTREAM_TIMEOUT", "12"))
-MAX_FAILOVER_BUDGET_SECONDS = int(os.environ.get("ANTIGRAVITY_FAILOVER_BUDGET", "30"))
-MAX_FAILOVER_MODELS = int(os.environ.get("ANTIGRAVITY_MAX_FAILOVER_MODELS", "6"))
+UPSTREAM_TIMEOUT = int(os.environ.get("ANTIGRAVITY_UPSTREAM_TIMEOUT", "45"))
+MAX_FAILOVER_BUDGET_SECONDS = int(os.environ.get("ANTIGRAVITY_FAILOVER_BUDGET", "90"))
+MAX_FAILOVER_MODELS = int(os.environ.get("ANTIGRAVITY_MAX_FAILOVER_MODELS", "3"))
 
 
 ANTIGRAVITY_DEFAULT_SYSTEM = (
@@ -662,6 +662,7 @@ def _iter_sse_lines(resp, attempt_deadline: float):
             line_bytes = readline_fn()
             if not line_bytes:
                 break
+            attempt_deadline = max(attempt_deadline, time.monotonic() + 15.0)
             yield line_bytes if isinstance(line_bytes, str) else bytes(line_bytes).decode("utf-8", errors="replace")
         return
 
@@ -966,6 +967,8 @@ def execute_antigravity_request(body: dict, requested_model: str) -> dict:
                     saw_schema_400 = True
                     break
                 if he.code in (404, 429, 500, 502, 503, 504):
+                    if he.code == 429:
+                        time.sleep(1.5)
                     break
             except Exception as ex:
                 last_error = f"Exception on {candidate_model}: {ex}"

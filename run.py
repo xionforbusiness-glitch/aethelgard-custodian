@@ -612,13 +612,12 @@ def auto_update_self(allow_reexec: bool = False):
 # ── 2. Sync Aethelgard Obsidian Vault from GitHub ────────────────────────────
 def _abort_stale_git_rebase(repo_dir: str) -> None:
     """Aborts or clears leftover git rebase state directories before pull --rebase."""
+    subprocess.run(["git", "-C", repo_dir, "rebase", "--abort"], check=False, capture_output=True, timeout=10)
     git_dir = os.path.join(repo_dir, ".git")
     for name in ("rebase-merge", "rebase-apply"):
-        if os.path.exists(os.path.join(git_dir, name)):
-            subprocess.run(["git", "-C", repo_dir, "rebase", "--abort"], check=False, capture_output=True, timeout=10)
-            stale = os.path.join(git_dir, name)
-            if os.path.exists(stale):
-                shutil.rmtree(stale, ignore_errors=True)
+        stale = os.path.join(git_dir, name)
+        if os.path.exists(stale):
+            shutil.rmtree(stale, ignore_errors=True)
     try:
         chk = subprocess.run(["git", "-C", repo_dir, "diff", "--name-only", "--diff-filter=U"], capture_output=True, text=True, timeout=5)
         if chk.stdout.strip():
