@@ -280,6 +280,13 @@ def _load_seen_ids(sf_path: Path) -> List[str]:
     return []
 
 
+def _save_seen_ids(sf_path: Path, seen_ids: List[str]) -> None:
+    """Persists deduplicated processed message IDs bounded to 5000 entries."""
+    sf_path.parent.mkdir(parents=True, exist_ok=True)
+    bounded = list(seen_ids)[-5000:]
+    sf_path.write_text(json.dumps({"seen_ids": bounded}, indent=2), encoding="utf-8")
+
+
 def process_incoming_email(
     email_data: Dict[str, Any],
     state_file: Optional[str] = None,
@@ -311,10 +318,7 @@ def process_incoming_email(
         }
 
     seen_ids.append(msg_id)
-    # Keep state file bounded to most recent 5000 message IDs
-    if len(seen_ids) > 5000:
-        seen_ids = seen_ids[-5000:]
-    sf_path.write_text(json.dumps({"seen_ids": seen_ids}, indent=2), encoding="utf-8")
+    _save_seen_ids(sf_path, seen_ids)
 
     sender = str(email_data.get("sender") or "")
     subject = str(email_data.get("subject") or "(No Subject)")

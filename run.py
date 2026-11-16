@@ -18,6 +18,7 @@ import threading
 import subprocess
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from antigravity_token_manager import (
     sync_token_to_sqlite,
     start_token_maintainer_thread,

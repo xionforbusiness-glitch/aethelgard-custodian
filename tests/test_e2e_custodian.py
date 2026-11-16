@@ -3331,6 +3331,26 @@ class TestTier7AutonomyAndStreaming(unittest.TestCase):
                 self.assertEqual(len(urgent_calls), 1)
                 self.assertTrue(urgent_calls[0][1])  # urgent=True propagated to request_call_via_rpc_or_direct
 
+                # 4. VIP Inbox Triage multi-channel WhatsApp scan & deduplication + module import guards
+                import vip_inbox_triage
+                import run as run_mod
+                self.assertTrue(hasattr(proactive_scheduler, "threading"))
+                self.assertTrue(hasattr(async_callback_engine, "time"))
+                self.assertTrue(hasattr(run_mod, "Path"))
+                vip_alerts = []
+                sf_path = tmp_path / "vip_seen.json"
+                with patch("omnichannel_bridge.GoogleAdapter.get_status", return_value={"status": "needs_auth"}), \
+                     patch("omnichannel_bridge.WhatsAppAdapter.get_status", return_value={"status": "connected"}), \
+                     patch("omnichannel_bridge.WhatsAppAdapter.read_messages", return_value=[{"id": "wa_vip_1", "sender_name": "Etihad Recruiting", "text": "Etihad interview slot", "from_me": False}]), \
+                     patch("omnichannel_bridge.TelegramUserAdapter.get_status", return_value={"status": "needs_auth"}), \
+                     patch("omnichannel_bridge.LinkedInAdapter.get_status", return_value={"status": "needs_auth"}), \
+                     patch.object(proactive_scheduler, "send_telegram", side_effect=lambda m, **kw: vip_alerts.append(m) or True):
+                    first_poll = vip_inbox_triage.run_vip_triage_cycle(vault_dir=str(vault_dir), state_file=str(sf_path), send_alerts=True)
+                    second_poll = vip_inbox_triage.run_vip_triage_cycle(vault_dir=str(vault_dir), state_file=str(sf_path), send_alerts=True)
+                self.assertEqual(first_poll["extra_channel_vip"], 1)
+                self.assertEqual(second_poll["extra_channel_vip"], 0)  # Deduplicated cleanly via _save_seen_ids
+                self.assertEqual(len(vip_alerts), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
