@@ -53,11 +53,11 @@ if os.path.exists(ENV_FILE):
                 k, v = line.split("=", 1)
                 os.environ.setdefault(k.strip(), v.strip())
 
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_TOKEN_REDACTED")
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_USER_ID = os.environ.get("TELEGRAM_ALLOWED_USERS", "1021125594")
 
 GITHUB_USER = os.environ.get("GITHUB_USER", "xionforbusiness-glitch")
-_STALE_GITHUB_TOKENS = {"ghp_" + "gY0RVq7FifRJQgQVsu8fEsTsi5PV8e45VERo"}
+_STALE_GITHUB_TOKENS = set()
 
 
 def _resolve_github_token() -> str:
@@ -132,9 +132,9 @@ if os.name != "nt" and hasattr(os, "geteuid") and os.geteuid() != 0 and raw_vaul
     raw_vault = "~/vault"
 VAULT_DIR = os.path.abspath(os.path.expanduser(raw_vault))
 
-STORAGE_ENCRYPTION_KEY = os.environ.get("STORAGE_ENCRYPTION_KEY", "0000000000000000000000000000000000000000000000000000000000000000")
+STORAGE_ENCRYPTION_KEY = os.environ.get("STORAGE_ENCRYPTION_KEY", "")
 OMNIROUTE_PORT = os.environ.get("OMNIROUTE_PORT", "20128")
-OMNIROUTE_API_KEY = os.environ.get("OMNIROUTE_API_KEY", "sk-omniroute-redacted")
+OMNIROUTE_API_KEY = os.environ.get("OMNIROUTE_API_KEY", "")
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "")
 
 HERMES_PROFILE = "llm-wiki"

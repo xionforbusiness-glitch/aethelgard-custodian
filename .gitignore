@@ -2,6 +2,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.log
+.env
+.env.*
+!.env.example
 .env.local
 venv/
 env/
@@ -11,5 +14,12 @@ vault/
 staging/*
 !staging/.gitkeep
 conversation_state.json
-tests/recordings/*.wav
-tests/recordings/*.mp3
+tests/recordings/
+shift_attendance_tracker.json
+omniroute/omniroute_backup.json
+omniroute/storage.sqlite.gz
+omniroute/*.json
+omniroute/*.gz
+omniroute/*.sqlite
+state.db
+sessions.json

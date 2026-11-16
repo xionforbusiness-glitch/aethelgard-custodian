@@ -6,7 +6,7 @@ import datetime
 import urllib.request
 
 OMNIROUTE_PORT = os.environ.get("OMNIROUTE_PORT", "20128")
-OMNIROUTE_API_KEY = os.environ.get("OMNIROUTE_API_KEY", "sk-omniroute-redacted")
+OMNIROUTE_API_KEY = os.environ.get("OMNIROUTE_API_KEY", "")
 MODEL_NAME = os.environ.get("HERMES_MODEL", "antigravity/gemini-3.8-flash-high")
 
 DEFAULT_SYP_PER_USD = 14800.0

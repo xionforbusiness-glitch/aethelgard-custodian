@@ -317,7 +317,7 @@ def poll_gmail_verification(
 
 def _send_telegram_checkpoint_alert(text: str, screenshot_path: Optional[str] = None) -> None:
     """Sends PNG screenshot + alert text to Omar on Telegram when human CAPTCHA/2FA intervention is needed."""
-    token = os.environ.get("TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_TOKEN_REDACTED")
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     chat_id = os.environ.get("TELEGRAM_ALLOWED_USERS", "1021125594").split(",")[0].strip()
     if screenshot_path and os.path.exists(screenshot_path):
         try:
@@ -414,7 +414,7 @@ def _snapshot_dom_sync(page: Any) -> Dict[str, Any]:
 
 def _default_llm_portal_planner(context: Dict[str, Any]) -> Dict[str, Any]:
     """Asks local Antigravity Proxy to output structured JSON actions for the current page state."""
-    api_key = os.environ.get("OMNIROUTE_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "sk-omniroute-redacted")
+    api_key = os.environ.get("OMNIROUTE_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "sk-omni")
     sys_msg = (
         "You control Playwright to register/log in and complete Omar Elnemr's web portal application.\n"
         "Return strict JSON only: {\"actions\": [...], \"done\": bool, \"summary\": str}.\n"

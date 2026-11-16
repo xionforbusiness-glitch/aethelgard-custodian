@@ -20,7 +20,7 @@ from airport_radar import fetch_damascus_airport_metar
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 OMNIROUTE_PORT = os.environ.get("OMNIROUTE_PORT", "20128")
-OMNIROUTE_API_KEY = os.environ.get("OMNIROUTE_API_KEY", os.environ.get("HERMES_CUSTOM_FIRST_TIME_API_KEY", "sk-omniroute-redacted"))
+OMNIROUTE_API_KEY = os.environ.get("OMNIROUTE_API_KEY", os.environ.get("HERMES_CUSTOM_FIRST_TIME_API_KEY", ""))
 HERMES_MODEL = os.environ.get("HERMES_MODEL", "antigravity/gemini-3.8-flash-low")
 
 

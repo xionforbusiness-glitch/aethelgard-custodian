@@ -30,16 +30,42 @@ if hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
-REFRESH_TOKEN = os.environ.get(
-    "ANTIGRAVITY_REFRESH_TOKEN",
-    "1//01_REDACTED_REFRESH_TOKEN"
-)
-CLIENT_ID = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
-CLIENT_SECRET = "GOCSPX-REDACTED_CLIENT_SECRET"
-STORAGE_ENCRYPTION_KEY = os.environ.get(
-    "STORAGE_ENCRYPTION_KEY",
-    "0000000000000000000000000000000000000000000000000000000000000000"
-)
+def _load_secret_or_env(key_name: str, creds_field: str = "") -> str:
+    """Safely loads credential from os.environ, local .env, or ~/.aethelgard/credentials/."""
+    val = os.environ.get(key_name, "").strip()
+    if val:
+        return val
+    # Try local .env
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if os.path.exists(env_path):
+        try:
+            with open(env_path, "r", encoding="utf-8") as ef:
+                for line in ef:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        if k.strip() == key_name:
+                            return v.strip().strip("'\"")
+        except Exception:
+            pass
+    # Try ~/.aethelgard/credentials/antigravity.json
+    creds_file = os.path.expanduser("~/.aethelgard/credentials/antigravity.json")
+    if os.path.isfile(creds_file):
+        try:
+            with open(creds_file, "r", encoding="utf-8") as cf:
+                data = json.load(cf)
+                if creds_field and creds_field in data:
+                    return str(data[creds_field]).strip()
+                if key_name.lower() in data:
+                    return str(data[key_name.lower()]).strip()
+        except Exception:
+            pass
+    return ""
+
+REFRESH_TOKEN = _load_secret_or_env("ANTIGRAVITY_REFRESH_TOKEN", "refresh_token")
+CLIENT_ID = os.environ.get("ANTIGRAVITY_CLIENT_ID", "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com")
+CLIENT_SECRET = _load_secret_or_env("ANTIGRAVITY_CLIENT_SECRET", "client_secret")
+STORAGE_ENCRYPTION_KEY = _load_secret_or_env("STORAGE_ENCRYPTION_KEY", "storage_encryption_key")
 STATIC_SALT = b"omniroute-field-encryption-v1"
 
 # Built-in forward map from retired Antigravity models to current live Antigravity models

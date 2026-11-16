@@ -34,7 +34,7 @@ def handle(event_type, context):
         import shift_tracker
 
         vault_dir = os.environ.get("VAULT_DIR", os.path.expanduser("~/vault"))
-        token = os.environ.get("TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_TOKEN_REDACTED")
+        token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
         allowed_user = os.environ.get("TELEGRAM_ALLOWED_USERS", "1021125594")
 
         if event_type == "agent:start":

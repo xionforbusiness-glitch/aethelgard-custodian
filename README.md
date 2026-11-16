@@ -28,9 +28,9 @@ Google Cloud provides a **100% Free Forever `e2-micro` instance** (1 vCPU, 1 GB 
 1. **SSH into your Google Cloud VM:**
    Open your VM terminal on Google Cloud Console or via SSH.
 
-2. **Clone this private repository:**
+2. **Clone this repository:**
    ```bash
-   git clone https://xionforbusiness-glitch:GITHUB_TOKEN_REDACTED@github.com/xionforbusiness-glitch/aethelgard-custodian.git
+   git clone https://github.com/xionforbusiness-glitch/aethelgard-custodian.git
    cd aethelgard-custodian
    ```
 
@@ -49,7 +49,7 @@ If you are deploying in a [Daytona](https://daytona.io) workspace or sandbox:
 
 1. In the Daytona terminal:
    ```bash
-   git clone https://xionforbusiness-glitch:GITHUB_TOKEN_REDACTED@github.com/xionforbusiness-glitch/aethelgard-custodian.git
+   git clone https://github.com/xionforbusiness-glitch/aethelgard-custodian.git
    cd aethelgard-custodian
    chmod +x deploy.sh
    ./deploy.sh
@@ -96,8 +96,8 @@ flowchart TD
 
 ## 🔐 Configuration Overview (`.env`)
 
-All verified credentials are pre-configured in `.env` (private repository):
-* **Telegram Bot Token:** `8992784967:AAH...` (@aethelgard_vault_bot)
+All credentials can be configured in `.env` (or `~/.aethelgard/credentials/`):
+* **Telegram Bot Token:** `TELEGRAM_BOT_TOKEN` (@aethelgard_vault_bot)
 * **Allowed User ID:** `1021125594` (Omar Elnemr)
 * **GitHub Access:** Full sync permissions for `aethelgard-vault`
 * **Antigravity Pro Key:** Pre-loaded via encrypted SQLite state database

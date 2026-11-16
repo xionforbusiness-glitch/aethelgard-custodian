@@ -6,7 +6,7 @@ import urllib.request
 import datetime
 
 OMNIROUTE_PORT = os.environ.get("OMNIROUTE_PORT", "20128")
-OMNIROUTE_API_KEY = os.environ.get("OMNIROUTE_API_KEY", "sk-omniroute-redacted")
+OMNIROUTE_API_KEY = os.environ.get("OMNIROUTE_API_KEY", "")
 MODEL_NAME = os.environ.get("HERMES_MODEL", "antigravity/gemini-3.8-flash-high")
 
 def call_ai(prompt: str, system_prompt: str = None) -> str:

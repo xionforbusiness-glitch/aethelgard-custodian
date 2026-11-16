@@ -517,7 +517,7 @@ _MISSION_TOOLS: List[Dict[str, Any]] = [
 
 
 def _post_proxy_completion(messages: List[Dict[str, Any]], model: str) -> Dict[str, Any]:
-    api_key = os.environ.get("OMNIROUTE_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "sk-omniroute-redacted")
+    api_key = os.environ.get("OMNIROUTE_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "sk-omni")
     payload = {
         "model": model,
         "messages": messages,

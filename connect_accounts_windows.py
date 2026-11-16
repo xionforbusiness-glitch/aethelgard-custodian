@@ -27,10 +27,29 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-DEFAULT_KEY_HEX = os.environ.get(
-    "STORAGE_ENCRYPTION_KEY",
-    "0000000000000000000000000000000000000000000000000000000000000000",
-)
+def _load_storage_key() -> str:
+    val = os.environ.get("STORAGE_ENCRYPTION_KEY", "").strip()
+    if val:
+        return val
+    env_path = Path(__file__).resolve().parent / ".env"
+    if env_path.exists():
+        try:
+            for line in env_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line.startswith("STORAGE_ENCRYPTION_KEY="):
+                    return line.split("=", 1)[1].strip().strip("'\"")
+        except Exception:
+            pass
+    creds_path = Path.home() / ".aethelgard" / "credentials" / "antigravity.json"
+    if creds_path.exists():
+        try:
+            data = json.loads(creds_path.read_text(encoding="utf-8"))
+            return data.get("storage_encryption_key", "").strip()
+        except Exception:
+            pass
+    return ""
+
+DEFAULT_KEY_HEX = _load_storage_key()
 
 TARGET_DOMAINS = (
     "linkedin.com",

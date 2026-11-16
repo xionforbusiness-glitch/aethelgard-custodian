@@ -10,7 +10,7 @@ from voice_engine import send_telegram_voice_sync
 from wargame_engine import run_cognitive_collision
 from circadian_oracle import get_circadian_forecast, get_operational_mode
 
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_TOKEN_REDACTED")
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_USER_ID = os.environ.get("TELEGRAM_ALLOWED_USERS", "1021125594")
 
 def get_damascus_now():
