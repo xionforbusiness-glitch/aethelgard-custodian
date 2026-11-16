@@ -77,13 +77,20 @@ def enqueue_async_job(
     """
     valid_kinds = ("hermes_task", "watch_reply", "timed_callback")
     norm_kind = kind if kind in valid_kinds else "hermes_task"
-    now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    now_iso = now_utc.isoformat()
+    norm_payload = dict(payload or {})
+    if norm_kind == "timed_callback" and not str(norm_payload.get("trigger_at") or "").strip():
+        delay_sec = float(norm_payload.get("delay_seconds") or 0)
+        delay_min = float(norm_payload.get("delay_minutes") or 0)
+        total_sec = delay_sec + (delay_min * 60.0)
+        norm_payload["trigger_at"] = (now_utc + datetime.timedelta(seconds=max(0.0, total_sec))).isoformat()
 
     job: Dict[str, Any] = {
         "job_id": f"job_{uuid.uuid4().hex[:8]}",
         "kind": norm_kind,
         "title": title.strip() or norm_kind,
-        "payload": payload or {},
+        "payload": norm_payload,
         "delivery": delivery if delivery in ("call", "telegram", "both") else "call",
         "urgent": bool(urgent),
         "status": "pending",
@@ -155,24 +162,36 @@ def _deliver_job_notification(
     return outcome
 
 
-def _run_hermes_task_worker(job_id: str, command_or_prompt: str, timeout_s: int = 180) -> None:
+def _run_hermes_task_worker(
+    job_id: str,
+    command_or_prompt: str,
+    timeout_s: int = 180,
+    is_prompt: bool = False,
+) -> None:
     global _ACTIVE_WORKERS
     result_summary = ""
     error_text = ""
     try:
-        proc = subprocess.run(
-            command_or_prompt,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-        )
-        out = (proc.stdout or "").strip()
-        err = (proc.stderr or "").strip()
-        if proc.returncode == 0:
-            result_summary = (out or "Task finished cleanly.")[:800]
+        if is_prompt:
+            import telegram_voice_caller
+            brain = telegram_voice_caller.VoiceBrainSession()
+            brain.warm_live_context()
+            reply = brain.process_user_turn(text_prompt=command_or_prompt)
+            result_summary = (reply or "Background task completed.")[:800]
         else:
-            error_text = (err or out or f"Exit code {proc.returncode}")[:500]
+            proc = subprocess.run(
+                command_or_prompt,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=timeout_s,
+            )
+            out = (proc.stdout or "").strip()
+            err = (proc.stderr or "").strip()
+            if proc.returncode == 0:
+                result_summary = (out or "Task finished cleanly.")[:800]
+            else:
+                error_text = (err or out or f"Exit code {proc.returncode}")[:500]
     except Exception as exc:
         error_text = str(exc)[:400]
     finally:
@@ -253,7 +272,7 @@ def tick_async_jobs(
             due = False
             if trigger_str:
                 try:
-                    t_dt = datetime.datetime.fromisoformat(trigger_str)
+                    t_dt = datetime.datetime.fromisoformat(trigger_str.replace("Z", "+00:00"))
                     if t_dt.tzinfo is None:
                         t_dt = t_dt.replace(tzinfo=datetime.timezone.utc)
                     due = ref_now >= t_dt
@@ -285,8 +304,10 @@ def tick_async_jobs(
                 changed = True
 
         elif kind == "hermes_task" and spawn_workers:
+            prompt_txt = str(payload.get("prompt") or "").strip()
             cmd = str(payload.get("command") or "").strip()
-            if cmd:
+            task_input = prompt_txt or cmd
+            if task_input:
                 with _ACTIVE_LOCK:
                     if _ACTIVE_WORKERS < MAX_CONCURRENT_WORKERS:
                         _ACTIVE_WORKERS += 1
@@ -296,7 +317,7 @@ def tick_async_jobs(
                         started_workers += 1
                         threading.Thread(
                             target=_run_hermes_task_worker,
-                            args=(job["job_id"], cmd, int(payload.get("timeout_s", 180))),
+                            args=(job["job_id"], task_input, int(payload.get("timeout_s", 180)), bool(prompt_txt)),
                             daemon=True,
                         ).start()
 

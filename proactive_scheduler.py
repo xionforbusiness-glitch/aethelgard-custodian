@@ -408,4 +408,13 @@ def proactive_scheduler_daemon(vault_dir):
         except Exception as e:
             print(f"⚠ Proactive Scheduler notice: {e}")
 
-        time.sleep(30)
+        # Poll pending async callbacks every 5s so user-requested callbacks fire promptly
+        for _ in range(5):
+            time.sleep(5)
+            try:
+                import async_callback_engine
+                if async_callback_engine.list_async_jobs(status="pending"):
+                    async_callback_engine.tick_async_jobs(now=get_damascus_now(), vault_dir=vault_dir)
+            except Exception:
+                pass
+        time.sleep(5)

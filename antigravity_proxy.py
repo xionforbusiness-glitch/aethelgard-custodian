@@ -480,7 +480,12 @@ def build_antigravity_envelope(
 
     # Thinking budget for Gemini 3.8 Flash tiers (keep includeThoughts=False so raw CoT never leaks)
     if not disable_thinking and not is_claude and not is_gpt_oss and "gemini" in upstream_model.lower():
-        if upstream_model.endswith("-low"):
+        req_budget = body.get("thinking_budget")
+        if req_budget is not None:
+            budget = max(0, min(int(req_budget), 16384))
+        elif str(body.get("reasoning_effort") or "").lower() == "none":
+            budget = 0
+        elif upstream_model.endswith("-low"):
             budget = 1024
         elif upstream_model.endswith("-medium") or upstream_model.endswith("-tiered"):
             budget = 4096

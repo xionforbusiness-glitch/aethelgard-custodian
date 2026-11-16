@@ -552,6 +552,71 @@ class GoogleAdapter:
             "body_preview": body[:1000],
         }
 
+    def create_gmail_draft(
+        self,
+        to: str,
+        subject: str,
+        body: str,
+        cc: str = "",
+        attachments: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Saves a real draft directly into Omar's Gmail Drafts folder via Gmail API or IMAP APPEND."""
+        has_oauth, sender_email, app_pw = self._has_oauth_and_app_pw()
+        msg = EmailMessage()
+        msg["From"] = sender_email
+        msg["To"] = to
+        msg["Subject"] = subject or "Draft from Aethelgard"
+        if cc:
+            msg["Cc"] = cc
+        msg.set_content(body)
+
+        attached_files: List[str] = []
+        for att_raw in attachments or []:
+            att_p = Path(os.path.expanduser(str(att_raw)))
+            if att_p.exists() and att_p.is_file():
+                ctype, encoding = mimetypes.guess_type(str(att_p))
+                if ctype is None or encoding is not None:
+                    ctype = "application/octet-stream"
+                maintype, subtype = ctype.split("/", 1)
+                with open(att_p, "rb") as af:
+                    msg.add_attachment(af.read(), maintype=maintype, subtype=subtype, filename=att_p.name)
+                attached_files.append(str(att_p))
+
+        def _append_via_imap() -> Dict[str, Any]:
+            if not app_pw:
+                return {"success": False, "error": "Gmail OAuth/App Password unavailable for draft save."}
+            with imaplib.IMAP4_SSL("imap.gmail.com", 993) as imap:
+                imap.login(sender_email, app_pw)
+                imap.append("[Gmail]/Drafts", "\\Draft", imaplib.Time2Internaldate(time.time()), msg.as_bytes())
+            return {
+                "success": True,
+                "platform": "gmail",
+                "folder": "[Gmail]/Drafts",
+                "transport": "imap_append",
+                "recipient": to,
+                "subject": subject,
+                "attachments": attached_files,
+            }
+
+        if app_pw and not has_oauth:
+            return _append_via_imap()
+
+        raw_b64 = base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii")
+        api_res = self._execute_api_call("drafts", method="POST", payload={"message": {"raw": raw_b64}})
+        if isinstance(api_res, dict) and (api_res.get("status") == "needs_auth" or "error" in api_res):
+            if app_pw:
+                return _append_via_imap()
+            return {"success": False, "error": api_res.get("error") or api_res.get("status")}
+        return {
+            "success": True,
+            "platform": "gmail",
+            "folder": "[Gmail]/Drafts",
+            "draft_id": api_res.get("id", ""),
+            "recipient": to,
+            "subject": subject,
+            "attachments": attached_files,
+        }
+
     def stage_email(
         self,
         to: str,

@@ -88,6 +88,18 @@ def _get_credentials_dir() -> Path:
     return p
 
 
+def _get_state_dir() -> Path:
+    override = os.environ.get("AETHELGARD_STATE_DIR")
+    if override:
+        p = Path(os.path.expanduser(override))
+    else:
+        home = os.environ.get("AETHELGARD_HOME")
+        base = Path(os.path.expanduser(home)) if home else (Path.home() / ".aethelgard")
+        p = base / "state"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
 def get_caller_config_path() -> Path:
     return _get_credentials_dir() / "telegram_caller.json"
 
@@ -237,7 +249,7 @@ class AudioTurnDetector:
         frame_ms: int = 20,
         barge_in_ms: int = 220,
         min_speech_ms: int = 220,
-        silence_end_ms: int = 700,
+        silence_end_ms: int = 500,
         max_turn_ms: int = 18000,
     ):
         self.speech_rms_threshold = float(speech_rms_threshold)
@@ -377,12 +389,12 @@ VOICE_TOOLS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "check_gmail",
-            "description": "Search or read Omar's latest Gmail messages.",
+            "description": "Search or fetch Omar's latest Gmail messages with senders, subjects, dates, and readable body previews.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Optional Gmail search query"},
-                    "latest": {"type": "integer", "description": "Number of latest emails (1-5)"},
+                    "query": {"type": "string", "description": "Optional Gmail search query (e.g. Etihad, unread, flight)"},
+                    "latest": {"type": "integer", "description": "Number of emails to retrieve (1-5)"},
                 },
             },
         },
@@ -390,12 +402,26 @@ VOICE_TOOLS: List[Dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "check_agenda",
-            "description": "Get Omar's upcoming shifts, Google Calendar .ics events, and aviation runway alerts.",
+            "name": "read_email",
+            "description": "Read the full cleaned content of a specific Gmail message by ID.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "hours_ahead": {"type": "integer", "description": "Lookahead window in hours"},
+                    "msg_id": {"type": "string", "description": "Gmail message ID from check_gmail"},
+                },
+                "required": ["msg_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "check_agenda",
+            "description": "Get Omar's upcoming shifts, Google Calendar .ics events, and Damascus airport runway weather.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "hours_ahead": {"type": "integer", "description": "Lookahead window in hours (default 24)"},
                 },
             },
         },
@@ -404,12 +430,56 @@ VOICE_TOOLS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "list_promises",
-            "description": "List open commitments and follow-ups tracked in the Promise Ledger.",
+            "description": "List open commitments, deals, and follow-ups tracked in the Promise Ledger.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "overdue_only": {"type": "boolean", "description": "Only return overdue commitments"},
                 },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "manage_promise",
+            "description": "Add a new commitment/follow-up or mark an open promise resolved in the Promise Ledger and Vault.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "description": "add or resolve"},
+                    "counterparty": {"type": "string", "description": "Person, company, or email"},
+                    "summary": {"type": "string", "description": "Commitment summary"},
+                    "direction": {"type": "string", "description": "waiting_on_me or waiting_on_them"},
+                    "promise_id": {"type": "string", "description": "Promise ID when resolving"},
+                    "note": {"type": "string", "description": "Optional resolution note"},
+                },
+                "required": ["action"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_pending_drafts",
+            "description": "List pending outbound drafts waiting in Approval Gatekeeper.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "save_gmail_draft",
+            "description": "Save a draft directly into Omar's real Gmail Drafts folder ([Gmail]/Drafts) without sending it.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "to": {"type": "string", "description": "Recipient email"},
+                    "subject": {"type": "string", "description": "Email subject"},
+                    "body": {"type": "string", "description": "Draft body"},
+                    "attach_career_pack": {"type": "boolean", "description": "Attach Omar's primary CV and Etihad certificates"},
+                },
+                "required": ["to", "subject", "body"],
             },
         },
     },
@@ -425,6 +495,7 @@ VOICE_TOOLS: List[Dict[str, Any]] = [
                     "to": {"type": "string", "description": "Recipient email, handle, or visibility"},
                     "subject": {"type": "string", "description": "Optional email subject"},
                     "body": {"type": "string", "description": "Exact draft content"},
+                    "attach_career_pack": {"type": "boolean", "description": "Attach Omar's CV PDF + Etihad certificates for applications"},
                 },
                 "required": ["platform", "to", "body"],
             },
@@ -434,7 +505,7 @@ VOICE_TOOLS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "confirm_verbal_approval",
-            "description": "Execute a previously staged draft ONLY after verbally reading it back and receiving Omar's explicit confirmation.",
+            "description": "Execute and send a previously staged draft ONLY after verbally reading it back and receiving Omar's explicit confirmation.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -448,16 +519,47 @@ VOICE_TOOLS: List[Dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "queue_async_task",
-            "description": "Queue a background task or reply watch and call Omar back when finished.",
+            "name": "reject_draft",
+            "description": "Discard/cancel a pending Gatekeeper draft when Omar says not to send it.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "kind": {"type": "string", "description": "watch_reply, timed_callback, or hermes_task"},
-                    "title": {"type": "string", "description": "Short task title"},
-                    "detail": {"type": "string", "description": "Search query, ISO trigger time, or shell/task detail"},
+                    "draft_id": {"type": "string", "description": "Staged draft ID to reject"},
+                    "reason": {"type": "string", "description": "Reason for cancelling"},
+                },
+                "required": ["draft_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "queue_async_task",
+            "description": "Schedule a callback phone call, email reply watch, or background task so Aethelgard calls Omar back.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "description": "timed_callback, watch_reply, or hermes_task"},
+                    "title": {"type": "string", "description": "Short reason/title for the callback"},
+                    "detail": {"type": "string", "description": "Search query, ISO trigger time, or natural-language task description"},
+                    "delay_minutes": {"type": "number", "description": "Minutes from now before calling back (preferred for timed callbacks)"},
+                    "delay_seconds": {"type": "number", "description": "Seconds from now before calling back"},
                 },
                 "required": ["kind", "title"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_vault",
+            "description": "Search Omar's Obsidian Vault notes, recent logs, work roster, CVs, or call transcripts.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Keyword or topic to search in the vault"},
+                    "note_name": {"type": "string", "description": "Optional filename such as log.md or index.md"},
+                },
             },
         },
     },
@@ -475,128 +577,500 @@ VOICE_TOOLS: List[Dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "end_call",
+            "description": "Hang up and close the live Telegram call after speaking a brief farewell when Omar asks to end the call or says goodbye.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "farewell": {"type": "string", "description": "Short 1-sentence goodbye"},
+                },
+            },
+        },
+    },
 ]
 
 
 class VoiceBrainSession:
-    """Manages Antigravity multimodal turn execution, tool routing, and call transcript capture."""
+    """Manages Antigravity multimodal turn execution, live tools, fast cached context, and unified call logging."""
 
     def __init__(self, vault_dir: Optional[str] = None, max_history: int = 12):
         self.vault_dir = vault_dir or os.environ.get("VAULT_DIR") or os.path.expanduser("~/vault")
         self.max_history = max_history
+        self.call_uid = f"call_{datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d_%H%M%S')}_{random.randint(100, 999)}"
+        self.started_at_utc = datetime.datetime.now(datetime.timezone.utc).isoformat()
         self.history: List[Dict[str, Any]] = []
+        self.turns: List[Dict[str, Any]] = []
         self.transcript_log: List[str] = []
+        self.actions_log: List[Dict[str, Any]] = []
         self.approval_guard = VerbalApprovalGuard()
+        self.end_call_requested: bool = False
+        self._lock = threading.Lock()
+        self._final_vault_written: bool = False
+        self._cached_context: Dict[str, Any] = {}
+        self._context_warmed_at: float = 0.0
 
-    def build_system_prompt(self) -> str:
-        op_mode = {"mode": "STRATEGIC_WINDOW", "irops_alert": False}
-        agenda_txt = ""
-        pending_count = 0
+    def _read_shared_bot_and_vault_tail(self) -> str:
+        """Reads recent Vault log, previous call summaries, and Hermes Telegram chat snippets without blocking."""
+        chunks: List[str] = []
         try:
-            import circadian_oracle
-            op_mode = circadian_oracle.get_operational_mode(vault_dir=self.vault_dir)
+            recent_calls = _get_state_dir() / "RECENT_VOICE_CALLS.md"
+            if recent_calls.exists():
+                txt = recent_calls.read_text(encoding="utf-8", errors="ignore").strip()
+                if txt:
+                    chunks.append("Previous Calls:\n" + txt[:700])
         except Exception:
             pass
         try:
-            import calendar_bridge
-            agenda_txt = calendar_bridge.format_agenda_summary(hours_ahead=24)
+            vault_path = Path(os.path.expanduser(self.vault_dir))
+            log_file = vault_path / "log.md"
+            if log_file.exists():
+                lines = [ln for ln in log_file.read_text(encoding="utf-8", errors="ignore").splitlines() if ln.strip()]
+                if lines:
+                    chunks.append("Recent Vault Log:\n" + "\n".join(lines[-10:])[:700])
+        except Exception:
+            pass
+        try:
+            import sqlite3
+            db_candidates = [
+                Path(os.path.expanduser(os.environ.get("HERMES_HOME", "~/.hermes"))) / "profiles" / os.environ.get("HERMES_PROFILE", "llm-wiki") / "state.db",
+                Path.home() / ".hermes" / "profiles" / "llm-wiki" / "state.db",
+                Path.home() / ".hermes" / "state.db",
+            ]
+            for db_p in db_candidates:
+                if db_p.exists():
+                    conn = sqlite3.connect(f"file:{db_p}?mode=ro", uri=True, timeout=0.3)
+                    try:
+                        rows = conn.execute(
+                            "SELECT role, content FROM messages WHERE role IN ('user','assistant') "
+                            "AND content IS NOT NULL AND content != '' ORDER BY id DESC LIMIT 6;"
+                        ).fetchall()
+                        if rows:
+                            bot_lines = [f"{r[0]}: {str(r[1]).replace(chr(10), ' ')[:140]}" for r in reversed(rows)]
+                            chunks.append("Recent Telegram Bot Messages:\n" + "\n".join(bot_lines))
+                        break
+                    finally:
+                        conn.close()
+        except Exception:
+            pass
+        return "\n\n".join(chunks)[:1500]
+
+    def warm_live_context(self, fetch_network: bool = True) -> Dict[str, Any]:
+        """Pre-fetches operational mode, calendar, Gmail snapshot, promises, drafts, and recent logs in background."""
+        cached: Dict[str, Any] = {
+            "op_mode": {"mode": "STRATEGIC_WINDOW", "irops_alert": False},
+            "agenda_txt": "",
+            "emails_summary": "",
+            "open_promises": [],
+            "pending_drafts": [],
+            "pending_callbacks": [],
+            "shared_context": self._read_shared_bot_and_vault_tail(),
+        }
+        if fetch_network:
+            try:
+                import circadian_oracle
+                cached["op_mode"] = circadian_oracle.get_operational_mode(vault_dir=self.vault_dir)
+            except Exception:
+                pass
+            try:
+                import calendar_bridge
+                cached["agenda_txt"] = calendar_bridge.format_agenda_summary(hours_ahead=24)
+            except Exception:
+                pass
+            try:
+                from omnichannel_bridge import GoogleAdapter
+                ga = GoogleAdapter()
+                if ga.get_status().get("status") == "connected":
+                    emails = ga.get_latest_emails(count=4, max_body_chars=300)
+                    em_lines = []
+                    for e in emails or []:
+                        em_lines.append(
+                            f"- [id={e.get('id')}] From: {str(e.get('sender', ''))[:45]} | "
+                            f"Subj: {str(e.get('subject', ''))[:65]} | {str(e.get('snippet', ''))[:100]}"
+                        )
+                    cached["emails_summary"] = "\n".join(em_lines)
+            except Exception:
+                pass
+        try:
+            import promise_ledger
+            cached["open_promises"] = [
+                f"{p.get('id')}: {p.get('counterparty')} - {p.get('summary')}"
+                for p in promise_ledger.list_promises(status="open")[:5]
+            ]
         except Exception:
             pass
         try:
             import approval_gatekeeper
-            pending_count = len(approval_gatekeeper.list_pending_drafts())
+            cached["pending_drafts"] = [
+                f"{d.get('draft_id')}: {d.get('platform')} -> {d.get('recipient_or_target')} ({d.get('subject') or 'no subj'})"
+                for d in approval_gatekeeper.list_pending_drafts()[:5]
+            ]
         except Exception:
             pass
+        try:
+            import async_callback_engine
+            cached["pending_callbacks"] = [
+                f"{j.get('job_id')}: {j.get('kind')} '{j.get('title')}'"
+                for j in async_callback_engine.list_async_jobs(status="pending")[:5]
+            ]
+        except Exception:
+            pass
+
+        with self._lock:
+            self._cached_context = cached
+            self._context_warmed_at = time.monotonic()
+        return cached
+
+    def build_system_prompt(self) -> str:
+        with self._lock:
+            cached = dict(self._cached_context)
+
+        op_mode = cached.get("op_mode") or {"mode": "STRATEGIC_WINDOW", "irops_alert": False}
+        agenda_txt = cached.get("agenda_txt") or ""
+        emails_summary = cached.get("emails_summary") or ""
+        open_promises = cached.get("open_promises") or []
+        pending_drafts = cached.get("pending_drafts") or []
+        shared_ctx = cached.get("shared_context") or ""
+
+        if not pending_drafts:
+            try:
+                import approval_gatekeeper
+                pending_drafts = [
+                    f"{d.get('draft_id')}: {d.get('platform')} -> {d.get('recipient_or_target')}"
+                    for d in approval_gatekeeper.list_pending_drafts()[:5]
+                ]
+            except Exception:
+                pass
+
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        now_dam = now_utc.astimezone(datetime.timezone(datetime.timedelta(hours=3)))
 
         brevity = (
             "Omar is on COCKPIT_DUTY shift — keep answers ultra-brief (1-2 short sentences)."
             if op_mode.get("mode") == "COCKPIT_DUTY"
-            else "Keep spoken replies natural, crisp, and warm (1-3 sentences) so audio synthesis stays fast."
+            else "Keep spoken replies natural, crisp, and warm (1-3 short sentences max) so live call latency stays fast."
         )
         return (
-            "You are Aethelgard, Omar Elnemr's personal JARVIS-grade voice executive on a live 1-on-1 Telegram voice call.\n"
+            "You are Aethelgard, Omar Elnemr's real-time JARVIS executive voice assistant on a live 1-on-1 Telegram voice call.\n"
+            f"- Current Time: {now_dam.strftime('%Y-%m-%d %H:%M')} Damascus (UTC: {now_utc.strftime('%Y-%m-%dT%H:%M:%SZ')})\n"
             f"- Operational Mode: {op_mode.get('mode')} (OSDI IROPS: {op_mode.get('irops_alert')})\n"
-            f"- Pending Outbound Approvals: {pending_count}\n"
-            f"- Upcoming Agenda:\n{agenda_txt or 'No immediate agenda items'}\n"
-            "- Language: Match Omar seamlessly (English in crisp British JARVIS tone, or natural Syrian Arabic if he speaks Arabic).\n"
-            f"- Delivery: {brevity} Never read raw Markdown symbols, backticks, or JSON aloud.\n"
-            "- Outbound Safety: NEVER send external emails/messages silently. Stage via `stage_outbound_draft`, "
-            "read recipient + subject + summary aloud, and call `confirm_verbal_approval` ONLY in a subsequent turn after Omar says confirm/send."
+            f"- Agenda Snapshot:\n{agenda_txt or 'No upcoming calendar/shift entries loaded'}\n"
+            f"- Latest Gmail Snapshot:\n{emails_summary or 'Use check_gmail tool when asked about emails'}\n"
+            f"- Pending Drafts ({len(pending_drafts)}): {'; '.join(pending_drafts) or 'None'}\n"
+            f"- Open Promises ({len(open_promises)}): {'; '.join(open_promises) or 'None'}\n"
+            + (f"- Shared Bot/Vault Memory:\n{shared_ctx}\n" if shared_ctx else "")
+            + "- Language: Match Omar seamlessly (crisp British JARVIS English, or natural Syrian Arabic if he speaks Arabic).\n"
+            f"- Delivery: {brevity} Never read raw Markdown, asterisks, IDs verbatim unless needed, or JSON aloud.\n"
+            "- Actions in Call: Act immediately using tools! Use check_gmail/read_email for inbox queries, save_gmail_draft to put drafts directly into Gmail Drafts, "
+            "stage_outbound_draft -> read recipient+subject+summary aloud -> confirm_verbal_approval ONLY after Omar confirms to send, "
+            "queue_async_task with delay_minutes/delay_seconds when asked to call back, search_vault for notes/roster/CVs, "
+            "and ALWAYS call end_call immediately when Omar says hang up, end the call, bye, or talk later."
         )
 
     def execute_tool_call(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        def _record_action(res: Dict[str, Any]) -> Dict[str, Any]:
+            self.actions_log.append({
+                "at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "tool": name,
+                "args": {k: (v[:120] if isinstance(v, str) else v) for k, v in (args or {}).items()},
+                "ok": not bool(res.get("error")),
+                "summary": self._summarize_tool_result(name, args, res),
+            })
+            return res
+
         try:
             if name == "check_gmail":
                 from omnichannel_bridge import GoogleAdapter
                 ga = GoogleAdapter()
                 query = str(args.get("query") or "").strip()
-                latest = min(int(args.get("latest") or 3), 5)
+                latest = max(1, min(int(args.get("latest") or 4), 5))
                 if query:
-                    return {"emails": ga.search_emails(query=query, max_results=latest)}
-                return {"emails": ga.get_latest_emails(count=latest)}
+                    hits = ga.search_emails(query=query, max_results=latest) or []
+                    hydrated = []
+                    for item in hits[:latest]:
+                        if not item.get("subject") or not item.get("body"):
+                            mid = str(item.get("id") or "")
+                            if mid:
+                                try:
+                                    item = ga.read_email(mid, max_body_chars=900)
+                                except Exception:
+                                    pass
+                        hydrated.append({
+                            "id": item.get("id"),
+                            "sender": item.get("sender", ""),
+                            "subject": item.get("subject", ""),
+                            "received_at": item.get("received_at", ""),
+                            "preview": (item.get("body") or item.get("snippet") or "")[:450],
+                        })
+                    return _record_action({"emails": hydrated})
+                emails = ga.get_latest_emails(count=latest, max_body_chars=900) or []
+                compact = [
+                    {
+                        "id": e.get("id"),
+                        "sender": e.get("sender", ""),
+                        "subject": e.get("subject", ""),
+                        "received_at": e.get("received_at", ""),
+                        "preview": (e.get("body") or e.get("snippet") or "")[:450],
+                    }
+                    for e in emails
+                ]
+                return _record_action({"emails": compact})
+
+            if name == "read_email":
+                from omnichannel_bridge import GoogleAdapter
+                ga = GoogleAdapter()
+                mid = str(args.get("msg_id") or "").strip()
+                if not mid:
+                    return _record_action({"error": "msg_id required"})
+                return _record_action({"email": ga.read_email(mid, max_body_chars=2500)})
 
             if name == "check_agenda":
                 import calendar_bridge
                 hrs = int(args.get("hours_ahead") or 24)
-                return calendar_bridge.get_unified_agenda(hours_ahead=hrs)
+                agenda = calendar_bridge.get_unified_agenda(hours_ahead=hrs)
+                with self._lock:
+                    op_mode = self._cached_context.get("op_mode")
+                if not op_mode:
+                    try:
+                        import circadian_oracle
+                        op_mode = circadian_oracle.get_operational_mode(vault_dir=self.vault_dir)
+                    except Exception:
+                        op_mode = {}
+                agenda["operational_mode"] = op_mode
+                return _record_action(agenda)
 
             if name == "list_promises":
                 import promise_ledger
                 if args.get("overdue_only"):
-                    return {"overdue": promise_ledger.check_overdue_promises()}
-                return {"open": promise_ledger.list_promises(status="open")[:8]}
+                    return _record_action({"overdue": promise_ledger.check_overdue_promises()})
+                return _record_action({"open": promise_ledger.list_promises(status="open")[:8]})
+
+            if name == "manage_promise":
+                import promise_ledger
+                act = str(args.get("action") or "add").lower().strip()
+                if act == "resolve":
+                    pid = str(args.get("promise_id") or "").strip()
+                    res = promise_ledger.resolve_promise(pid, note=str(args.get("note") or "Resolved in voice call"), vault_dir=self.vault_dir)
+                    return _record_action(res)
+                entry = promise_ledger.add_promise(
+                    counterparty=str(args.get("counterparty") or "FollowUp"),
+                    summary=str(args.get("summary") or "Commitment from voice call"),
+                    direction=str(args.get("direction") or "waiting_on_me"),
+                    channel="telegram_voice_call",
+                    vault_dir=self.vault_dir,
+                )
+                return _record_action({"added": True, "promise": entry})
+
+            if name == "list_pending_drafts":
+                import approval_gatekeeper
+                pending = approval_gatekeeper.list_pending_drafts()
+                out = []
+                for d in pending[:6]:
+                    did = d.get("draft_id", "")
+                    if did:
+                        self.approval_guard.register_readback(did)
+                    out.append({
+                        "draft_id": did,
+                        "platform": d.get("platform"),
+                        "to": d.get("recipient_or_target"),
+                        "subject": d.get("subject", ""),
+                        "body_preview": str(d.get("content") or "")[:300],
+                    })
+                return _record_action({"pending_drafts": out})
+
+            if name == "save_gmail_draft":
+                from omnichannel_bridge import GoogleAdapter
+                attachments = []
+                if args.get("attach_career_pack"):
+                    try:
+                        import job_application_engine
+                        assets = job_application_engine.locate_career_assets()
+                        if assets.get("primary_cv"):
+                            attachments.append(assets["primary_cv"])
+                        attachments.extend(assets.get("certificates") or [])
+                    except Exception:
+                        pass
+                res = GoogleAdapter().create_gmail_draft(
+                    to=str(args.get("to") or ""),
+                    subject=str(args.get("subject") or "Draft from Aethelgard"),
+                    body=str(args.get("body") or ""),
+                    attachments=attachments,
+                )
+                return _record_action(res)
 
             if name == "stage_outbound_draft":
                 import approval_gatekeeper
                 platform = str(args.get("platform") or "gmail").lower()
+                meta: Dict[str, Any] = {}
+                if args.get("attach_career_pack"):
+                    try:
+                        import job_application_engine
+                        assets = job_application_engine.locate_career_assets()
+                        att = []
+                        if assets.get("primary_cv"):
+                            att.append(assets["primary_cv"])
+                        att.extend(assets.get("certificates") or [])
+                        if att:
+                            meta["attachments"] = att
+                    except Exception:
+                        pass
                 draft = approval_gatekeeper.stage_draft(
                     platform=platform,
                     action="send_email" if platform in ("gmail", "google") else "send_message",
                     recipient_or_target=str(args.get("to") or ""),
                     content=str(args.get("body") or ""),
+                    metadata=meta or None,
                     subject=str(args.get("subject") or "") or None,
                     notify_telegram=True,
                 )
                 self.approval_guard.register_readback(draft["draft_id"])
-                return {"staged": True, "draft_id": draft["draft_id"], "readback_required": True}
+                return _record_action({
+                    "staged": True,
+                    "draft_id": draft["draft_id"],
+                    "attachments": meta.get("attachments", []),
+                    "readback_required": True,
+                })
 
             if name == "confirm_verbal_approval":
-                return self.approval_guard.authorize(
+                res = self.approval_guard.authorize(
                     draft_id=str(args.get("draft_id") or ""),
                     spoken_confirmation=str(args.get("spoken_confirmation") or ""),
                 )
+                return _record_action(res)
+
+            if name == "reject_draft":
+                import approval_gatekeeper
+                res = approval_gatekeeper.reject_draft(
+                    str(args.get("draft_id") or ""),
+                    reason=str(args.get("reason") or "Cancelled by Omar on live call"),
+                )
+                return _record_action(res)
 
             if name == "queue_async_task":
                 import async_callback_engine
-                kind = str(args.get("kind") or "watch_reply")
-                title = str(args.get("title") or "Background task")
-                detail = str(args.get("detail") or "")
+                kind = str(args.get("kind") or "timed_callback")
+                title = str(args.get("title") or "Requested callback")
+                detail = str(args.get("detail") or "").strip()
+                delay_min = args.get("delay_minutes")
+                delay_sec = args.get("delay_seconds")
                 payload: Dict[str, Any] = {}
                 if kind == "watch_reply":
                     payload = {"query": detail or title}
                 elif kind == "timed_callback":
-                    payload = {"trigger_at": detail, "message": title}
+                    trigger_at = ""
+                    if delay_min is not None or delay_sec is not None:
+                        sec = float(delay_sec or 0) + (float(delay_min or 0) * 60.0)
+                        trigger_at = (
+                            datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=max(5.0, sec))
+                        ).isoformat()
+                    elif detail:
+                        # Support both ISO timestamps and fallback if natural language was passed
+                        try:
+                            datetime.datetime.fromisoformat(detail.replace("Z", "+00:00"))
+                            trigger_at = detail
+                        except Exception:
+                            trigger_at = (
+                                datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=2)
+                            ).isoformat()
+                    else:
+                        trigger_at = (
+                            datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=2)
+                        ).isoformat()
+                    payload = {"trigger_at": trigger_at, "message": detail or title}
                 else:
-                    payload = {"command": detail}
-                return async_callback_engine.enqueue_async_job(kind=kind, title=title, payload=payload, delivery="call")
+                    payload = {"prompt": detail or title}
+                # User-requested callbacks during live calls override Sleep Shield cleanly via urgent=True
+                res = async_callback_engine.enqueue_async_job(
+                    kind=kind,
+                    title=title,
+                    payload=payload,
+                    delivery="call",
+                    urgent=True,
+                )
+                return _record_action(res)
+
+            if name == "search_vault":
+                vault_path = Path(os.path.expanduser(self.vault_dir))
+                if not vault_path.exists():
+                    return _record_action({"error": "Vault directory unavailable"})
+                note_name = str(args.get("note_name") or "").strip()
+                query = str(args.get("query") or "").strip().lower()
+                if note_name:
+                    candidate = vault_path / note_name.lstrip("/\\")
+                    if candidate.exists() and candidate.is_file():
+                        txt = candidate.read_text(encoding="utf-8", errors="ignore")
+                        return _record_action({"note": note_name, "content": txt[-2000:]})
+                matches = []
+                for p in sorted(vault_path.rglob("*.md")):
+                    if any(part.startswith(".") or part == "_archive" for part in p.parts):
+                        continue
+                    try:
+                        txt = p.read_text(encoding="utf-8", errors="ignore")
+                    except Exception:
+                        continue
+                    rel = str(p.relative_to(vault_path))
+                    if not query or query in rel.lower() or query in txt.lower():
+                        idx = txt.lower().find(query) if query else 0
+                        start = max(0, idx - 120) if idx >= 0 else 0
+                        matches.append({"file": rel, "excerpt": txt[start : start + 420]})
+                        if len(matches) >= 5:
+                            break
+                return _record_action({"matches": matches})
 
             if name == "compile_life_update":
                 import life_compiler
-                return life_compiler.compile_life_dump(
+                res = life_compiler.compile_life_dump(
                     str(args.get("transcript") or ""),
                     vault_dir=self.vault_dir,
                 )
+                return _record_action(res)
 
-            return {"error": f"Unknown voice tool: {name}"}
+            if name == "end_call":
+                self.end_call_requested = True
+                farewell = str(args.get("farewell") or "Goodbye Omar. Talk soon.")
+                return _record_action({"ending_call": True, "farewell": farewell})
+
+            return _record_action({"error": f"Unknown voice tool: {name}"})
         except Exception as exc:
-            return {"error": str(exc)}
+            return _record_action({"error": str(exc)})
 
-    def _post_proxy(self, messages: List[Dict[str, Any]], use_tools: bool = True) -> Dict[str, Any]:
+    @staticmethod
+    def _summarize_tool_result(name: str, args: Dict[str, Any], res: Dict[str, Any]) -> str:
+        if res.get("error"):
+            return f"{name} error: {str(res['error'])[:80]}"
+        if name == "check_gmail":
+            return f"checked Gmail ({len(res.get('emails') or [])} emails, query={args.get('query') or 'latest'})"
+        if name == "read_email":
+            em = res.get("email") or {}
+            return f"read email '{str(em.get('subject', ''))[:50]}'"
+        if name == "save_gmail_draft":
+            return f"saved Gmail draft to {args.get('to')} ({res.get('subject', '')[:40]})"
+        if name == "stage_outbound_draft":
+            return f"staged {args.get('platform')} draft {res.get('draft_id')} -> {args.get('to')}"
+        if name == "confirm_verbal_approval":
+            return f"approved/sent draft {args.get('draft_id')} (success={res.get('success')})"
+        if name == "queue_async_task":
+            return f"queued {res.get('kind')} {res.get('job_id')}: {res.get('title')}"
+        if name == "end_call":
+            return "requested graceful call hangup"
+        return f"{name} completed"
+
+    def _post_proxy(
+        self,
+        messages: List[Dict[str, Any]],
+        use_tools: bool = True,
+        thinking_budget: int = 0,
+        max_tokens: int = 350,
+    ) -> Dict[str, Any]:
         api_key = os.environ.get("OMNIROUTE_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "sk-omni")
         payload: Dict[str, Any] = {
             "model": MODEL_NAME,
             "messages": messages,
-            "temperature": 0.4,
+            "temperature": 0.35,
+            "max_tokens": max_tokens,
+            "thinking_budget": thinking_budget,
         }
         if use_tools:
             payload["tools"] = VOICE_TOOLS
@@ -612,17 +1086,58 @@ class VoiceBrainSession:
             err_body = exc.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"Proxy HTTP {exc.code}: {err_body[:300]}") from exc
 
+    def transcribe_user_audio_clip(self, wav_bytes: bytes) -> str:
+        """Lightweight speech-to-text pass used asynchronously after replying so call history & logs record Omar's words."""
+        if not wav_bytes:
+            return ""
+        b64_wav = base64.b64encode(wav_bytes).decode("ascii")
+        resp = self._post_proxy(
+            [
+                {
+                    "role": "system",
+                    "content": "Transcribe the user audio accurately in English or Arabic. Output ONLY the clean transcript text.",
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Transcribe exactly what Omar said:"},
+                        {"type": "input_audio", "input_audio": {"data": b64_wav, "format": "wav"}},
+                    ],
+                },
+            ],
+            use_tools=False,
+            thinking_budget=0,
+            max_tokens=120,
+        )
+        choice = (resp.get("choices") or [{}])[0]
+        return str((choice.get("message") or {}).get("content") or "").strip()
+
+    def update_turn_transcript(self, turn_index: int, spoken_text: str) -> None:
+        clean = (spoken_text or "").strip()
+        if not clean:
+            return
+        with self._lock:
+            if 0 <= turn_index < len(self.turns):
+                self.turns[turn_index]["omar"] = clean
+                hist_msg = self.turns[turn_index].get("_hist_user_msg")
+                if isinstance(hist_msg, dict):
+                    hist_msg["content"] = clean
+                t_idx = turn_index * 2
+                if 0 <= t_idx < len(self.transcript_log):
+                    self.transcript_log[t_idx] = f"**Omar:** {clean}"
+        self.sync_call_log(final=False)
+
     def process_user_turn(self, wav_bytes: Optional[bytes] = None, text_prompt: str = "") -> str:
         """
-        Executes a live voice turn through Antigravity (`gemini-3.8-flash-low`) with real tool loops.
-        Accepts raw WAV bytes (encoded via `input_audio`) and/or a text prompt.
+        Executes a live voice turn through Antigravity (`gemini-3.8-flash-low`, `thinking_budget=0`)
+        with real tool loops and updates call logs incrementally.
         """
         content_parts: List[Dict[str, Any]] = []
         if wav_bytes:
             b64_wav = base64.b64encode(wav_bytes).decode("ascii")
             content_parts.append({
                 "type": "text",
-                "text": text_prompt or "Listen to Omar's spoken audio turn carefully and respond directly in the same language (English or Syrian Arabic).",
+                "text": text_prompt or "Listen to Omar's spoken audio turn and respond directly in the same language (English or Syrian Arabic).",
             })
             content_parts.append({
                 "type": "input_audio",
@@ -634,8 +1149,10 @@ class VoiceBrainSession:
             return ""
 
         user_msg = {"role": "user", "content": content_parts}
-        # Store lighter text marker in long-term history after turn finishes to avoid bloating base64 payloads
-        conv_messages = [{"role": "system", "content": self.build_system_prompt()}] + self.history[-self.max_history :] + [user_msg]
+        with self._lock:
+            hist_snapshot = list(self.history[-self.max_history :])
+            actions_before = len(self.actions_log)
+        conv_messages = [{"role": "system", "content": self.build_system_prompt()}] + hist_snapshot + [user_msg]
 
         reply_text = ""
         for _ in range(4):
@@ -663,31 +1180,150 @@ class VoiceBrainSession:
             break
 
         if not reply_text:
-            reply_text = "I processed that for you, Omar."
+            reply_text = "Done, Omar."
 
         hist_user_label = text_prompt if text_prompt else "[Omar spoke via live voice]"
-        self.history.append({"role": "user", "content": hist_user_label})
-        self.history.append({"role": "assistant", "content": reply_text})
-        self.history = self.history[-self.max_history :]
+        hist_user_msg = {"role": "user", "content": hist_user_label}
+        with self._lock:
+            self.history.append(hist_user_msg)
+            self.history.append({"role": "assistant", "content": reply_text})
+            self.history = self.history[-self.max_history :]
 
-        self.transcript_log.append(f"**Omar:** {hist_user_label}")
-        self.transcript_log.append(f"**Aethelgard:** {reply_text}")
+            new_actions = [a.get("summary", a.get("tool")) for a in self.actions_log[actions_before:]]
+            self.turns.append({
+                "turn": len(self.turns) + 1,
+                "at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "omar": hist_user_label,
+                "aethelgard": reply_text,
+                "actions": new_actions,
+                "_hist_user_msg": hist_user_msg,
+            })
+            self.transcript_log.append(f"**Omar:** {hist_user_label}")
+            self.transcript_log.append(f"**Aethelgard:** {reply_text}")
+
+        self.sync_call_log(final=False)
         return reply_text
 
+    def sync_call_log(self, final: bool = False) -> Dict[str, Any]:
+        """Persists shared call log JSON & Markdown so the Hermes Telegram Bot and Vault always stay synchronized."""
+        dam_tz = datetime.timezone(datetime.timedelta(hours=3))
+        now_dam = datetime.datetime.now(dam_tz)
+        with self._lock:
+            clean_turns = [
+                {
+                    "turn": t["turn"],
+                    "at": t["at"],
+                    "omar": t["omar"],
+                    "aethelgard": t["aethelgard"],
+                    "actions": t.get("actions") or [],
+                }
+                for t in self.turns
+            ]
+            actions_copy = [dict(a) for a in self.actions_log]
+            transcript_copy = list(self.transcript_log)
+            already_final = self._final_vault_written
+            if final and (transcript_copy or actions_copy) and not already_final:
+                self._final_vault_written = True
+
+        state_dir = _get_state_dir()
+        latest_record = {
+            "call_id": self.call_uid,
+            "started_at": self.started_at_utc,
+            "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "status": "completed" if final else "active",
+            "turn_count": len(clean_turns),
+            "actions": actions_copy,
+            "turns": clean_turns,
+        }
+        latest_json_path = state_dir / "latest_voice_call.json"
+        try:
+            latest_json_path.write_text(json.dumps(latest_record, indent=2, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
+
+        action_bullets = [f"- {a.get('summary') or a.get('tool')}" for a in actions_copy] or ["- Conversational call turn(s) only"]
+        md_lines = [
+            f"### Call `{self.call_uid}` ({now_dam.strftime('%Y-%m-%d %H:%M Damascus')}) — `{latest_record['status']}`",
+            "**Actions Taken:**",
+            *action_bullets,
+            "",
+            "**Turns:**",
+        ]
+        for t in clean_turns[-8:]:
+            md_lines.append(f"- **Omar:** {t['omar']}")
+            md_lines.append(f"- **Aethelgard:** {t['aethelgard']}")
+        recent_md = "\n".join(md_lines) + "\n"
+
+        recent_md_path = state_dir / "RECENT_VOICE_CALLS.md"
+        try:
+            recent_md_path.write_text("# Recent Aethelgard Voice Calls\n\n" + recent_md, encoding="utf-8")
+        except Exception:
+            pass
+
+        # Mirror summary into Hermes profile memory if HERMES_HOME or active local ~/.hermes profile exists
+        try:
+            hermes_roots: List[Path] = []
+            env_hh = os.environ.get("HERMES_HOME")
+            if env_hh:
+                hermes_roots.append(Path(os.path.expanduser(env_hh)))
+            elif not os.environ.get("AETHELGARD_STATE_DIR"):
+                hermes_roots.append(Path.home() / ".hermes")
+            prof = os.environ.get("HERMES_PROFILE", "llm-wiki")
+            for hroot in hermes_roots:
+                mem_dir = hroot / "profiles" / prof / "memories"
+                if mem_dir.parent.exists():
+                    mem_dir.mkdir(parents=True, exist_ok=True)
+                    (mem_dir / "RECENT_VOICE_CALLS.md").write_text(
+                        "# Recent Aethelgard Voice Calls\n\n" + recent_md,
+                        encoding="utf-8",
+                    )
+        except Exception:
+            pass
+
+        note_path: Optional[str] = None
+        if final and (transcript_copy or actions_copy):
+            try:
+                hist_jsonl = state_dir / "voice_call_history.jsonl"
+                with open(hist_jsonl, "a", encoding="utf-8") as jfh:
+                    jfh.write(json.dumps(latest_record, ensure_ascii=False) + "\n")
+            except Exception:
+                pass
+
+            vault_path = Path(os.path.expanduser(self.vault_dir))
+            if vault_path.exists():
+                t_dir = vault_path / "raw" / "transcripts"
+                t_dir.mkdir(parents=True, exist_ok=True)
+                note = t_dir / f"{now_dam.strftime('%Y-%m-%d')}-telegram-call.md"
+                if not already_final:
+                    header = f"\n\n# 📞 Native Telegram Call Transcript ({now_dam.strftime('%Y-%m-%d %H:%M Damascus')})\n\n"
+                    act_block = "**Actions Executed:**\n" + "\n".join(action_bullets) + "\n\n" if actions_copy else ""
+                    with open(note, "a", encoding="utf-8") as fh:
+                        fh.write(header + act_block + "\n\n".join(transcript_copy) + "\n")
+
+                    log_path = vault_path / "log.md"
+                    log_entry = (
+                        f"\n## 📞 [{now_dam.strftime('%Y-%m-%d %H:%M')}] Telegram Voice Call (`{self.call_uid}`)\n"
+                        f"- **Transcript:** [[{note.stem}]]\n"
+                        f"- **Turns:** {len(clean_turns)}\n"
+                        f"- **Actions:** {'; '.join(a.get('summary') or a.get('tool') for a in actions_copy) or 'Conversation only'}\n"
+                    )
+                    if clean_turns:
+                        last_t = clean_turns[-1]
+                        log_entry += f"- **Last Exchange:** Omar: \"{last_t['omar'][:120]}\" -> Aethelgard: \"{last_t['aethelgard'][:140]}\"\n"
+                    with open(log_path, "a", encoding="utf-8") as lfh:
+                        lfh.write(log_entry)
+                else:
+                    # Update transcript tail if final sync runs twice cleanly
+                    pass
+                note_path = str(note)
+
+        return {"latest_json": str(latest_json_path), "vault_note": note_path}
+
     def flush_transcript_to_vault(self) -> Optional[str]:
-        if not self.transcript_log:
+        if not self.transcript_log and not self.actions_log:
             return None
-        vault_path = Path(os.path.expanduser(self.vault_dir))
-        if not vault_path.exists():
-            return None
-        t_dir = vault_path / "raw" / "transcripts"
-        t_dir.mkdir(parents=True, exist_ok=True)
-        now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=3)))
-        note = t_dir / f"{now.strftime('%Y-%m-%d')}-telegram-call.md"
-        header = f"\n\n# 📞 Native Telegram Call Transcript ({now.strftime('%Y-%m-%d %H:%M Damascus')})\n\n"
-        with open(note, "a", encoding="utf-8") as fh:
-            fh.write(header + "\n\n".join(self.transcript_log) + "\n")
-        return str(note)
+        res = self.sync_call_log(final=True)
+        return res.get("vault_note")
 
 
 # ==============================================================================
@@ -954,6 +1590,10 @@ class TelegramP2PCallManager:
                 ctx["greeted"] = True
                 opening = ctx.get("opening_prompt") or "Hello Omar, Aethelgard online. Go ahead."
                 asyncio.run_coroutine_threadsafe(self._speak_text(peer_id, opening), self.loop)
+                asyncio.run_coroutine_threadsafe(
+                    asyncio.to_thread(ctx["brain"].warm_live_context, True),
+                    self.loop,
+                )
             elif state in (ntgcalls.ConnectionState.CLOSED, ntgcalls.ConnectionState.FAILED, ntgcalls.ConnectionState.TIMEOUT):
                 asyncio.run_coroutine_threadsafe(self._cleanup_call(peer_id), self.loop)
 
@@ -1165,6 +1805,7 @@ class TelegramP2PCallManager:
             "speech_start_logged": False,
             "tx_error_logged": False,
             "opening_prompt": opening_prompt,
+            "started_mono": time.monotonic(),
             "turn_lock": asyncio.Lock(),
             "sender_task": None,
         }
@@ -1245,6 +1886,27 @@ class TelegramP2PCallManager:
             self._log_event(f"Live call TTS error: {type(exc).__name__}: {exc}")
             traceback.print_exc()
 
+    async def hangup_call(self, peer_id: int) -> bool:
+        """Cleanly terminates an active Telegram call via DiscardCallRequest and flushes logs."""
+        ctx = self.active_calls.get(peer_id)
+        if not ctx:
+            return False
+        input_call = ctx.get("input_call")
+        duration = max(1, int(time.monotonic() - float(ctx.get("started_mono") or time.monotonic())))
+        if self.client and input_call is not None and functions is not None and types is not None:
+            try:
+                await self.client(functions.phone.DiscardCallRequest(
+                    peer=input_call,
+                    duration=duration,
+                    reason=types.PhoneCallDiscardReasonHangup(),
+                    connection_id=0,
+                ))
+                self._log_event(f"DiscardCallRequest sent peer={peer_id} id={ctx.get('tg_call_id')}")
+            except Exception as exc:
+                self._log_event(f"DiscardCallRequest notice peer={peer_id}: {type(exc).__name__}: {exc}")
+        await self._cleanup_call(peer_id)
+        return True
+
     async def _handle_utterance(self, peer_id: int, pcm_16k: bytes) -> None:
         ctx = self.active_calls.get(peer_id)
         if not ctx:
@@ -1252,16 +1914,44 @@ class TelegramP2PCallManager:
         async with ctx["turn_lock"]:
             wav_bytes = pcm16_to_wav_bytes(pcm_16k, sample_rate=ASR_SAMPLE_RATE)
             brain: VoiceBrainSession = ctx["brain"]
+            backfill_task: Optional[asyncio.Task] = None
             try:
                 self._log_event(f"VoiceBrain turn start peer={peer_id} wav_bytes={len(wav_bytes)}")
                 reply = await asyncio.to_thread(brain.process_user_turn, wav_bytes=wav_bytes)
                 self._log_event(f"VoiceBrain reply peer={peer_id}: {str(reply)[:90]}")
+                turn_idx = max(0, len(brain.turns) - 1)
+
+                async def _backfill_transcript() -> None:
+                    try:
+                        spoken = await asyncio.to_thread(brain.transcribe_user_audio_clip, wav_bytes)
+                        if spoken:
+                            brain.update_turn_transcript(turn_idx, spoken)
+                            self._log_event(f"Transcript captured peer={peer_id}: {spoken[:80]}")
+                    except Exception:
+                        pass
+
+                backfill_task = self.loop.create_task(_backfill_transcript())
             except Exception as bexc:
                 self._log_event(f"VoiceBrain turn error peer={peer_id}: {type(bexc).__name__}: {bexc}")
                 traceback.print_exc()
                 reply = "Sorry Omar, I hit a quick reasoning hiccup — say that once more."
             if reply:
                 await self._speak_text(peer_id, reply)
+            if brain.end_call_requested:
+                self._log_event(f"End-call requested by VoiceBrain peer={peer_id}; draining audio before hangup")
+                wait_deadline = self.loop.time() + 8.0
+                while peer_id in self.active_calls and self.loop.time() < wait_deadline:
+                    out_q = ctx.get("out_queue")
+                    if (out_q is None or out_q.empty()) and not ctx.get("ai_speaking"):
+                        break
+                    await asyncio.sleep(0.05)
+                if backfill_task is not None and not backfill_task.done():
+                    try:
+                        await asyncio.wait_for(backfill_task, timeout=1.5)
+                    except Exception:
+                        pass
+                await asyncio.sleep(0.35)
+                await self.hangup_call(peer_id)
 
     async def _audio_sender_loop(self, peer_id: int, ctx: Dict[str, Any]) -> None:
         frame_step = FRAME_MS / 1000.0

@@ -1,10 +1,12 @@
 import os
 import re
 import shutil
+import threading
 import time
 import uuid
 import json
 import asyncio
+import http.client
 import subprocess
 import tempfile
 import urllib.parse
@@ -22,7 +24,8 @@ JARVIS_RATE = "-2%"                   # Measured cadence
 # Circuit breaker so if Bing ReadAloud returns 403 on a cloud IP, subsequent
 # live-call sentences skip the doomed handshake and synthesize immediately.
 _EDGE_TTS_BLOCKED_UNTIL = 0.0
-_EDGE_TTS_COOLDOWN_SEC = 600.0
+_EDGE_TTS_COOLDOWN_SEC = 1800.0
+_TTS_TLS_LOCAL = threading.local()
 
 
 def is_arabic(text: str) -> bool:
@@ -53,18 +56,51 @@ def _split_tts_http_chunks(text: str, max_chars: int = 175) -> list[str]:
     return [c for c in chunks if c]
 
 
+def _google_tts_http_get_sync(path_and_query: str) -> bytes:
+    """Fetches Google TTS audio over a thread-local keep-alive TLS socket for low latency."""
+    conn = getattr(_TTS_TLS_LOCAL, "conn", None)
+    headers = {"User-Agent": "Mozilla/5.0", "Connection": "keep-alive"}
+    for attempt in range(2):
+        try:
+            if conn is None:
+                conn = http.client.HTTPSConnection("translate.googleapis.com", timeout=8)
+                _TTS_TLS_LOCAL.conn = conn
+            conn.request("GET", path_and_query, headers=headers)
+            resp = conn.getresponse()
+            data = resp.read()
+            if resp.status == 200 and data:
+                return data
+            if attempt == 0:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                _TTS_TLS_LOCAL.conn = None
+                conn = None
+        except Exception:
+            try:
+                if conn is not None:
+                    conn.close()
+            except Exception:
+                pass
+            _TTS_TLS_LOCAL.conn = None
+            conn = None
+
+    url = f"https://translate.googleapis.com{path_and_query}"
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        return resp.read()
+
+
 def _synthesize_google_tts_mp3_sync(text: str, is_ar: bool) -> bytes:
     """Resilient HTTPS fallback via Google TTS (works reliably on GCP IPs when Bing returns 403)."""
     lang = "ar" if is_ar else "en-GB"
     audio_parts: list[bytes] = []
     for chunk in _split_tts_http_chunks(text, max_chars=175):
         q = urllib.parse.quote(chunk)
-        url = f"https://translate.googleapis.com/translate_tts?ie=UTF-8&client=gtx&tl={lang}&q={q}"
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = resp.read()
-            if data:
-                audio_parts.append(data)
+        data = _google_tts_http_get_sync(f"/translate_tts?ie=UTF-8&client=gtx&tl={lang}&q={q}")
+        if data:
+            audio_parts.append(data)
     return b"".join(audio_parts)
 
 
@@ -92,9 +128,13 @@ async def _synthesize_edge_mp3(clean_text: str, voice: str, is_ar: bool) -> byte
     try:
         communicate = edge_tts.Communicate(clean_text, voice, pitch=pitch, rate=rate)
         mp3_chunks: list[bytes] = []
-        async for chunk in communicate.stream():
-            if chunk.get("type") == "audio" and chunk.get("data"):
-                mp3_chunks.append(chunk["data"])
+
+        async def _collect_edge_audio():
+            async for chunk in communicate.stream():
+                if chunk.get("type") == "audio" and chunk.get("data"):
+                    mp3_chunks.append(chunk["data"])
+
+        await asyncio.wait_for(_collect_edge_audio(), timeout=4.0)
         payload = b"".join(mp3_chunks)
         if not payload:
             raise RuntimeError("edge-tts returned empty audio stream")
@@ -291,16 +331,22 @@ async def synthesize_pcm_frames(
 ):
     """
     Async generator yielding fixed-duration s16le PCM frames (default 20ms = 1920 bytes @ 48kHz mono)
-    sentence-by-sentence for low time-to-first-audio in live voice calls.
+    sentence-by-sentence with next-sentence lookahead prefetch for seamless live voice playback.
     """
     frame_bytes = (sample_rate * 2 * channels * frame_ms) // 1000
-    for sentence in split_speakable_sentences(text):
-        pcm = await synthesize_pcm_bytes(
-            sentence,
-            voice=voice,
-            sample_rate=sample_rate,
-            channels=channels,
-        )
+    sentences = split_speakable_sentences(text)
+    if not sentences:
+        return
+
+    next_task = asyncio.create_task(
+        synthesize_pcm_bytes(sentences[0], voice=voice, sample_rate=sample_rate, channels=channels)
+    )
+    for idx in range(len(sentences)):
+        pcm = await next_task
+        if idx + 1 < len(sentences):
+            next_task = asyncio.create_task(
+                synthesize_pcm_bytes(sentences[idx + 1], voice=voice, sample_rate=sample_rate, channels=channels)
+            )
         if not pcm:
             continue
         for offset in range(0, len(pcm), frame_bytes):

@@ -2385,6 +2385,193 @@ class TestTier6JarvisV2(unittest.TestCase):
 
         asyncio.run(_verify_10ms_and_streams())
 
+    def test_66_voice_call_actions_hangup_callbacks_latency_and_shared_logs(self):
+        """Verify 0-think proxy envelope, cached live context, in-call Gmail/draft/callback/end_call tools, hangup, and unified logs."""
+        import asyncio
+        import json
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        import antigravity_proxy
+        import async_callback_engine
+        import telegram_voice_caller
+        import voice_engine
+
+        # 1. Proxy thinking_budget=0 vs default 1024
+        zero_env = antigravity_proxy.build_antigravity_envelope(
+            {"messages": [{"role": "user", "content": "hi"}], "thinking_budget": 0},
+            "gemini-3.8-flash-low",
+        )
+        zero_gen = zero_env.get("request", zero_env).get("generationConfig", {})
+        self.assertEqual(zero_gen.get("thinkingConfig", {}).get("thinkingBudget"), 0)
+        self.assertIs(zero_gen.get("thinkingConfig", {}).get("includeThoughts"), False)
+
+        default_env = antigravity_proxy.build_antigravity_envelope(
+            {"messages": [{"role": "user", "content": "hi"}]},
+            "gemini-3.8-flash-low",
+        )
+        default_gen = default_env.get("request", default_env).get("generationConfig", {})
+        self.assertEqual(default_gen.get("thinkingConfig", {}).get("thinkingBudget"), 1024)
+
+        # Verify SOUL.md documents unified Bot <-> Voice Call shared memory paths
+        soul_text = (Path(__file__).resolve().parent.parent / "profile" / "SOUL.md").read_text(encoding="utf-8")
+        self.assertIn("latest_voice_call.json", soul_text)
+        self.assertIn("RECENT_VOICE_CALLS.md", soul_text)
+
+        async def _verify_voice_upgrade():
+            with tempfile.TemporaryDirectory() as tmp:
+                tmp_path = Path(tmp)
+                home_dir = tmp_path / "home"
+                aethelgard_home = home_dir / ".aethelgard"
+                state_dir = aethelgard_home / "state"
+                vault_dir = tmp_path / "vault"
+                hermes_home = home_dir / ".hermes"
+                state_dir.mkdir(parents=True, exist_ok=True)
+                vault_dir.mkdir(parents=True, exist_ok=True)
+                hermes_home.mkdir(parents=True, exist_ok=True)
+                (vault_dir / "log.md").write_text("# Log\n", encoding="utf-8")
+
+                with patch.dict(
+                    "os.environ",
+                    {
+                        "HOME": str(home_dir),
+                        "USERPROFILE": str(home_dir),
+                        "AETHELGARD_HOME": str(aethelgard_home),
+                        "AETHELGARD_STATE_DIR": str(state_dir),
+                        "AETHELGARD_VAULT_DIR": str(vault_dir),
+                        "VAULT_DIR": str(vault_dir),
+                        "HERMES_HOME": str(hermes_home),
+                    },
+                ):
+                    loop = asyncio.get_running_loop()
+                    mgr = telegram_voice_caller.TelegramP2PCallManager(loop)
+                    mgr.client = AsyncMock()
+                    mgr.ntg = MagicMock()
+                    mgr.ntg.stop = AsyncMock(return_value=None)
+                    mgr._init_call_context(
+                        1021125594,
+                        SimpleNamespace(id=999001, access_hash=555),
+                        999001,
+                        opening_prompt=None,
+                    )
+                    brain = mgr.active_calls[1021125594]["brain"]
+                    brain.vault_dir = str(vault_dir)
+
+                    warm_adapter = MagicMock()
+                    warm_adapter.get_latest_emails.return_value = [
+                        {"id": "1", "sender": "boss@example.com", "subject": "Morning Brief", "snippet": "Check roster"}
+                    ]
+                    with patch(
+                        "circadian_oracle.get_operational_mode",
+                        return_value={"mode": "DEEP_WORK", "irops_alert": False},
+                    ) as mock_circ, patch(
+                        "calendar_bridge.get_unified_agenda",
+                        return_value={"events": [{"summary": "Standup", "start": "09:00"}], "shifts": []},
+                    ) as mock_cal, patch(
+                        "omnichannel_bridge.GoogleAdapter",
+                        return_value=warm_adapter,
+                    ):
+                        brain.warm_live_context(fetch_network=True)
+                        mock_circ.assert_called()
+                        mock_circ.reset_mock()
+                        mock_cal.reset_mock()
+                        prompt = brain.build_system_prompt()
+                        self.assertIn("DEEP_WORK", prompt)
+                        mock_circ.assert_not_called()
+                        mock_cal.assert_not_called()
+
+                    # Verify _post_proxy sends thinking_budget=0
+                    captured_payloads = []
+
+                    def _fake_urlopen(req, timeout=None):
+                        captured_payloads.append(json.loads(req.data.decode("utf-8")))
+                        resp = MagicMock()
+                        resp.__enter__.return_value = resp
+                        resp.read.return_value = json.dumps(
+                            {"choices": [{"message": {"role": "assistant", "content": "Done Omar, hanging up now."}}]}
+                        ).encode("utf-8")
+                        return resp
+
+                    with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
+                        await asyncio.to_thread(brain._post_proxy, [{"role": "user", "content": "status?"}])
+                    self.assertTrue(captured_payloads)
+                    self.assertEqual(captured_payloads[-1].get("thinking_budget"), 0)
+
+                    # check_gmail query hydrates search stubs (missing subject/body) via read_email
+                    fake_adapter = MagicMock()
+                    fake_adapter.search_emails.return_value = [{"id": "42", "sender": "hr@etihad.ae"}]
+                    fake_adapter.read_email.return_value = {
+                        "id": "42",
+                        "subject": "Etihad Application",
+                        "sender": "hr@etihad.ae",
+                        "body": "Interview tomorrow at 10am",
+                    }
+                    fake_adapter.create_gmail_draft.return_value = {"success": True, "draft_id": "d-42", "via": "gmail_api"}
+
+                    with patch("omnichannel_bridge.GoogleAdapter", return_value=fake_adapter):
+                        gmail_res = brain.execute_tool_call("check_gmail", {"query": "Etihad"})
+                        self.assertIn("Interview tomorrow at 10am", json.dumps(gmail_res))
+                        fake_adapter.read_email.assert_called_once()
+
+                        draft_res = brain.execute_tool_call(
+                            "save_gmail_draft",
+                            {"to": "hr@etihad.ae", "subject": "Re: Interview", "body": "Confirmed."},
+                        )
+                        self.assertTrue(draft_res.get("success"))
+                        fake_adapter.create_gmail_draft.assert_called_once()
+
+                    # queue_async_task timed_callback with delay_minutes=1 forces urgent=True
+                    with patch(
+                        "async_callback_engine.enqueue_async_job",
+                        wraps=async_callback_engine.enqueue_async_job,
+                    ) as mock_enq:
+                        cb_res = brain.execute_tool_call(
+                            "queue_async_task",
+                            {
+                                "kind": "timed_callback",
+                                "title": "Callback test",
+                                "detail": "Call Omar back",
+                                "delay_minutes": 1,
+                            },
+                        )
+                    self.assertTrue(cb_res.get("success", cb_res.get("queued", True)))
+                    mock_enq.assert_called_once()
+                    self.assertIs(mock_enq.call_args.kwargs.get("urgent"), True)
+
+                    # end_call sets brain.end_call_requested = True
+                    end_res = brain.execute_tool_call("end_call", {"farewell": "Goodbye Omar."})
+                    self.assertTrue(brain.end_call_requested)
+                    self.assertTrue(end_res.get("ending_call"))
+
+                    # Test _handle_utterance auto-hangup and unified shared call logs
+                    async def _fake_converse(pcm_bytes):
+                        brain.end_call_requested = True
+                        brain.sync_call_log(final=True)
+                        return "Goodbye Omar."
+
+                    brain.converse_audio = AsyncMock(side_effect=_fake_converse)
+                    brain.transcribe_user_audio_clip = AsyncMock(return_value="End the call please.")
+                    mgr.hangup_call = AsyncMock(wraps=mgr.hangup_call)
+
+                    async def _fake_synth(text, voice="auto", sample_rate=48000, frame_ms=20):
+                        yield b"\x00" * telegram_voice_caller.FRAME_BYTES_48K
+
+                    with patch.object(voice_engine, "synthesize_pcm_frames", side_effect=_fake_synth):
+                        await mgr._handle_utterance(1021125594, b"\x01\x00" * 4800)
+
+                    mgr.hangup_call.assert_awaited_once_with(1021125594)
+                    self.assertGreaterEqual(mgr.client.await_count, 1)
+                    self.assertNotIn(1021125594, mgr.active_calls)
+                    self.assertTrue((state_dir / "latest_voice_call.json").exists())
+                    self.assertTrue((state_dir / "RECENT_VOICE_CALLS.md").exists())
+                    self.assertTrue((vault_dir / "log.md").exists())
+                    transcript_files = list((vault_dir / "raw" / "transcripts").glob("*-telegram-call.md"))
+                    self.assertTrue(transcript_files)
+
+        asyncio.run(_verify_voice_upgrade())
+
 
 if __name__ == "__main__":
     unittest.main()
