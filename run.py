@@ -948,7 +948,7 @@ def auto_sync_worker():
             pull_res = subprocess.run(["git", "-C", VAULT_DIR, "pull", "--rebase", "origin", VAULT_BRANCH], check=False)
             if pull_res.returncode != 0:
                 _abort_stale_git_rebase(VAULT_DIR)
-                subprocess.run(["git", "-C", VAULT_DIR, "pull", "--no-rebase", "--no-edit", "-X", "union", "origin", VAULT_BRANCH], check=False)
+                subprocess.run(["git", "-C", VAULT_DIR, "pull", "--no-rebase", "--no-edit", "-X", "ours", "origin", VAULT_BRANCH], check=False)
             subprocess.run(["git", "-C", VAULT_DIR, "add", "."], check=True)
             res = subprocess.run(["git", "-C", VAULT_DIR, "commit", "-m", "Auto-sync from Aethelgard 24/7 Custodian"], capture_output=True, text=True)
             if "nothing to commit" not in res.stdout:
