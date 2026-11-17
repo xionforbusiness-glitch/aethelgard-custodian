@@ -1407,7 +1407,7 @@ class VoiceBrainSession:
         )
         for attempt in range(2):
             try:
-                with urllib.request.urlopen(req, timeout=15) as resp:
+                with urllib.request.urlopen(req, timeout=30) as resp:
                     return json.loads(resp.read().decode("utf-8"))
             except urllib.error.HTTPError as exc:
                 err_body = exc.read().decode("utf-8", errors="replace")
@@ -1449,7 +1449,7 @@ class VoiceBrainSession:
             pending_buf = ""
             tool_acc: Dict[int, Dict[str, Any]] = {}
             try:
-                with urllib.request.urlopen(req, timeout=15) as resp:
+                with urllib.request.urlopen(req, timeout=35) as resp:
                     ctype = str(resp.headers.get("Content-Type", "") or "").lower()
                     if "text/event-stream" not in ctype:
                         data = json.loads(resp.read().decode("utf-8"))
