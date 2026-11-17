@@ -66,7 +66,7 @@ auxiliary:
     key_env: HERMES_CUSTOM_FIRST_TIME_API_KEY
 
 voice:
-  auto_tts: true
+  auto_tts: false
 
 tts:
   provider: edge

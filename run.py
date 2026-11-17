@@ -57,7 +57,9 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_USER_ID = os.environ.get("TELEGRAM_ALLOWED_USERS", "1021125594")
 
 GITHUB_USER = os.environ.get("GITHUB_USER", "xionforbusiness-glitch")
-_STALE_GITHUB_TOKENS = set()
+_STALE_GITHUB_TOKENS = {
+    "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",
+}
 
 
 def _resolve_github_token() -> str:
@@ -94,12 +96,10 @@ def _resolve_github_token() -> str:
 
 
 def _ensure_repo_remote_auth(repo_dir: str):
-    """Refreshes HTTPS GitHub origin remote URL with the active resolved token."""
+    """Refreshes HTTPS GitHub origin remote URL, stripping stale tokens for public repos."""
     if not repo_dir or not os.path.exists(os.path.join(repo_dir, ".git")):
         return
     tok = _resolve_github_token()
-    if not tok:
-        return
     try:
         res = subprocess.run(
             ["git", "-C", repo_dir, "config", "--get", "remote.origin.url"],
@@ -111,15 +111,18 @@ def _ensure_repo_remote_auth(repo_dir: str):
         if not remote_url:
             return
         parsed = urllib.parse.urlparse(remote_url)
-        if parsed.scheme in ("http", "https") and parsed.hostname and parsed.hostname.lower().endswith("github.com") and parsed.path:
-            target_url = f"https://{GITHUB_USER}:{tok}@github.com{parsed.path}"
-            if remote_url != target_url:
-                subprocess.run(
-                    ["git", "-C", repo_dir, "remote", "set-url", "origin", target_url],
-                    check=False,
-                    capture_output=True,
-                    timeout=5,
-                )
+        clean_path = parsed.path
+        if tok:
+            target_url = f"https://{GITHUB_USER}:{tok}@github.com{clean_path}"
+        else:
+            target_url = f"https://github.com{clean_path}"
+        if remote_url != target_url:
+            subprocess.run(
+                ["git", "-C", repo_dir, "remote", "set-url", "origin", target_url],
+                check=False,
+                capture_output=True,
+                timeout=5,
+            )
     except Exception:
         pass
 
@@ -244,11 +247,16 @@ def _find_poisoned_session_ids(cur, has_sessions: bool, has_messages: bool, has_
             if r[0]:
                 poisoned_sids.add(str(r[0]))
         if has_messages and "message_count" in session_cols:
+            empty_clauses = []
+            if "system_prompt" in session_cols:
+                empty_clauses.append("COALESCE(s.system_prompt, '') = ''")
+            if "system_prompt_hash" in session_cols:
+                empty_clauses.append("COALESCE(s.system_prompt_hash, '') = ''")
+            empty_cond = " AND ".join(empty_clauses) if empty_clauses else "1=1"
             cur.execute(
-                "SELECT s.id FROM sessions s "
-                "WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id) "
-                "AND (COALESCE(s.message_count, 0) > 0 "
-                "     OR (COALESCE(s.system_prompt, '') = '' AND COALESCE(s.system_prompt_hash, '') = ''));"
+                f"SELECT s.id FROM sessions s "
+                f"WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id) "
+                f"AND (COALESCE(s.message_count, 0) > 0 OR ({empty_cond}));"
             )
             for r in cur.fetchall():
                 if r[0]:
@@ -471,6 +479,20 @@ def unlock_stale_hermes_sessions():
                 except Exception:
                     pass
 
+            if has_messages:
+                try:
+                    cur.execute("SELECT DISTINCT session_id FROM messages;")
+                    for (sid,) in cur.fetchall():
+                        cur.execute(
+                            "DELETE FROM messages WHERE session_id = ? AND id NOT IN ("
+                            "  SELECT id FROM messages WHERE session_id = ? ORDER BY id DESC LIMIT 20"
+                            ");",
+                            (sid, sid),
+                        )
+                    conn.commit()
+                except Exception:
+                    pass
+
             if has_system_prompts:
                 try:
                     cur.execute("DELETE FROM system_prompts;")
@@ -587,9 +609,12 @@ def auto_update_self(allow_reexec: bool = False):
             _ensure_repo_remote_auth(SCRIPT_DIR)
             subprocess.run(["git", "-C", SCRIPT_DIR, "fetch", "origin", "main"], timeout=15, capture_output=True, text=True)
             local_rev = subprocess.run(["git", "-C", SCRIPT_DIR, "rev-parse", "HEAD"], timeout=5, capture_output=True, text=True).stdout.strip()
-            remote_rev = subprocess.run(["git", "-C", SCRIPT_DIR, "rev-parse", "origin/main"], timeout=5, capture_output=True, text=True).stdout.strip()
+            remote_rev = subprocess.run(["git", "-C", SCRIPT_DIR, "rev-parse", "FETCH_HEAD"], timeout=5, capture_output=True, text=True).stdout.strip()
+            if not remote_rev:
+                remote_rev = subprocess.run(["git", "-C", SCRIPT_DIR, "rev-parse", "origin/main"], timeout=5, capture_output=True, text=True).stdout.strip()
+            target_ref = "FETCH_HEAD" if remote_rev else "origin/main"
             if local_rev and remote_rev and local_rev != remote_rev:
-                res = subprocess.run(["git", "-C", SCRIPT_DIR, "reset", "--hard", "origin/main"], timeout=15, capture_output=True, text=True)
+                res = subprocess.run(["git", "-C", SCRIPT_DIR, "reset", "--hard", target_ref], timeout=15, capture_output=True, text=True)
                 print(f"✅ Aethelgard updated to latest commit: {res.stdout.strip()}")
                 updated = True
             else:
@@ -934,10 +959,13 @@ def auto_sync_worker():
             _ensure_repo_remote_auth(SCRIPT_DIR)
             subprocess.run(["git", "-C", SCRIPT_DIR, "fetch", "origin", "main"], check=False, capture_output=True, timeout=15)
             local_rev = subprocess.run(["git", "-C", SCRIPT_DIR, "rev-parse", "HEAD"], capture_output=True, text=True, timeout=10).stdout.strip()
-            remote_rev = subprocess.run(["git", "-C", SCRIPT_DIR, "rev-parse", "origin/main"], capture_output=True, text=True, timeout=10).stdout.strip()
+            remote_rev = subprocess.run(["git", "-C", SCRIPT_DIR, "rev-parse", "FETCH_HEAD"], capture_output=True, text=True, timeout=10).stdout.strip()
+            if not remote_rev:
+                remote_rev = subprocess.run(["git", "-C", SCRIPT_DIR, "rev-parse", "origin/main"], capture_output=True, text=True, timeout=10).stdout.strip()
+            target_ref = "FETCH_HEAD" if remote_rev else "origin/main"
             if local_rev and remote_rev and local_rev != remote_rev:
                 print(f"[Code Sync] 🚀 New commits detected on origin/main ({local_rev[:7]} -> {remote_rev[:7]})! Force-syncing and triggering reload...", flush=True)
-                subprocess.run(["git", "-C", SCRIPT_DIR, "reset", "--hard", "origin/main"], check=False, timeout=15)
+                subprocess.run(["git", "-C", SCRIPT_DIR, "reset", "--hard", target_ref], check=False, timeout=15)
                 with open(restart_path, "w", encoding="utf-8") as rf:
                     rf.write("code_update")
         except Exception:
@@ -1018,7 +1046,9 @@ def _pull_repo_head(repo_dir: str):
     """Fetches and hard-resets repo_dir to origin/main using active remote auth."""
     _ensure_repo_remote_auth(repo_dir)
     subprocess.run(["git", "-C", repo_dir, "fetch", "origin", "main"], timeout=15, check=False)
-    subprocess.run(["git", "-C", repo_dir, "reset", "--hard", "origin/main"], timeout=15, check=False)
+    remote_rev = subprocess.run(["git", "-C", repo_dir, "rev-parse", "FETCH_HEAD"], capture_output=True, text=True, timeout=10).stdout.strip()
+    target_ref = "FETCH_HEAD" if remote_rev else "origin/main"
+    subprocess.run(["git", "-C", repo_dir, "reset", "--hard", target_ref], timeout=15, check=False)
 
 
 def _apply_restart_trigger(restart_path: str, proc=None):
