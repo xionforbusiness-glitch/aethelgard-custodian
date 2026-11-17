@@ -39,14 +39,6 @@ fallback_providers:
     base_url: http://127.0.0.1:20128/v1
     key_env: HERMES_CUSTOM_FIRST_TIME_API_KEY
   - provider: first-time
-    model: antigravity/gemini-2.5-flash
-    base_url: http://127.0.0.1:20128/v1
-    key_env: HERMES_CUSTOM_FIRST_TIME_API_KEY
-  - provider: first-time
-    model: antigravity/gemini-3.5-flash-lite
-    base_url: http://127.0.0.1:20128/v1
-    key_env: HERMES_CUSTOM_FIRST_TIME_API_KEY
-  - provider: first-time
     model: antigravity/gemini-3.8-flash-high
     base_url: http://127.0.0.1:20128/v1
     key_env: HERMES_CUSTOM_FIRST_TIME_API_KEY

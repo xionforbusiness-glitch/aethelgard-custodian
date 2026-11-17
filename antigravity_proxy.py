@@ -123,8 +123,6 @@ MODEL_ALIAS_MAP = {
 DEFAULT_FAILOVER_MODELS = [
     "gemini-3.8-flash-low",
     "gemini-3.8-flash-medium",
-    "gemini-2.5-flash",
-    "gemini-3.5-flash-lite",
     "gemini-3.8-flash-high",
     "claude-sonnet-4-6",
 ]
@@ -227,8 +225,8 @@ ALLOWED_SCHEMA_KEYS = {
 }
 
 
-def clean_json_schema(schema):
-    """Sanitizes OpenAI JSON Schema into Gemini/Antigravity-compatible Schema object."""
+def clean_json_schema(schema, max_desc_len: int = 120):
+    """Sanitizes and minifies OpenAI JSON Schema into Gemini/Antigravity-compatible Schema object."""
     if not isinstance(schema, dict):
         return {"type": "object", "properties": {}}
 
@@ -243,16 +241,18 @@ def clean_json_schema(schema):
         cleaned["type"] = raw_type
 
     if "description" in schema and isinstance(schema["description"], str):
-        cleaned["description"] = schema["description"]
+        desc = schema["description"].strip()
+        if desc:
+            cleaned["description"] = desc[:max_desc_len]
 
     if "enum" in schema and isinstance(schema["enum"], list):
-        cleaned["enum"] = [str(v) for v in schema["enum"]]
+        cleaned["enum"] = [str(v) for v in schema["enum"]][:20]
 
     if "properties" in schema and isinstance(schema["properties"], dict):
         props = {}
         for k, v in schema["properties"].items():
             if isinstance(v, dict):
-                props[k] = clean_json_schema(v)
+                props[k] = clean_json_schema(v, max_desc_len=max_desc_len)
         cleaned["properties"] = props
         if "type" not in cleaned:
             cleaned["type"] = "object"
@@ -265,9 +265,9 @@ def clean_json_schema(schema):
 
     if "items" in schema:
         if isinstance(schema["items"], dict):
-            cleaned["items"] = clean_json_schema(schema["items"])
+            cleaned["items"] = clean_json_schema(schema["items"], max_desc_len=max_desc_len)
         elif isinstance(schema["items"], list) and schema["items"]:
-            cleaned["items"] = clean_json_schema(schema["items"][0])
+            cleaned["items"] = clean_json_schema(schema["items"][0], max_desc_len=max_desc_len)
         if "type" not in cleaned:
             cleaned["type"] = "array"
 
@@ -277,7 +277,7 @@ def clean_json_schema(schema):
             if isinstance(v, dict) and v.get("type") != "null"
         ]
         if len(non_null_variants) == 1:
-            merged = clean_json_schema(non_null_variants[0])
+            merged = clean_json_schema(non_null_variants[0], max_desc_len=max_desc_len)
             if "description" in cleaned and "description" not in merged:
                 merged["description"] = cleaned["description"]
             cleaned = merged
@@ -609,6 +609,10 @@ def build_antigravity_envelope(
         if "maxOutputTokens" in gen_cfg and gen_cfg["maxOutputTokens"] <= budget:
             gen_cfg["maxOutputTokens"] = budget + 4096
 
+    # Bound system instruction to avoid single-request payload bloat
+    if len(effective_sys) > 16000:
+        effective_sys = effective_sys[:16000]
+
     req_inner = {
         "sessionId": f"-{int(time.time() * 1000)}",
         "contents": merged_contents,
@@ -630,10 +634,11 @@ def build_antigravity_envelope(
             name = fn.get("name")
             if not name or name in BUILTIN_TOOL_NAMES:
                 continue
+            desc = str(fn.get("description") or "").strip()[:120]
             fn_decls.append({
                 "name": str(name),
-                "description": str(fn.get("description") or ""),
-                "parameters": clean_json_schema(fn.get("parameters") or {"type": "object", "properties": {}}),
+                "description": desc,
+                "parameters": clean_json_schema(fn.get("parameters") or {"type": "object", "properties": {}}, max_desc_len=100),
             })
         if fn_decls:
             req_inner["tools"] = [{"functionDeclarations": fn_decls}]
@@ -647,6 +652,29 @@ def build_antigravity_envelope(
         "requestId": f"agent/{int(time.time() * 1000)}/{uuid.uuid4().hex[:10]}",
         "request": req_inner,
     }
+
+    # Upstream gatekeeper imposes a strict ~50 KiB total request budget.
+    # Enforce safe envelope budget (<= 45,000 bytes) to prevent HTTP 429 RESOURCE_EXHAUSTED.
+    try:
+        env_bytes_len = len(json.dumps(envelope).encode("utf-8"))
+        if env_bytes_len > 45000:
+            while env_bytes_len > 45000 and len(merged_contents) > 2:
+                drop_idx = 1 if len(merged_contents) > 3 else 0
+                merged_contents.pop(drop_idx)
+                req_inner["contents"] = merged_contents
+                env_bytes_len = len(json.dumps(envelope).encode("utf-8"))
+
+            if env_bytes_len > 45000 and len(effective_sys) > 8000:
+                effective_sys = effective_sys[:8000]
+                req_inner["systemInstruction"]["parts"] = [{"text": effective_sys}]
+                env_bytes_len = len(json.dumps(envelope).encode("utf-8"))
+
+            if env_bytes_len > 45000 and len(effective_sys) > 4000:
+                effective_sys = effective_sys[:4000]
+                req_inner["systemInstruction"]["parts"] = [{"text": effective_sys}]
+    except Exception:
+        pass
+
     return envelope
 
 
