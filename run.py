@@ -283,7 +283,13 @@ def _find_poisoned_session_ids(cur, has_sessions: bool, has_messages: bool, has_
                 "OR content LIKE '%thinking through how to approach%' "
                 "OR content LIKE '%Initial attempt to use terminal%' "
                 "OR content LIKE '%executed via a code execution tool%' "
-                "OR content LIKE '%Gemini 3.5 Flash is no longer available%';"
+                "OR content LIKE '%Gemini 3.5 Flash is no longer available%' "
+                "OR content LIKE '%API call failed after%' "
+                "OR content LIKE '%Rate limited after%' "
+                "OR content LIKE '%Resource has been exhausted%' "
+                "OR content LIKE '%HTTP 429%' "
+                "OR content LIKE '%switching to fallback provider%' "
+                "OR content LIKE '%Primary model failed — switching to fallback%';"
             )
             for r in cur.fetchall():
                 if r[0]:
@@ -705,20 +711,19 @@ def start_omniroute_if_needed():
 
 def init_omniroute():
     print("\n🧠 [2/4] Initializing Native Google Antigravity Pro Plan Gateway (Zero-Lockout Engine)...")
-    if not is_omniroute_alive():
-        # Terminate any legacy Node.js omniroute process holding port 20128
-        if os.name != "nt":
-            subprocess.run(
-                f"omniroute stop 2>/dev/null; pkill -9 -f omniroute 2>/dev/null; fuser -k {OMNIROUTE_PORT}/tcp 2>/dev/null || true",
-                shell=True,
-                check=False,
-            )
-            time.sleep(1)
+    # Terminate any stale proxy or node omniroute process holding port 20128 to ensure latest code runs
+    if os.name != "nt":
+        subprocess.run(
+            f"fuser -k {OMNIROUTE_PORT}/tcp 2>/dev/null; pkill -9 -f 'antigravity_proxy' 2>/dev/null; pkill -9 -f 'omniroute' 2>/dev/null || true",
+            shell=True,
+            check=False,
+        )
+        time.sleep(1)
 
-        # Warm up OAuth token cache and start in-process multi-threaded proxy server
-        get_valid_access_token(force_refresh=True)
-        start_antigravity_proxy_background(int(OMNIROUTE_PORT))
-        time.sleep(0.5)
+    # Warm up OAuth token cache and start in-process multi-threaded proxy server
+    get_valid_access_token(force_refresh=True)
+    start_antigravity_proxy_background(int(OMNIROUTE_PORT))
+    time.sleep(0.5)
 
     # Smoke test Antigravity Pro Gemini 3.8 Flash Low
     print(f"🧪 Smoke testing {MODEL_DEFAULT} via Native Antigravity Pro Gateway...")
@@ -968,6 +973,12 @@ def auto_sync_worker():
                 subprocess.run(["git", "-C", SCRIPT_DIR, "reset", "--hard", target_ref], check=False, timeout=15)
                 with open(restart_path, "w", encoding="utf-8") as rf:
                     rf.write("code_update")
+                if active_gateway_proc is not None:
+                    try:
+                        active_gateway_proc.terminate()
+                    except Exception:
+                        pass
+                _restart_custodian_process()
         except Exception:
             pass
 
