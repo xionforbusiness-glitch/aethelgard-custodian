@@ -610,8 +610,8 @@ def build_antigravity_envelope(
             gen_cfg["maxOutputTokens"] = budget + 4096
 
     # Bound system instruction to avoid single-request payload bloat
-    if len(effective_sys) > 6000:
-        effective_sys = effective_sys[:6000]
+    if len(effective_sys) > 16000:
+        effective_sys = effective_sys[:16000]
 
     req_inner = {
         "sessionId": f"-{int(time.time() * 1000)}",
@@ -634,11 +634,11 @@ def build_antigravity_envelope(
             name = fn.get("name")
             if not name or name in BUILTIN_TOOL_NAMES:
                 continue
-            desc = str(fn.get("description") or "").strip()[:80]
+            desc = str(fn.get("description") or "").strip()[:100]
             fn_decls.append({
                 "name": str(name),
                 "description": desc,
-                "parameters": clean_json_schema(fn.get("parameters") or {"type": "object", "properties": {}}, max_desc_len=60),
+                "parameters": clean_json_schema(fn.get("parameters") or {"type": "object", "properties": {}}, max_desc_len=80),
             })
         if fn_decls:
             req_inner["tools"] = [{"functionDeclarations": fn_decls}]
@@ -653,34 +653,22 @@ def build_antigravity_envelope(
         "request": req_inner,
     }
 
-    # Upstream gatekeeper (Google CloudCode PA) strictly enforces a ~22 KiB / 5,000 prompt token limit.
-    # Exceeding this triggers upstream HTTP 429 RESOURCE_EXHAUSTED.
-    # Enforce safe envelope budget (<= 19,500 bytes) to guarantee 100% 200 OK responses.
-    TARGET_ENVELOPE_BUDGET = int(os.environ.get("ANTIGRAVITY_ENVELOPE_BUDGET", "19500"))
+    # Enforce safe envelope budget while always preserving the latest user turn and active tool call pairs.
+    TARGET_ENVELOPE_BUDGET = int(os.environ.get("ANTIGRAVITY_ENVELOPE_BUDGET", "45000"))
     try:
         env_bytes_len = len(json.dumps(envelope).encode("utf-8"))
         if env_bytes_len > TARGET_ENVELOPE_BUDGET:
-            # 1. Compact multi-turn history first
+            # 1. Drop oldest turns from index 0 (never drop the latest request or split active tool pairs)
             while env_bytes_len > TARGET_ENVELOPE_BUDGET and len(merged_contents) > 2:
-                drop_idx = 1 if len(merged_contents) > 3 else 0
-                merged_contents.pop(drop_idx)
+                merged_contents.pop(0)
+                while len(merged_contents) > 1:
+                    head = merged_contents[0]
+                    is_fn_resp = any("functionResponse" in p for p in (head.get("parts") or []) if isinstance(p, dict))
+                    if head.get("role") != "user" or is_fn_resp:
+                        merged_contents.pop(0)
+                    else:
+                        break
                 req_inner["contents"] = merged_contents
-                env_bytes_len = len(json.dumps(envelope).encode("utf-8"))
-
-            # 2. Progressively prune system instruction
-            for sys_target in (4500, 3500, 2500, 1800):
-                if env_bytes_len <= TARGET_ENVELOPE_BUDGET:
-                    break
-                if len(effective_sys) > sys_target:
-                    effective_sys = effective_sys[:sys_target]
-                    req_inner["systemInstruction"]["parts"] = [{"text": effective_sys}]
-                    env_bytes_len = len(json.dumps(envelope).encode("utf-8"))
-
-            # 3. If still over budget, aggressively shorten tool descriptions
-            if env_bytes_len > TARGET_ENVELOPE_BUDGET and "tools" in req_inner:
-                for fn_item in req_inner["tools"][0].get("functionDeclarations", []):
-                    if "description" in fn_item and len(fn_item["description"]) > 35:
-                        fn_item["description"] = fn_item["description"][:35]
                 env_bytes_len = len(json.dumps(envelope).encode("utf-8"))
     except Exception:
         pass
