@@ -1083,6 +1083,12 @@ class AntigravityGatewayHandler(BaseHTTPRequestHandler):
         content_len = int(self.headers.get("Content-Length", "0"))
         raw_body = self.rfile.read(content_len) if content_len > 0 else b"{}"
         try:
+            dump_path = "/tmp/hermes_last_request.json" if os.name != "nt" else os.path.join(os.path.dirname(__file__), "last_request.json")
+            with open(dump_path, "wb") as f:
+                f.write(raw_body)
+        except Exception:
+            pass
+        try:
             body = json.loads(raw_body.decode("utf-8", errors="replace"))
         except Exception as e:
             self._send_json(400, {"error": {"message": f"Invalid JSON body: {e}"}})
