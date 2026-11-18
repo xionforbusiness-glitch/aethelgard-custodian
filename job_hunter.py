@@ -97,9 +97,13 @@ EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,10}\b")
 EXCLUDE_TITLE_OR_DESC_PATTERNS = [
     r"\bemiratisation\b",
     r"\bemirati\s+national",
-    r"\buae\s+national[s]?\s+only\b",
+    r"\buae\s+national[s]?\b",
+    r"\buaen\b",
     r"\bsaudi\s+national[s]?\s+only\b",
     r"\bus\s+citizen[s]?\s+only\b",
+    r"\bus\s+(east|west)\s+coast\b",
+    r"-\s*us\s*(@|$|\|)",
+    r"\bhangzhou\b|\bchina\b",
     r"\bsecurity\s+clearance\s+required\b",
     r"\btop\s+secret\b",
     r"\bprincipal\b",
@@ -398,28 +402,37 @@ def _score_job(job: Dict[str, Any]) -> Tuple[int, List[str]]:
 
 def firecrawl_search(query: str, api_key: str, limit: int = 12) -> List[Dict[str, Any]]:
     payload = json.dumps({"query": query, "limit": limit}).encode("utf-8")
-    req = urllib.request.Request(
-        FIRECRAWL_SEARCH_URL,
-        data=payload,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-            "User-Agent": "AethelgardJobHunter/1.0",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=25) as resp:
-            data = json.loads(resp.read().decode("utf-8", errors="replace"))
-        if not data.get("success"):
+    for attempt in range(2):
+        req = urllib.request.Request(
+            FIRECRAWL_SEARCH_URL,
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "User-Agent": "AethelgardJobHunter/1.0",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=25) as resp:
+                data = json.loads(resp.read().decode("utf-8", errors="replace"))
+            time.sleep(1.0)
+            if not data.get("success"):
+                return []
+            raw_items = data.get("data") or []
+            if isinstance(raw_items, dict):
+                raw_items = raw_items.get("web") or []
+            return raw_items if isinstance(raw_items, list) else []
+        except urllib.error.HTTPError as he:
+            if he.code == 429 and attempt == 0:
+                time.sleep(6.0)
+                continue
+            print(f"[job_hunter] Firecrawl search warning ({query[:55]}...): HTTP {he.code}", file=sys.stderr)
             return []
-        raw_items = data.get("data") or []
-        if isinstance(raw_items, dict):
-            raw_items = raw_items.get("web") or []
-        return raw_items if isinstance(raw_items, list) else []
-    except Exception as exc:
-        print(f"[job_hunter] Firecrawl search warning ({query[:55]}...): {exc}", file=sys.stderr)
-        return []
+        except Exception as exc:
+            print(f"[job_hunter] Firecrawl search warning ({query[:55]}...): {exc}", file=sys.stderr)
+            return []
+    return []
 
 
 def firecrawl_scrape_markdown(url: str, api_key: str) -> str:
