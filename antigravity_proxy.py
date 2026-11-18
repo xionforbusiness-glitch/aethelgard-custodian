@@ -1058,24 +1058,27 @@ def _vertex_model_chain(requested_model: str, is_title: bool = False) -> list[tu
     if is_title or "lite" in m:
         return [
             ("google/gemini-3.5-flash-lite", None),
-            ("google/gemini-3.6-flash", "low"),
+            ("google/gemini-3.8-flash", None),
         ]
     if any(k in m for k in ("high", "pro", "opus", "thinking", "custodian", "vault")):
         return [
+            ("google/gemini-3.8-flash", None),
             ("google/gemini-3.6-flash", "high"),
             ("google/gemini-3.5-flash", "high"),
             ("google/gemini-3.5-flash-lite", None),
         ]
     if any(k in m for k in ("medium", "tiered", "sonnet", "claude")):
         return [
+            ("google/gemini-3.8-flash", None),
             ("google/gemini-3.6-flash", "medium"),
             ("google/gemini-3.5-flash", "medium"),
             ("google/gemini-3.5-flash-lite", None),
         ]
     return [
-        ("google/gemini-3.6-flash", "low"),
+        ("google/gemini-3.8-flash", None),
         ("google/gemini-3.5-flash-lite", None),
-        ("google/gemini-3.5-flash", "low"),
+        ("google/gemini-3.6-flash", None),
+        ("google/gemini-3.5-flash", None),
     ]
 
 
