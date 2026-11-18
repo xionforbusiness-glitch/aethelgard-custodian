@@ -113,8 +113,23 @@ EXCLUDE_TITLE_OR_DESC_PATTERNS = [
     r"\bfirst\s+officer\b",
     r"\btype\s+rated\b",
     r"\baircraft\s+maintenance\s+engineer\b",
+    # Exclude roles specifically requiring languages Omar does not list
+    r"\b(turkish|cantonese|mandarin|chinese|japanese|korean|german|french|spanish|portuguese|italian|dutch|polish|russian|vietnamese|thai|indonesian|malay|tagalog|hindi|urdu|swedish|norwegian|danish|finnish|greek|czech|romanian|hungarian|hebrew)\s*(speaker|speakers|speaking|fluent|native|language|support|customer|only|\)|$)",
+    r"\bin\s+(turkish|cantonese|mandarin|chinese|japanese|korean|german|french|spanish|portuguese|italian|dutch|polish|russian|vietnamese)\b",
+    # Exclude non-MENA/non-remote Asia-Pacific station-locked postings
+    r"\b(shenzhen|shanghai|beijing|guangzhou|ho\s+chi\s+minh|hanoi|tokyo|osaka|seoul|manila|jakarta|bangkok|kuala\s+lumpur|mumbai|delhi|bangalore|chennai|hyderabad|karachi|lahore|islamabad)\b",
+    # Exclude generic search/listicle titles
+    r"^\d+\+?\s+.*\bjobs\b",
 ]
 EXCLUDE_RE = re.compile("|".join(EXCLUDE_TITLE_OR_DESC_PATTERNS), re.IGNORECASE)
+
+AGGREGATOR_OR_NON_DIRECT_HOSTS = (
+    "linkedin.com", "facebook.com", "instagram.com", "youtube.com", "reddit.com", "tiktok.com",
+    "indeed.com", "glassdoor.com", "bayt.com", "gulftalent.com", "naukrigulf.com",
+    "ziprecruiter.com", "jooble.org", "simplyhired.com", "monster.com", "talent.com",
+    "careerjet.", "dubizzle.com", "olx.", "reed.co.uk", "totaljobs.com", "seek.com",
+    "jobrapido.com", "adzuna.", "neuvoo.", "lensa.com", "builtIn.com",
+)
 
 # Search queries organized by target track
 TRACK_QUERIES: Dict[str, List[Tuple[str, str]]] = {
@@ -244,14 +259,18 @@ def _detect_ats(url: str) -> Tuple[str, bool]:
 
 
 def _is_valid_job_url(url: str) -> bool:
-    """Filters out generic root domains / blog pages that are not actual job postings."""
+    """Filters out generic root domains, job aggregators, and search-result pages."""
     parsed = urllib.parse.urlsplit(url)
     host = parsed.netloc.lower()
     path = parsed.path.strip("/")
     if not host or not path:
         return False
-    # Reject social feeds & search results
-    if any(b in host for b in ("linkedin.com", "facebook.com", "instagram.com", "youtube.com", "reddit.com", "tiktok.com")):
+    # Reject social feeds & aggregator search/list pages
+    if any(b.lower() in host for b in AGGREGATOR_OR_NON_DIRECT_HOSTS):
+        return False
+    # Reject obvious search/query directory pages
+    low_path = path.lower()
+    if low_path.startswith("q-") or "/q-" in low_path or low_path.endswith("-jobs.html"):
         return False
     parts = [p for p in path.split("/") if p]
     # ATS portals must point to a specific job, not just company board root
