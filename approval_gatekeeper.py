@@ -387,41 +387,67 @@ def format_approval_card(draft: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _load_env_fallback(key: str) -> str:
+    val = os.environ.get(key, "").strip()
+    if val:
+        return val
+    for env_path in (
+        Path(__file__).resolve().parent / ".env",
+        Path.home() / ".hermes" / "profiles" / "llm-wiki" / ".env",
+    ):
+        if env_path.is_file():
+            try:
+                for line in env_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    s = line.strip()
+                    if s and not s.startswith("#") and "=" in s:
+                        k, v = s.split("=", 1)
+                        if k.strip() == key:
+                            return v.strip().strip("'\"")
+            except Exception:
+                pass
+    return ""
+
+
 def send_approval_card_to_telegram(
     draft: Dict[str, Any],
     chat_id: Optional[str] = None,
     token: Optional[str] = None,
 ) -> bool:
     """Sends the interactive approval card to Omar on Telegram."""
-    bot_token = token or os.environ.get("TELEGRAM_BOT_TOKEN", "")
-    target_chat = chat_id or os.environ.get("TELEGRAM_ALLOWED_USERS", "1021125594")
+    bot_token = token or _load_env_fallback("TELEGRAM_BOT_TOKEN")
+    target_chat = (chat_id or _load_env_fallback("TELEGRAM_ALLOWED_USERS") or "1021125594").split(",")[0].strip()
     if not bot_token or not target_chat:
         return False
 
     draft_id = draft.get("draft_id", "")
     text = format_approval_card(draft)
-    payload = {
-        "chat_id": target_chat,
-        "text": text,
-        "parse_mode": "Markdown",
-        "reply_markup": {
-            "keyboard": [
-                [f"✅ Approve {draft_id}", f"❌ Reject {draft_id}"],
-            ],
-            "resize_keyboard": True,
-            "one_time_keyboard": True,
-        },
+    reply_markup = {
+        "keyboard": [
+            [f"✅ Approve {draft_id}", f"❌ Reject {draft_id}"],
+        ],
+        "resize_keyboard": True,
+        "one_time_keyboard": True,
     }
-    try:
-        req = urllib.request.Request(
-            f"https://api.telegram.org/bot{bot_token}/sendMessage",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=8) as resp:
-            return resp.status == 200
-    except Exception:
-        return False
+    for parse_mode in ("Markdown", None):
+        payload: Dict[str, Any] = {
+            "chat_id": target_chat,
+            "text": text[:4000],
+            "reply_markup": reply_markup,
+        }
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+        try:
+            req = urllib.request.Request(
+                f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                if resp.status == 200:
+                    return True
+        except Exception:
+            continue
+    return False
 
 
 def send_mission_receipt_to_telegram(

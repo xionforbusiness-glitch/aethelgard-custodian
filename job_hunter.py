@@ -139,7 +139,11 @@ AGGREGATOR_OR_NON_DIRECT_HOSTS = (
 TRACK_QUERIES: Dict[str, List[Tuple[str, str]]] = {
     "aviation": [
         (
-            "site:jobs.smartrecruiters.com (\"Etihad\" OR \"Emirates\" OR \"dnata\" OR \"Swissport\" OR \"Menzies\") (\"passenger\" OR \"ground\" OR \"VIP\" OR \"customer\" OR \"check-in\" OR \"operations\")",
+            "site:jobs.smartrecruiters.com (\"Etihad\" OR \"Emirates\" OR \"Air Arabia\" OR \"Qatar Airways\" OR \"flydubai\" OR \"dnata\" OR \"Swissport\" OR \"Menzies\") (\"passenger\" OR \"ground\" OR \"VIP\" OR \"customer\" OR \"check-in\" OR \"operations\")",
+            "aviation",
+        ),
+        (
+            "(\"Qatar Airways\" OR \"Air Arabia\" OR \"flydubai\" OR \"Gulf Air\" OR \"Riyadh Air\" OR \"Saudia\" OR \"Oman Air\" OR \"Royal Jordanian\") (\"customer service\" OR \"passenger service\" OR \"ground operations\" OR \"airport\" OR \"check-in\" OR \"reservations\") (\"apply\" OR \"careers\" OR \"jobs\")",
             "aviation",
         ),
         (
@@ -147,7 +151,7 @@ TRACK_QUERIES: Dict[str, List[Tuple[str, str]]] = {
             "aviation",
         ),
         (
-            "(\"Dubai\" OR \"Abu Dhabi\" OR \"Doha\" OR \"GCC\") (\"airport\" OR \"aviation\" OR \"travel consultant\" OR \"Amadeus\" OR \"ground operations\") (\"send your CV\" OR \"careers@\" OR \"hr@\" OR \"recruitment@\")",
+            "(\"Dubai\" OR \"Abu Dhabi\" OR \"Doha\" OR \"Sharjah\" OR \"GCC\") (\"airport\" OR \"aviation\" OR \"airline\" OR \"travel consultant\" OR \"Amadeus\" OR \"ground operations\") (\"send your CV\" OR \"careers@\" OR \"hr@\" OR \"recruitment@\")",
             "aviation",
         ),
     ],
@@ -770,6 +774,8 @@ def stage_safe_email_batch(
             job_url=j["url"],
             job_description=j.get("snippet", ""),
             include_certificates=include_certs,
+            tailor_cv=True,
+            track_override=j.get("track", ""),
             notify_telegram=notify_telegram,
             vault_dir=vault_dir,
         )
@@ -856,6 +862,7 @@ def main() -> int:
     parser.add_argument("--scrape-emails", type=int, default=4, help="Max non-ATS pages to scrape via Firecrawl for HR emails (default 4)")
     parser.add_argument("--include-seen", action="store_true", help="Include previously hunted URLs")
     parser.add_argument("--stage-emails", action="store_true", help="Stage direct HR email drafts via Approval Gatekeeper (max 10-15/day)")
+    parser.add_argument("--notify-approval", action="store_true", help="Send each tailored CV PDF + Telegram Approval Card for Omar's confirmation")
     parser.add_argument("--max-emails", type=int, default=DEFAULT_DAILY_EMAILS, help="Max direct email drafts to stage today (hard cap 15)")
     parser.add_argument("--send-telegram", action="store_true", help="Send the ranked CSV shortlist directly to Omar on Telegram")
     parser.add_argument("--list-pending", action="store_true", help="List pending job application email drafts awaiting approval")
@@ -889,7 +896,7 @@ def main() -> int:
         hunt_res["email_batch"] = stage_safe_email_batch(
             hunt_res["jobs"],
             max_emails=args.max_emails,
-            notify_telegram=False,
+            notify_telegram=args.notify_approval,
         )
 
     if args.send_telegram and os.path.isfile(files["csv_path"]):

@@ -32,7 +32,9 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 import approval_gatekeeper
+import cv_generator
 import reel_and_url_ingest
+import send_telegram_file
 
 # Authoritative baseline identity verified from Omar Elnemr's CVs and Vault
 OMAR_IDENTITY: Dict[str, Any] = {
@@ -252,29 +254,46 @@ def generate_tailored_application(
     channel: str = "gmail",
     include_certificates: bool = True,
     attach_all_cvs: bool = False,
+    tailor_cv: bool = True,
+    track_override: str = "",
     vault_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Generates a tailored cover email, concise recruiter outreach note, and attachment
-    list grounded strictly in Omar Elnemr's verified Vault history and career assets.
+    Generates a tailored cover email, concise recruiter outreach note, customized 1-page ATS CV PDF,
+    and attachment list grounded strictly in Omar Elnemr's verified Vault history and career assets.
     """
     assets = locate_career_assets(vault_dir=vault_dir)
-    track = _classify_role_track(role, job_description)
+    track = track_override or _classify_role_track(role, job_description)
 
     if track == "aviation":
         bullet_pool = OMAR_IDENTITY["core_highlights"]["aviation"] + OMAR_IDENTITY["core_highlights"]["tech"][:1]
-    elif track == "tech":
+    elif track in ("tech", "tech_junior", "remote_support"):
         bullet_pool = OMAR_IDENTITY["core_highlights"]["tech"] + OMAR_IDENTITY["core_highlights"]["aviation"][:1]
     else:
         bullet_pool = OMAR_IDENTITY["core_highlights"]["aviation"][:2] + OMAR_IDENTITY["core_highlights"]["tech"][:2]
 
     attachments: List[str] = []
+    tailored_cv_info: Optional[Dict[str, Any]] = None
+    if tailor_cv and not attach_all_cvs:
+        try:
+            cv_track = track if track in ("aviation", "remote_support", "tech_junior") else ("tech_junior" if track == "tech" else "")
+            tailored_cv_info = cv_generator.generate_tailored_cv(
+                company=company,
+                role=role,
+                track=cv_track,
+                job_description=job_description,
+            )
+            if tailored_cv_info.get("pdf_path") and os.path.isfile(tailored_cv_info["pdf_path"]):
+                attachments.append(tailored_cv_info["pdf_path"])
+        except Exception:
+            tailored_cv_info = None
+
     if attach_all_cvs:
         attachments.extend(assets["all_cvs"])
-    elif assets.get("primary_cv"):
+    elif not attachments and assets.get("primary_cv"):
         attachments.append(assets["primary_cv"])
 
-    if include_certificates or track in ("aviation", "hybrid"):
+    if include_certificates:
         for cert in assets["certificates"]:
             if cert not in attachments:
                 attachments.append(cert)
@@ -333,6 +352,7 @@ def generate_tailored_application(
         "body": body,
         "short_pitch": short_pitch,
         "attachments": attachments,
+        "tailored_cv_path": (tailored_cv_info or {}).get("pdf_path") or "",
         "vault_dir": assets["vault_dir"],
     }
 
@@ -404,6 +424,8 @@ def stage_job_application(
     job_description: str = "",
     include_certificates: bool = True,
     attach_all_cvs: bool = False,
+    tailor_cv: bool = True,
+    track_override: str = "",
     notify_telegram: bool = False,
     vault_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -440,12 +462,26 @@ def stage_job_application(
         channel=norm_channel,
         include_certificates=include_certificates,
         attach_all_cvs=attach_all_cvs,
+        tailor_cv=tailor_cv,
+        track_override=track_override,
         vault_dir=vault_dir,
     )
 
     target = to.strip() or job_url.strip() or f"{company} Careers"
     action = "send_email" if norm_channel == "gmail" else "send_message"
     content = app_pkg["body"] if norm_channel == "gmail" else app_pkg["short_pitch"]
+
+    # If notifying Omar on Telegram, deliver the tailored CV PDF first so he can review it right above the Approval Card
+    cv_telegram_sent = False
+    if notify_telegram and app_pkg.get("tailored_cv_path") and os.path.isfile(app_pkg["tailored_cv_path"]):
+        try:
+            tg_cv_res = send_telegram_file.send_file_to_telegram(
+                app_pkg["tailored_cv_path"],
+                caption=f"📄 Customized ATS CV for {company} — {role} ({app_pkg['track']} track). Review before approving below.",
+            )
+            cv_telegram_sent = bool(tg_cv_res.get("ok"))
+        except Exception:
+            cv_telegram_sent = False
 
     draft = approval_gatekeeper.stage_draft(
         platform=norm_channel,
@@ -458,6 +494,7 @@ def stage_job_application(
             "role": role,
             "job_url": job_url,
             "track": app_pkg["track"],
+            "tailored_cv": app_pkg.get("tailored_cv_path", ""),
             "attachments": app_pkg["attachments"],
         },
         subject=app_pkg["subject"] if norm_channel == "gmail" else None,
