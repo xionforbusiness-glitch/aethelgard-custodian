@@ -38,6 +38,8 @@ if hasattr(sys.stdout, "reconfigure"):
 
 PROXY_PORT = int(os.environ.get("OMNIROUTE_PORT", "20128"))
 ANTIGRAVITY_PROJECT = os.environ.get("ANTIGRAVITY_PROJECT", "aicode-consumers")
+VERTEX_PROJECT = os.environ.get("VERTEX_PROJECT", "omar-new-rdp").strip()
+VERTEX_LOCATION = os.environ.get("VERTEX_LOCATION", "global").strip()
 
 UPSTREAM_URLS = [
     "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
@@ -1050,6 +1052,140 @@ def execute_antigravity_request(body: dict, requested_model: str) -> dict:
     return {"ok": False, "status": last_status, "error": last_error}
 
 
+def _vertex_model_chain(requested_model: str, is_title: bool = False) -> list[tuple[str, str | None]]:
+    """Maps requested model aliases onto official Vertex AI Gemini 3.x models with low-cost failover."""
+    m = (requested_model or "").lower().split("/")[-1]
+    if is_title or "lite" in m:
+        return [
+            ("google/gemini-3.5-flash-lite", None),
+            ("google/gemini-3.6-flash", "low"),
+        ]
+    if any(k in m for k in ("high", "pro", "opus", "thinking", "custodian", "vault")):
+        return [
+            ("google/gemini-3.6-flash", "high"),
+            ("google/gemini-3.5-flash", "high"),
+            ("google/gemini-3.5-flash-lite", None),
+        ]
+    if any(k in m for k in ("medium", "tiered", "sonnet", "claude")):
+        return [
+            ("google/gemini-3.6-flash", "medium"),
+            ("google/gemini-3.5-flash", "medium"),
+            ("google/gemini-3.5-flash-lite", None),
+        ]
+    return [
+        ("google/gemini-3.6-flash", "low"),
+        ("google/gemini-3.5-flash-lite", None),
+        ("google/gemini-3.5-flash", "low"),
+    ]
+
+
+def _proxy_to_vertex_openai(handler, body: dict, requested_model: str, is_stream: bool) -> bool:
+    """
+    Forwards OpenAI chat/completions directly to the official Vertex AI OpenAI-compatible
+    endpoint using GCP OAuth (covered by Google AI Pro's $10/mo Cloud credits).
+    Returns True if a response was written to the client, False to fall back.
+    """
+    if not VERTEX_PROJECT:
+        return False
+
+    raw_msgs = body.get("messages") or []
+    is_title = False
+    has_input_audio = False
+    for msg in raw_msgs:
+        if not isinstance(msg, dict):
+            continue
+        c = msg.get("content")
+        if isinstance(c, str):
+            cl = c.lower()
+            if "generate a short, descriptive title" in cl or "session title" in cl:
+                is_title = True
+        elif isinstance(c, list):
+            for part in c:
+                if isinstance(part, dict) and part.get("type") == "input_audio":
+                    has_input_audio = True
+
+    token = get_valid_access_token(force_refresh=False) or get_valid_access_token(force_refresh=True)
+    if not token:
+        return False
+
+    host = "aiplatform.googleapis.com" if VERTEX_LOCATION == "global" else f"{VERTEX_LOCATION}-aiplatform.googleapis.com"
+    vertex_url = (
+        f"https://{host}/v1/projects/{VERTEX_PROJECT}"
+        f"/locations/{VERTEX_LOCATION}/endpoints/openapi/chat/completions"
+    )
+    chain = _vertex_model_chain(requested_model, is_title=is_title)
+
+    for vertex_model, effort in chain:
+        fwd = dict(body)
+        fwd["model"] = vertex_model
+        # Strip non-standard custom fields not accepted by Vertex OpenAI endpoint
+        fwd.pop("thinking_budget", None)
+        if is_title:
+            fwd.pop("tools", None)
+            fwd.pop("tool_choice", None)
+        if effort and "reasoning_effort" not in fwd and not has_input_audio:
+            fwd["reasoning_effort"] = effort
+        elif str(fwd.get("reasoning_effort") or "").lower() in ("none", "minimal"):
+            fwd.pop("reasoning_effort", None)
+
+        payload_bytes = json.dumps(fwd, ensure_ascii=False).encode("utf-8")
+
+        for auth_try in range(2):
+            req = urllib.request.Request(
+                vertex_url,
+                data=payload_bytes,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=UPSTREAM_TIMEOUT) as resp:
+                    if is_stream:
+                        handler.send_response(200)
+                        handler.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                        handler.send_header("Cache-Control", "no-cache")
+                        handler.send_header("Connection", "close")
+                        handler.end_headers()
+                        handler.close_connection = True
+                        while True:
+                            chunk = resp.readline()
+                            if not chunk:
+                                break
+                            handler.wfile.write(chunk)
+                            if hasattr(handler.wfile, "flush"):
+                                handler.wfile.flush()
+                    else:
+                        resp_bytes = resp.read()
+                        handler.send_response(200)
+                        handler.send_header("Content-Type", "application/json; charset=utf-8")
+                        handler.send_header("Content-Length", str(len(resp_bytes)))
+                        handler.send_header("Connection", "close")
+                        handler.end_headers()
+                        handler.wfile.write(resp_bytes)
+                    return True
+            except urllib.error.HTTPError as he:
+                err_txt = ""
+                try:
+                    err_txt = he.read().decode("utf-8", errors="replace")[:350]
+                except Exception:
+                    pass
+                print(f"[Vertex AI Proxy] ⚠ HTTP {he.code} on {vertex_model}: {err_txt}", flush=True)
+                if he.code in (401, 403) and auth_try == 0:
+                    token = get_valid_access_token(force_refresh=True) or token
+                    continue
+                if he.code == 400 and has_input_audio:
+                    return False
+                if he.code in (400, 404, 429, 500, 502, 503, 504):
+                    break
+                break
+            except Exception as ex:
+                print(f"[Vertex AI Proxy] ⚠ Exception on {vertex_model}: {ex}", flush=True)
+                break
+    return False
+
+
 class AntigravityGatewayHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -1109,6 +1245,14 @@ class AntigravityGatewayHandler(BaseHTTPRequestHandler):
 
         requested_model = body.get("model") or "antigravity/gemini-3.8-flash-low"
         is_stream = bool(body.get("stream", False))
+
+        # Primary: Official Google Vertex AI OpenAI-compatible endpoint (full context, zero harness blocks)
+        if VERTEX_PROJECT:
+            try:
+                if _proxy_to_vertex_openai(self, body, requested_model, is_stream):
+                    return
+            except Exception as vex:
+                print(f"[Vertex AI Proxy] ⚠ Unexpected passthrough error: {vex}", flush=True)
 
         cmpl_id = f"chatcmpl-{uuid.uuid4().hex[:20]}"
         created_ts = int(time.time())
