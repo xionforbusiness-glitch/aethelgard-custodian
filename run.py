@@ -139,6 +139,7 @@ STORAGE_ENCRYPTION_KEY = os.environ.get("STORAGE_ENCRYPTION_KEY", "")
 OMNIROUTE_PORT = os.environ.get("OMNIROUTE_PORT", "20128")
 OMNIROUTE_API_KEY = os.environ.get("OMNIROUTE_API_KEY", "")
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "")
+FIRECRAWL_API_KEY = os.environ.get("FIRECRAWL_API_KEY", "").strip()
 
 HERMES_PROFILE = "llm-wiki"
 HERMES_HOME = os.path.expanduser("~/.hermes")
@@ -836,6 +837,8 @@ def _sync_hermes_profile_files(root_homes=None, root_profiles=None):
             if GOOGLE_API_KEY:
                 f.write(f"GOOGLE_API_KEY={GOOGLE_API_KEY}\n")
                 f.write(f"GEMINI_API_KEY={GOOGLE_API_KEY}\n")
+            if FIRECRAWL_API_KEY:
+                f.write(f"FIRECRAWL_API_KEY={FIRECRAWL_API_KEY}\n")
             f.write(f"HERMES_LOCAL_STT_COMMAND={stt_cmd}\n")
             f.write(f"AETHELGARD_DIR={SCRIPT_DIR}\n")
 
@@ -873,6 +876,8 @@ def _export_runtime_env(stt_cmd: str = "") -> None:
     if GOOGLE_API_KEY:
         os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
         os.environ["GEMINI_API_KEY"] = GOOGLE_API_KEY
+    if FIRECRAWL_API_KEY:
+        os.environ["FIRECRAWL_API_KEY"] = FIRECRAWL_API_KEY
     else:
         os.environ.pop("GOOGLE_API_KEY", None)
         os.environ.pop("GEMINI_API_KEY", None)
