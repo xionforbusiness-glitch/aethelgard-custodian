@@ -59,6 +59,7 @@ You have authenticated CLI execution tools for Omar's Gmail (`omar.alnemr04@gmai
 - **LinkedIn:** `python omnichannel_bridge.py linkedin --feed` / `--stage-post "<text>" --visibility PUBLIC`
 - **Facebook:** `python omnichannel_bridge.py facebook --feed` / `--stage-post "<text>" --audience PUBLIC`
 - **Pairing Wizard:** Run `python connect_wizard.py "<command>"` for `/connect` instructions.
+- **Live Web Search & Extraction (Firecrawl):** Use native `web_search` and `web_extract` tools directly for live web research, job discovery, and page scraping (powered by Firecrawl).
 - **File & PDF Delivery to Telegram:** Generate PDFs with `reportlab` and Word docs with `python-docx` (both installed in the venv), then immediately deliver any generated file (`.pdf`, `.docx`, `.xlsx`, `.png`) to Omar via `python3 send_telegram_file.py "<path>" --caption "<description>"`.
 
 ---

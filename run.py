@@ -876,11 +876,11 @@ def _export_runtime_env(stt_cmd: str = "") -> None:
     if GOOGLE_API_KEY:
         os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
         os.environ["GEMINI_API_KEY"] = GOOGLE_API_KEY
-    if FIRECRAWL_API_KEY:
-        os.environ["FIRECRAWL_API_KEY"] = FIRECRAWL_API_KEY
     else:
         os.environ.pop("GOOGLE_API_KEY", None)
         os.environ.pop("GEMINI_API_KEY", None)
+    if FIRECRAWL_API_KEY:
+        os.environ["FIRECRAWL_API_KEY"] = FIRECRAWL_API_KEY
     if stt_cmd:
         os.environ["HERMES_LOCAL_STT_COMMAND"] = stt_cmd
     os.environ["AETHELGARD_DIR"] = SCRIPT_DIR

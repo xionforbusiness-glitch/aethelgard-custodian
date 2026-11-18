@@ -80,8 +80,9 @@ agent:
   api_max_retries: 2
   # Note: Hermes native browser/computer_use toolsets stay disabled to preserve 1GB RAM;
   # website automation runs via ephemeral single-instance Playwright (portal_automation.py / mission_engine.py).
+  # IMPORTANT: Do NOT put `browser` in disabled_toolsets because Hermes's `browser` toolset includes `web_search`,
+  # which would silently strip `web_search` from the `web` toolset. `platform_toolsets.telegram` already omits `browser`.
   disabled_toolsets:
-    - browser
     - computer_use
     - video_gen
     - image_gen

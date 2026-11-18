@@ -1183,6 +1183,8 @@ def _proxy_to_vertex_openai(handler, body: dict, requested_model: str, is_stream
                 if he.code in (400, 404, 429, 500, 502, 503, 504):
                     break
                 break
+            except (BrokenPipeError, ConnectionResetError):
+                return True
             except Exception as ex:
                 print(f"[Vertex AI Proxy] ⚠ Exception on {vertex_model}: {ex}", flush=True)
                 break
