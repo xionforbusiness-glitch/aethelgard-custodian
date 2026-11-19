@@ -653,8 +653,23 @@ VOICE_TOOLS: List[Dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "batch_send_gmail_drafts",
+            "description": "Dispatches and transmits all staged email application drafts currently in Omar's Gmail Drafts folder (or a specified batch) directly to recruiter emails via SMTP in the background, complete with attached CV and training certificates. Removes sent messages from Drafts, logs to career tracker, and sends Telegram report. Call this immediately when Omar says 'send the applications', 'send all of them', 'proceed with all', 'dispatch them all', or 'send the batch'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "send_all": {"type": "boolean", "description": "Set to True to send all drafts (default True)"},
+                    "max_count": {"type": "integer", "description": "Maximum number of drafts to send (default 20)"},
+                    "airline_filter": {"type": "array", "items": {"type": "string"}, "description": "Optional list of airline names to filter"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "send_gmail_draft",
-            "description": "Directly dispatch and send an email draft from Omar's real Gmail account to a recruiter or contact, complete with attached CV and training certificates. Removes the sent message from Drafts, logs to the career application tracker, and sends a Telegram card confirmation.",
+            "description": "Directly dispatch and send an email draft from Omar's real Gmail account to a recruiter or contact asynchronously in the background, complete with attached CV and training certificates. Removes the sent message from Drafts, logs to the career application tracker, and sends a Telegram card confirmation. Call this when Omar specifies a single airline or recipient to send.",
             "parameters": {
                 "type": "object",
                 "properties": {
