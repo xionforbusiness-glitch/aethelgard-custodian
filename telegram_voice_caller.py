@@ -1457,6 +1457,7 @@ class VoiceBrainSession:
                         if txt and on_sentence is not None:
                             on_sentence(txt)
                         return data
+                    extra_content_acc: Dict[str, Any] = {}
                     for raw_line in resp:
                         line = raw_line.decode("utf-8", errors="replace").strip()
                         if not line.startswith("data:"):
@@ -1469,6 +1470,9 @@ class VoiceBrainSession:
                         except Exception:
                             continue
                         delta = ((chunk.get("choices") or [{}])[0]).get("delta") or {}
+                        chunk_extra = delta.get("extra_content") or chunk.get("extra_content")
+                        if chunk_extra and isinstance(chunk_extra, dict):
+                            extra_content_acc.update(chunk_extra)
                         for tc in (delta.get("tool_calls") or []):
                             idx = int(tc.get("index", 0))
                             slot = tool_acc.setdefault(
@@ -1482,6 +1486,8 @@ class VoiceBrainSession:
                                 slot["function"]["name"] += str(fn_d["name"])
                             if fn_d.get("arguments"):
                                 slot["function"]["arguments"] += str(fn_d["arguments"])
+                            if tc.get("extra_content"):
+                                slot["extra_content"] = tc["extra_content"]
                         piece = delta.get("content")
                         if piece:
                             content_parts.append(str(piece))
@@ -1505,6 +1511,8 @@ class VoiceBrainSession:
                         "role": "assistant",
                         "content": "".join(content_parts).strip(),
                     }
+                    if extra_content_acc:
+                        assembled_msg["extra_content"] = extra_content_acc
                     if tool_acc:
                         assembled_msg["tool_calls"] = [tool_acc[k] for k in sorted(tool_acc.keys())]
                     return {"choices": [{"index": 0, "message": assembled_msg}]}
@@ -2585,7 +2593,7 @@ class TelegramP2PCallManager:
 
             if brain.end_call_requested and self.active_calls.get(peer_id) is call_ctx_ref:
                 self._log_event(f"End-call requested by VoiceBrain peer={peer_id}; draining audio before hangup")
-                wait_deadline = self.loop.time() + 8.0
+                wait_deadline = self.loop.time() + 3.5
                 while self.active_calls.get(peer_id) is call_ctx_ref and self.loop.time() < wait_deadline:
                     out_q = ctx.get("out_queue")
                     if (out_q is None or out_q.empty()) and not ctx.get("ai_speaking"):

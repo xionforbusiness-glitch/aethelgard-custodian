@@ -522,6 +522,7 @@ def build_antigravity_envelope(
 
                     parts.append({
                         "thoughtSignature": "skip_thought_signature_validator",
+                        "thought_signature": "skip_thought_signature_validator",
                         "functionCall": {
                             "id": tc_id,
                             "name": fn_name,
@@ -1130,6 +1131,28 @@ def _proxy_to_vertex_openai(handler, body: dict, requested_model: str, is_stream
             fwd["reasoning_effort"] = effort
         elif str(fwd.get("reasoning_effort") or "").lower() in ("none", "minimal"):
             fwd.pop("reasoning_effort", None)
+
+        # Inject thought_signature validator bypass for Vertex AI OpenAI endpoint on multi-turn tool history
+        msgs = []
+        for m in (fwd.get("messages") or []):
+            if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls"):
+                m_copy = dict(m)
+                tcs_copy = []
+                for tc in m["tool_calls"]:
+                    if isinstance(tc, dict):
+                        tc_c = dict(tc)
+                        if "extra_content" not in tc_c:
+                            tc_c["extra_content"] = {"google": {"thought_signature": "skip_thought_signature_validator"}}
+                        tcs_copy.append(tc_c)
+                    else:
+                        tcs_copy.append(tc)
+                m_copy["tool_calls"] = tcs_copy
+                if "extra_content" not in m_copy:
+                    m_copy["extra_content"] = {"google": {"thought_signature": "skip_thought_signature_validator"}}
+                msgs.append(m_copy)
+            else:
+                msgs.append(m)
+        fwd["messages"] = msgs
 
         payload_bytes = json.dumps(fwd, ensure_ascii=False).encode("utf-8")
 
