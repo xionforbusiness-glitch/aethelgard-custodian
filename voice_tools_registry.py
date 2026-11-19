@@ -312,6 +312,34 @@ def get_voice_tool_declarations() -> List[types.Tool]:
                     behavior="BLOCKING",
                 ),
                 types.FunctionDeclaration(
+                    name="automate_portal_signup",
+                    description=(
+                        "Autonomously creates, registers, or claims developer benefits/portal accounts (such as GitHub Student Developer Pack offers "
+                        "like MongoDB Atlas $50 credits/certification, New Relic student tier, or airline career portals) using Omar's verified credentials. "
+                        "Spins up an ephemeral browser task in the background, automatically solves email verification links and OTPs via Gmail, "
+                        "stores encrypted credentials, and sends a Telegram card with status."
+                    ),
+                    parameters=types.Schema(
+                        type=types.Type.OBJECT,
+                        properties={
+                            "service_name": types.Schema(
+                                type=types.Type.STRING,
+                                description="Name of the service or portal (e.g. 'MongoDB Atlas', 'New Relic', 'Etihad Careers', 'ZenMux')",
+                            ),
+                            "target_url": types.Schema(
+                                type=types.Type.STRING,
+                                description="Optional direct registration or portal URL. If omitted, Aethelgard resolves it automatically.",
+                            ),
+                            "notes": types.Schema(
+                                type=types.Type.STRING,
+                                description="Specific instructions or goal (e.g. 'claim $50 Atlas credits via GitHub student pack', 'create career applicant account')",
+                            ),
+                        },
+                        required=["service_name"],
+                    ),
+                    behavior="BLOCKING",
+                ),
+                types.FunctionDeclaration(
                     name="search_vault",
                     description="Searches Omar's Obsidian knowledge vault for operational notes, flight logs, or memories.",
                     parameters=types.Schema(
@@ -1132,6 +1160,86 @@ def execute_manage_calendar_event(args: Dict[str, Any], session_ctx: Dict[str, A
     }
 
 
+def execute_automate_portal_signup(args: Dict[str, Any], session_ctx: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Spins up autonomous registration, account creation, or claiming of developer offers
+    (e.g., GitHub Student Developer Pack: MongoDB Atlas $50 credits, New Relic student tier,
+    or airline applicant portals) in the background. Returns in <20ms for instant voice confirmation.
+    """
+    from proactive_scheduler import send_telegram
+
+    service_name = str(args.get("service_name") or "Service Account").strip()
+    target_url = str(args.get("target_url") or "").strip()
+    notes = str(args.get("notes") or "").strip()
+    vault_dir = session_ctx.get("vault_dir")
+
+    s_lower = service_name.lower()
+    if not target_url:
+        if "mongo" in s_lower:
+            target_url = "https://www.mongodb.com/students"
+        elif "relic" in s_lower:
+            target_url = "https://newrelic.com/initiatives/student-developer-pack"
+        elif "etihad" in s_lower:
+            target_url = "https://careers.etihad.com"
+        elif "emirates" in s_lower:
+            target_url = "https://www.emiratesgroupcareers.com"
+        elif "flydubai" in s_lower:
+            target_url = "https://careers.flydubai.com"
+        elif "zenmux" in s_lower:
+            target_url = "https://zenmux.com"
+        else:
+            target_url = "https://education.github.com/pack"
+
+    instructions = f"Sign up and claim account/benefit for {service_name}. {notes}".strip()
+
+    def _bg_portal_runner():
+        try:
+            send_telegram(
+                f"⚙️ **Autonomous Account Setup Initiated**\n\n"
+                f"• **Service:** `{service_name}`\n"
+                f"• **Target Portal:** `{target_url}`\n"
+                f"• **Objective:** {instructions}\n\n"
+                f"Aethelgard is executing headless browser registration, identity population, and Gmail verification in the background."
+            )
+            import portal_automation
+            res = portal_automation.run_portal_task(
+                url=target_url,
+                instructions=instructions,
+                vault_dir=vault_dir,
+                auto_submit=True,
+            )
+            if res.get("success"):
+                send_telegram(
+                    f"✅ **Account Setup Completed**\n\n"
+                    f"• **Service:** `{service_name}`\n"
+                    f"• **Status:** Successfully registered & verified.\n"
+                    f"• **Credentials:** Stored securely in encrypted vault credentials.\n"
+                    f"• **Summary:** {res.get('confirmation', 'Completed successfully.')}"
+                )
+            elif res.get("status") == "waiting_human":
+                pass
+            else:
+                send_telegram(
+                    f"⚠️ **Account Setup Notice for {service_name}**\n\n"
+                    f"Browser task finished with status: `{res.get('status')}`.\n"
+                    f"Reason: {res.get('reason') or res.get('confirmation')}"
+                )
+        except Exception as p_err:
+            logger.exception(f"Error in background portal runner for {service_name}: {p_err}")
+            send_telegram(f"⚠️ **Account Setup Error (`{service_name}`)**: {p_err}")
+
+    t = threading.Thread(target=_bg_portal_runner, name=f"PortalSignup-{service_name[:12]}", daemon=True)
+    t.start()
+
+    return {
+        "success": True,
+        "service": service_name,
+        "status": "initiated",
+        "url": target_url,
+        "message": f"I've initiated the account setup for {service_name} in the background, Sir. I will handle the email verification and notify you on Telegram once complete.",
+    }
+
+
 # ==============================================================================
 # 3. UNIFIED DISPATCHER (CALLED BY VoiceBrainSession)
 # ==============================================================================
@@ -1146,6 +1254,7 @@ NEW_VOICE_TOOL_HANDLERS: Dict[str, Callable[[Dict[str, Any], Dict[str, Any]], Di
     "send_gmail_draft": execute_send_gmail_draft,
     "modify_shift_schedule": execute_modify_shift_schedule,
     "manage_calendar_event": execute_manage_calendar_event,
+    "automate_portal_signup": execute_automate_portal_signup,
 }
 
 
