@@ -113,6 +113,23 @@ def list_async_jobs(status: Optional[str] = None) -> List[Dict[str, Any]]:
     return [j for j in jobs if j.get("status") == status]
 
 
+def mark_pending_callbacks_fulfilled(reason: str = "Fulfilled in live call") -> int:
+    """Marks any currently pending timed_callback jobs as completed to prevent duplicate ghost redials."""
+    jobs = _load_jobs()
+    now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    fulfilled_count = 0
+    for j in jobs:
+        if j.get("status") == "pending" and j.get("kind") == "timed_callback":
+            j["status"] = "completed"
+            j["updated_at"] = now_iso
+            j["result_summary"] = reason
+            j["delivery_receipt"] = {"called": False, "fulfilled_in_call": True}
+            fulfilled_count += 1
+    if fulfilled_count > 0:
+        _save_jobs(jobs)
+    return fulfilled_count
+
+
 def _deliver_job_notification(
     job: Dict[str, Any],
     summary: str,
@@ -147,12 +164,10 @@ def _deliver_job_notification(
                         vault_dir=vault_dir,
                     )
                     if not (res and res.get("success")) and "already" in str((res or {}).get("reason") or (res or {}).get("error") or "").lower():
-                        time.sleep(2.5)
-                        res = telegram_voice_caller.request_call_via_rpc_or_direct(
-                            opening_prompt=spoke_text,
-                            urgent=is_urgent,
-                            vault_dir=vault_dir,
-                        )
+                        # Do NOT retry after hangup! Omar is already actively conversing on a live call.
+                        logger.info("Call already active with peer; marking callback fulfilled in active session.")
+                        outcome["called"] = False
+                        outcome["fulfilled_in_active_call"] = True
                 outcome["called"] = bool(res and res.get("success"))
                 outcome["call_result"] = res
             except Exception as exc:
@@ -353,12 +368,19 @@ def tick_async_jobs(
                 except Exception:
                     due = False
             if due:
-                # Never ring over an active call still winding down / speaking farewell
+                # If Omar is already on an active live call with Aethelgard, this callback is fulfilled!
+                # Mark it completed immediately so we never surprise-dial him right after he hangs up.
                 if call_fn is None and job.get("delivery", "call") in ("call", "both"):
                     try:
                         import telegram_voice_caller
                         st = telegram_voice_caller.query_live_daemon_status()
                         if isinstance(st, dict) and st.get("reachable") and int(st.get("active_call_count") or 0) > 0:
+                            job["status"] = "completed"
+                            job["updated_at"] = ref_now.isoformat()
+                            job["result_summary"] = "Fulfilled: Omar was already on an active live call with Aethelgard."
+                            job["delivery_receipt"] = {"called": False, "fulfilled_in_call": True}
+                            triggered += 1
+                            changed = True
                             due = False
                     except Exception:
                         pass

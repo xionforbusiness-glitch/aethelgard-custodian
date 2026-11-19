@@ -300,7 +300,10 @@ class GeminiLiveBridgeSession:
                 "9. DYNAMIC GREETING & CALL STATE MEMORY: Every time a call connects, greet Omar with spontaneous, contextual variety. If the previous call was cut off abruptly or he hung up unexpectedly, acknowledge it naturally or ask with subtle wit if the line dropped or if he hung up on you. If he redials right after saying goodbye, acknowledge the quick return ('Back already, Sir?'). Always adapt to the local time in Damascus and current tasks. NEVER repeat identical canned greeting phrases like 'Aethelgard listening, Omar' or 'online and at your service'. "
                 "10. TELEGRAM FILE & DOCUMENT DELIVERY: If Omar asks you to send his CV, certificates, or documents to the chat ('can you send them on the chat?', 'send my CV to Telegram', 'send the certificates to my chat'), IMMEDIATELY call `send_telegram_file(file_type='all' or 'cv' or 'certificates')`! Confirm courteously once dispatched. "
                 "11. REAL-TIME DRAFT STATUS: If Omar asks where the drafts are, how many were created, or if they are ready, call `check_draft_status` to report current drafts and whether the background generator is actively uploading. "
-                "12. LIVE WEB SEARCH & RECRUITER PITCHING: If Omar asks you to search the internet, look up airlines, or pitch to a recruiter, call `live_web_search(query=...)` or `pitch_recruiter(company=...)`."
+                "12. LIVE WEB SEARCH & RECRUITER PITCHING: If Omar asks you to search the internet, look up airlines, or pitch to a recruiter, call `live_web_search(query=...)` or `pitch_recruiter(company=...)`. "
+                "13. SCHEDULE & SHIFT MODIFICATION: You possess FULL AUTHORITY to create, edit, modify, and adjust Omar's work schedule and calendar. NEVER say 'I'm unable to modify your work schedule directly'! When Omar asks to edit, adjust, or change his schedule for tomorrow or any date ('modify my schedule for tomorrow', 'can we edit it?', 'change tomorrow to 9 to 5', 'I'm off tomorrow'), IMMEDIATELY call `modify_shift_schedule(date='tomorrow', shift_times=..., status=...)`! Confirm courteously with the updated shift hours and sleep anchor. "
+                "14. GOOGLE CALENDAR & APPOINTMENT MANAGEMENT: If Omar asks to create, modify, or cancel a calendar event, appointment, or meeting ('add a meeting tomorrow at 10 AM', 'reschedule my appointment', 'cancel that event'), IMMEDIATELY call `manage_calendar_event(action='create' or 'modify' or 'delete', summary=..., start_time=..., date=...)`. It automatically synchronizes with his primary Google Calendar via RFC 5545 invite. "
+                "15. CREDENTIALS & SERVICE AUTONOMY: You have direct access to Omar's credentials and services (Gmail, Google Calendar, Telegram, Playwright headless browser engine for portal account signups). When tasked with signing up or creating portal accounts, execute autonomously via `portal_apply` and browser automation."
             )
             if recent_context_blob:
                 system_instruction += f"\n\nContext Snapshot at Call Connect:\n{recent_context_blob}"
@@ -504,7 +507,7 @@ class GeminiLiveBridgeSession:
                             # If tool was end_call, schedule graceful hangup after farewell audio drains
                             if c_name == "end_call":
                                 self.log("end_call requested by model; scheduling hangup after farewell drain")
-                                asyncio.create_task(self._hangup_after_delay(delay=3.5))
+                                asyncio.create_task(self._hangup_after_delay())
 
             except asyncio.CancelledError:
                 break
@@ -547,9 +550,32 @@ class GeminiLiveBridgeSession:
                 except Exception:
                     break
 
-    async def _hangup_after_delay(self, delay: float = 3.5) -> None:
-        """Allows farewell audio to play on Omar's phone before hanging up."""
-        await asyncio.sleep(delay)
+    async def _hangup_after_delay(self, max_wait: float = 14.0) -> None:
+        """Allows farewell audio to generate, buffer, and completely play out on Omar's phone before hanging up."""
+        self.log("Graceful hangup scheduled: waiting for farewell audio generation and queue drain...")
+        start_wait = time.monotonic()
+
+        # 1. Wait for Gemini model to finish outputting farewell turn
+        self.turn_complete_event.clear()
+        try:
+            await asyncio.wait_for(self.turn_complete_event.wait(), timeout=8.0)
+            self.log("Farewell model turn confirmed complete.")
+        except asyncio.TimeoutError:
+            self.log("Timed out waiting for turn_complete during farewell.")
+
+        # 2. Flush residual buffer into Telegram queue
+        self._flush_telegram_audio()
+
+        # 3. Wait until the Telegram audio output queue has completely drained
+        out_q: asyncio.Queue = self.call_ctx.get("out_queue") if self.call_ctx else None
+        if out_q is not None:
+            while not out_q.empty() and (time.monotonic() - start_wait < max_wait):
+                await asyncio.sleep(0.15)
+
+        # 4. Generous post-playback acoustic buffer so remote device finishes rendering
+        await asyncio.sleep(2.0)
+
+        self.log("Farewell audio drained completely. Closing call gracefully.")
         if self.hangup_cb and not self.is_closing:
             res = self.hangup_cb()
             if asyncio.iscoroutine(res):

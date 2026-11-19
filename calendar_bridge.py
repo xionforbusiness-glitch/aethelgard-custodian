@@ -341,6 +341,65 @@ def generate_ics_invite(
     return "\r\n".join(lines)
 
 
+def dispatch_calendar_invite(
+    summary: str,
+    start_iso: str,
+    end_iso: str,
+    description: str = "",
+    location: str = "",
+    method: str = "REQUEST",
+) -> Dict[str, Any]:
+    """Generates an RFC 5545 .ics payload and dispatches it via email to Omar's Gmail so Google Calendar ingests it."""
+    from omnichannel_bridge import GoogleAdapter
+    import smtplib
+    from email.message import EmailMessage
+
+    ga = GoogleAdapter()
+    _, sender_email, app_pw = ga._has_oauth_and_app_pw()
+    if not app_pw:
+        return {"error": "Google credentials unavailable for calendar dispatch."}
+
+    ics_content = generate_ics_invite(
+        summary=summary,
+        start_iso=start_iso,
+        end_iso=end_iso,
+        description=description,
+        location=location,
+    )
+    if method == "CANCEL":
+        ics_content = ics_content.replace("METHOD:REQUEST", "METHOD:CANCEL")
+
+    msg = EmailMessage()
+    msg["From"] = sender_email
+    msg["To"] = sender_email
+    action_label = "Confirmed" if method == "REQUEST" else "Cancelled"
+    msg["Subject"] = f"Calendar Event {action_label}: {summary}"
+    msg.set_content(
+        f"Aethelgard Calendar Sync:\n\n"
+        f"Event: {summary}\n"
+        f"Start: {start_iso}\n"
+        f"End: {end_iso}\n"
+        f"{f'Location: {location}\n' if location else ''}"
+        f"{f'Description: {description}\n' if description else ''}"
+    )
+
+    msg.add_attachment(
+        ics_content.encode("utf-8"),
+        maintype="text",
+        subtype="calendar",
+        filename="invite.ics",
+        params={"method": method, "charset": "UTF-8"},
+    )
+
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=20) as server:
+            server.login(sender_email, app_pw)
+            server.send_message(msg)
+        return {"success": True, "ics_sent": True, "method": method, "summary": summary}
+    except Exception as exc:
+        return {"error": f"Failed to send calendar invite: {exc}"}
+
+
 def main() -> int:
     import argparse
 

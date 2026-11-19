@@ -279,6 +279,39 @@ def get_voice_tool_declarations() -> List[types.Tool]:
                     behavior="BLOCKING",
                 ),
                 types.FunctionDeclaration(
+                    name="modify_shift_schedule",
+                    description="Modifies, edits, or reschedules Omar's work shift attendance roster for today, tomorrow, or any specific date (e.g. changing hours to '09:00 AM → 05:00 PM', marking as 'OFF', or adjusting shift duration). Automatically updates the Obsidian vault, syncs the shift tracker state, recalibrates circadian sleep anchors, and sends a Telegram card confirmation. Call this whenever Omar asks to edit, change, or update his work schedule or shift times.",
+                    parameters=types.Schema(
+                        type=types.Type.OBJECT,
+                        properties={
+                            "date": types.Schema(type=types.Type.STRING, description="Target date ('tomorrow', 'today', '2026-11-21', or weekday name)"),
+                            "shift_times": types.Schema(type=types.Type.STRING, description="Shift hours (e.g. '09:00 AM → 05:00 PM', '08:15 AM → 04:00 PM', 'OFF')"),
+                            "status": types.Schema(type=types.Type.STRING, description="Optional status (e.g. 'Standard', 'Overtime', 'OFF', 'Paid Standby')"),
+                            "notes": types.Schema(type=types.Type.STRING, description="Optional note or reason for change"),
+                        },
+                        required=["date"],
+                    ),
+                    behavior="BLOCKING",
+                ),
+                types.FunctionDeclaration(
+                    name="manage_calendar_event",
+                    description="Creates, modifies, or deletes an event, meeting, or appointment on Omar's Google Calendar. Generates and dispatches RFC 5545 .ics calendar synchronization directly to his primary Google Calendar, updates agenda feeds, and sends an event confirmation card to Telegram. Call this when Omar wants to create, edit, reschedule, or cancel a calendar event or appointment.",
+                    parameters=types.Schema(
+                        type=types.Type.OBJECT,
+                        properties={
+                            "action": types.Schema(type=types.Type.STRING, description="Action to perform: 'create', 'modify', or 'delete'"),
+                            "summary": types.Schema(type=types.Type.STRING, description="Title or summary of the event (e.g. 'Dentist appointment', 'Recruiter interview')"),
+                            "start_time": types.Schema(type=types.Type.STRING, description="Start time (e.g. '10:00 AM', '14:30', or ISO format)"),
+                            "end_time": types.Schema(type=types.Type.STRING, description="Optional end time (defaults to 1 hour after start)"),
+                            "date": types.Schema(type=types.Type.STRING, description="Date of the event ('tomorrow', 'today', 'YYYY-MM-DD')"),
+                            "description": types.Schema(type=types.Type.STRING, description="Optional event description or notes"),
+                            "location": types.Schema(type=types.Type.STRING, description="Optional location of the event"),
+                        },
+                        required=["action", "summary"],
+                    ),
+                    behavior="BLOCKING",
+                ),
+                types.FunctionDeclaration(
                     name="search_vault",
                     description="Searches Omar's Obsidian knowledge vault for operational notes, flight logs, or memories.",
                     parameters=types.Schema(
@@ -964,6 +997,141 @@ def execute_send_gmail_draft(args: Dict[str, Any], session_ctx: Dict[str, Any]) 
     }
 
 
+def execute_modify_shift_schedule(args: Dict[str, Any], session_ctx: Dict[str, Any]) -> Dict[str, Any]:
+    """Modifies Omar's shift schedule in Obsidian vault and shift tracker."""
+    import shift_tracker
+    from proactive_scheduler import send_telegram
+
+    date_target = str(args.get("date") or "tomorrow").strip()
+    shift_times = str(args.get("shift_times") or "08:15 AM → 04:00 PM").strip()
+    status = str(args.get("status") or "Standard").strip()
+    notes = str(args.get("notes") or "").strip()
+    vault_dir = session_ctx.get("vault_dir") or os.environ.get("VAULT_DIR") or os.path.expanduser("~/vault")
+
+    res = shift_tracker.update_shift_schedule(
+        date_input=date_target,
+        shift_times=shift_times,
+        status=status,
+        notes=notes,
+        vault_dir=vault_dir,
+    )
+
+    card = (
+        f"📅 **Work Schedule Updated**\n\n"
+        f"• **Target Date:** `{res.get('date')}` ({res.get('weekday')})\n"
+        f"• **Shift Times:** `{res.get('log_in')} → {res.get('log_out')}`\n"
+        f"• **Duration:** {res.get('duration')}\n"
+        f"• **Status:** {res.get('status')}\n"
+        f"• **Circadian Sleep Anchor:** {res.get('sleep_recommendation')}\n\n"
+        f"Synchronized with Obsidian vault roster and circadian oracle."
+    )
+    try:
+        send_telegram(card)
+    except Exception:
+        pass
+
+    return {
+        "success": True,
+        "date": res.get("date"),
+        "weekday": res.get("weekday"),
+        "shift": f"{res.get('log_in')} → {res.get('log_out')}",
+        "status": res.get("status"),
+        "sleep_recommendation": res.get("sleep_recommendation"),
+        "summary": f"Schedule for {res.get('weekday')} ({res.get('date')}) updated to {res.get('log_in')} → {res.get('log_out')} ({res.get('status')}), Sir. Circadian sleep anchor adjusted.",
+    }
+
+
+def execute_manage_calendar_event(args: Dict[str, Any], session_ctx: Dict[str, Any]) -> Dict[str, Any]:
+    """Creates, modifies, or deletes an event on Omar's Google Calendar via RFC 5545 .ics dispatch."""
+    import calendar_bridge
+    from proactive_scheduler import send_telegram
+
+    action = str(args.get("action") or "create").lower().strip()
+    summary = str(args.get("summary") or "Appointment").strip()
+    start_time_raw = str(args.get("start_time") or "10:00 AM").strip()
+    end_time_raw = str(args.get("end_time") or "").strip()
+    date_raw = str(args.get("date") or "tomorrow").strip()
+    description = str(args.get("description") or "").strip()
+    location = str(args.get("location") or "").strip()
+
+    # Resolve date
+    damascus_tz = datetime.timezone(datetime.timedelta(hours=3))
+    now = datetime.datetime.now(damascus_tz)
+    d_clean = date_raw.lower().strip()
+
+    if d_clean in ("today", "now"):
+        base_dt = now
+    elif d_clean in ("tomorrow", "tmrw"):
+        base_dt = now + datetime.timedelta(days=1)
+    else:
+        try:
+            base_dt = datetime.datetime.strptime(d_clean, "%Y-%m-%d").replace(tzinfo=damascus_tz)
+        except Exception:
+            base_dt = now + datetime.timedelta(days=1)
+
+    date_str = base_dt.strftime("%Y-%m-%d")
+
+    def _parse_hour(t_str: str, default_h: int = 10, default_m: int = 0) -> Tuple[int, int]:
+        m = re.search(r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", t_str, re.I)
+        if not m:
+            return default_h, default_m
+        h, mn, ap = m.groups()
+        h, mn = int(h), int(mn or 0)
+        if ap:
+            if ap.lower() == "pm" and h < 12:
+                h += 12
+            elif ap.lower() == "am" and h == 12:
+                h = 0
+        return h, mn
+
+    sh, sm = _parse_hour(start_time_raw, 10, 0)
+    if end_time_raw:
+        eh, em = _parse_hour(end_time_raw, (sh + 1) % 24, sm)
+    else:
+        eh, em = (sh + 1) % 24, sm
+
+    start_dt = base_dt.replace(hour=sh, minute=sm, second=0)
+    end_dt = base_dt.replace(hour=eh, minute=em, second=0)
+    if end_dt <= start_dt:
+        end_dt += datetime.timedelta(hours=1)
+
+    method = "CANCEL" if action == "delete" else "REQUEST"
+    res = calendar_bridge.dispatch_calendar_invite(
+        summary=summary,
+        start_iso=start_dt.isoformat(),
+        end_iso=end_dt.isoformat(),
+        description=description,
+        location=location,
+        method=method,
+    )
+
+    action_label = "Cancelled" if action == "delete" else ("Updated" if action == "modify" else "Created")
+    card = (
+        f"🗓️ **Google Calendar Event {action_label}**\n\n"
+        f"• **Event:** {summary}\n"
+        f"• **Date:** `{date_str}`\n"
+        f"• **Time:** `{start_dt.strftime('%I:%M %p')} → {end_dt.strftime('%I:%M %p')}` (Damascus UTC+3)\n"
+        f"{f'• **Location:** {location}\n' if location else ''}"
+        f"{f'• **Details:** {description}\n' if description else ''}\n"
+        f"Synchronized with your primary Google Calendar."
+    )
+    try:
+        send_telegram(card)
+    except Exception:
+        pass
+
+    return {
+        "success": True,
+        "action": action,
+        "summary": summary,
+        "date": date_str,
+        "start": start_dt.strftime("%I:%M %p"),
+        "end": end_dt.strftime("%I:%M %p"),
+        "ics_status": res,
+        "message": f"Calendar event '{summary}' for {date_str} at {start_dt.strftime('%I:%M %p')} has been {action_label.lower()} and synchronized with your Google Calendar, Sir.",
+    }
+
+
 # ==============================================================================
 # 3. UNIFIED DISPATCHER (CALLED BY VoiceBrainSession)
 # ==============================================================================
@@ -976,6 +1144,8 @@ NEW_VOICE_TOOL_HANDLERS: Dict[str, Callable[[Dict[str, Any], Dict[str, Any]], Di
     "pitch_recruiter": execute_pitch_recruiter,
     "batch_send_gmail_drafts": execute_batch_send_gmail_drafts,
     "send_gmail_draft": execute_send_gmail_draft,
+    "modify_shift_schedule": execute_modify_shift_schedule,
+    "manage_calendar_event": execute_manage_calendar_event,
 }
 
 

@@ -343,6 +343,133 @@ def send_excel_to_telegram(chat_id=TELEGRAM_USER_ID, token=TELEGRAM_BOT_TOKEN, v
         return False
 
 
+def update_shift_schedule(
+    date_input: str = "tomorrow",
+    shift_times: str = "08:15 AM → 04:00 PM",
+    status: str = "Standard",
+    notes: str = "",
+    vault_dir: str = VAULT_DIR,
+) -> Dict[str, Any]:
+    """
+    Modifies or appends Omar's work shift in shift_tracker_state.json and work_attendance_and_shift_roster.md.
+    """
+    now = get_damascus_now()
+    d_clean = (date_input or "tomorrow").strip().lower()
+
+    if d_clean in ("today", "now"):
+        target_dt = now
+    elif d_clean in ("tomorrow", "tmrw"):
+        target_dt = now + datetime.timedelta(days=1)
+    elif d_clean in ("yesterday", "yday"):
+        target_dt = now - datetime.timedelta(days=1)
+    else:
+        weekdays = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+        if d_clean in weekdays:
+            target_idx = weekdays.index(d_clean)
+            days_ahead = (target_idx - now.weekday()) % 7
+            if days_ahead == 0:
+                days_ahead = 7
+            target_dt = now + datetime.timedelta(days=days_ahead)
+        else:
+            try:
+                target_dt = datetime.datetime.strptime(d_clean, "%Y-%m-%d")
+            except Exception:
+                target_dt = now + datetime.timedelta(days=1)
+
+    date_str = target_dt.strftime("%Y-%m-%d")
+    weekday_str = target_dt.strftime("%A")
+
+    shift_clean = (shift_times or "08:15 AM → 04:00 PM").strip()
+    is_off = any(k in shift_clean.lower() for k in ("off", "leave", "rest", "vacation"))
+
+    if is_off:
+        log_in = "OFF"
+        log_out = "OFF"
+        dur_fmt = "0h 00m"
+        dec_hrs = 0.0
+        status_final = "Day Off"
+    else:
+        m = re.search(r"(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*(?:[-–→to]+)\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)", shift_clean, re.I)
+        if m:
+            t1, t2 = m.groups()
+            parsed = parse_shift_times_from_text(f"logged in {t1} and logged out {t2}")
+            if parsed:
+                log_in, log_out, dur_fmt, dec_hrs = parsed
+            else:
+                log_in = t1
+                log_out = t2
+                dur_fmt = "8h 00m"
+                dec_hrs = 8.0
+        else:
+            log_in = "08:15 AM"
+            log_out = "04:00 PM"
+            dur_fmt = "7h 45m"
+            dec_hrs = 7.75
+        status_final = status or "Standard"
+
+    note_text = notes or f"Updated via live voice command ({status_final})"
+    new_row = f"| {date_str} | {weekday_str} | {log_in} | {log_out} | {dur_fmt} | {dec_hrs:.2f} | {status_final} | {note_text} |"
+
+    # 1. Update state file
+    state = load_tracker_state()
+    state["upcoming_shift"] = f"{log_in} → {log_out} ({status_final})"
+    if date_str == now.strftime("%Y-%m-%d"):
+        state["today_shift_raw"] = f"{log_in} → {log_out}"
+        state["status"] = "off" if is_off else "on"
+    else:
+        state["tomorrow_shift_raw"] = f"{log_in} → {log_out}"
+    save_tracker_state(state)
+
+    # 2. Update vault roster file
+    roster_file = Path(os.path.expanduser(vault_dir)) / "work_attendance_and_shift_roster.md"
+    updated_vault = False
+    if roster_file.exists():
+        try:
+            content = roster_file.read_text(encoding="utf-8")
+            pattern = re.compile(r"\|\s*" + re.escape(date_str) + r"\s*\|[^\n]+")
+            if pattern.search(content):
+                content = pattern.sub(new_row, content)
+            else:
+                sub_parts = content.split("\n---\n\n### 👤 Rasheed Akel")
+                if len(sub_parts) == 2:
+                    content = sub_parts[0].rstrip() + "\n" + new_row + "\n\n---\n\n### 👤 Rasheed Akel" + sub_parts[1]
+                else:
+                    content = content.replace("\n---\n", f"\n{new_row}\n\n---\n", 1)
+            roster_file.write_text(content, encoding="utf-8")
+            updated_vault = True
+        except Exception as vex:
+            print(f"⚠ Could not update vault roster: {vex}", flush=True)
+
+    # 3. Circadian recommendation
+    sleep_rec = "23:00 → 07:00"
+    if not is_off:
+        if dec_hrs > 0 and "am" in log_in.lower():
+            try:
+                sh = int(log_in.split(":")[0])
+                if sh <= 6:
+                    sleep_rec = "20:30 → 02:15 (Dawn Flight Strategy)"
+                elif sh <= 7:
+                    sleep_rec = "22:15 → 05:45 (Early Bus Strategy)"
+                else:
+                    sleep_rec = "23:15 → 07:15 (Standard Station Strategy)"
+            except Exception:
+                pass
+
+    return {
+        "success": True,
+        "date": date_str,
+        "weekday": weekday_str,
+        "log_in": log_in,
+        "log_out": log_out,
+        "duration": dur_fmt,
+        "status": status_final,
+        "notes": note_text,
+        "updated_vault": updated_vault,
+        "sleep_recommendation": sleep_rec,
+        "summary": f"Schedule for {weekday_str} ({date_str}) set to {log_in} → {log_out} ({status_final}).",
+    }
+
+
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "send_excel":
         send_excel_to_telegram()

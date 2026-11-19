@@ -581,6 +581,43 @@ VOICE_TOOLS: List[Dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "modify_shift_schedule",
+            "description": "Modifies, edits, or reschedules Omar's work shift attendance roster for today, tomorrow, or any specific date (e.g. changing hours to '09:00 AM → 05:00 PM', marking as 'OFF', or adjusting shift duration). Automatically updates the Obsidian vault, syncs shift tracker, recalibrates circadian sleep anchors, and sends a Telegram card confirmation. Call this whenever Omar asks to edit, change, or update his work schedule or shift times.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "date": {"type": "string", "description": "Target date ('tomorrow', 'today', '2026-11-21', or weekday name)"},
+                    "shift_times": {"type": "string", "description": "Shift hours (e.g. '09:00 AM → 05:00 PM', '08:15 AM → 04:00 PM', 'OFF')"},
+                    "status": {"type": "string", "description": "Optional status (e.g. 'Standard', 'Overtime', 'OFF', 'Paid Standby')"},
+                    "notes": {"type": "string", "description": "Optional note or reason for change"},
+                },
+                "required": ["date"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "manage_calendar_event",
+            "description": "Creates, modifies, or deletes an event, meeting, or appointment on Omar's Google Calendar. Dispatches RFC 5545 .ics calendar synchronization directly to his primary Google Calendar, updates agenda feeds, and sends an event confirmation card to Telegram. Call this when Omar wants to create, edit, reschedule, or cancel a calendar event or appointment.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "description": "Action: 'create', 'modify', or 'delete'"},
+                    "summary": {"type": "string", "description": "Title or summary of the event"},
+                    "start_time": {"type": "string", "description": "Start time (e.g. '10:00 AM', '14:30')"},
+                    "end_time": {"type": "string", "description": "Optional end time (defaults to 1h after start)"},
+                    "date": {"type": "string", "description": "Date of event ('tomorrow', 'today', 'YYYY-MM-DD')"},
+                    "description": {"type": "string", "description": "Optional event description"},
+                    "location": {"type": "string", "description": "Optional location"},
+                },
+                "required": ["action", "summary"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "list_promises",
             "description": "List open commitments, deals, and follow-ups tracked in the Promise Ledger.",
             "parameters": {
@@ -3082,6 +3119,11 @@ class TelegramP2PCallManager:
             if state == ntgcalls.ConnectionState.CONNECTED and not ctx.get("greeted"):
                 ctx["greeted"] = True
                 self._log_event(f"WebRTC CONNECTED peer={peer_id}; starting Gemini 3.8 Live bridge session")
+                try:
+                    import async_callback_engine
+                    async_callback_engine.mark_pending_callbacks_fulfilled("Fulfilled in active live call")
+                except Exception:
+                    pass
                 try:
                     import gemini_live_bridge
                     bridge = gemini_live_bridge.GeminiLiveBridgeSession(
