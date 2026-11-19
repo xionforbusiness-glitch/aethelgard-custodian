@@ -1197,7 +1197,16 @@ class VoiceBrainSession:
                     candidate = vault_path / note_name.lstrip("/\\")
                     if candidate.exists() and candidate.is_file():
                         txt = candidate.read_text(encoding="utf-8", errors="ignore")
-                        return _record_action({"note": note_name, "content": txt[-2000:]})
+                        if query:
+                            q_lower = query.lower()
+                            matching_lines = [ln for ln in txt.splitlines() if q_lower in ln.lower()]
+                            if matching_lines:
+                                return _record_action({
+                                    "note": note_name,
+                                    "matched_lines": matching_lines[:30],
+                                    "total_matches": len(matching_lines),
+                                })
+                        return _record_action({"note": note_name, "content": txt[:6000]})
                 matches = []
                 for p in sorted(vault_path.rglob("*.md")):
                     if any(part.startswith(".") or part == "_archive" for part in p.parts):
@@ -1334,10 +1343,129 @@ class VoiceBrainSession:
                 )
                 return _record_action(res)
 
+            if name == "get_recent_telegram_messages":
+                limit = max(1, min(int(args.get("limit") or 5), 15))
+                messages = []
+                import sqlite3
+                db_candidates = [
+                    Path(os.path.expanduser(os.environ.get("HERMES_HOME", "~/.hermes"))) / "profiles" / os.environ.get("HERMES_PROFILE", "llm-wiki") / "state.db",
+                    Path.home() / ".hermes" / "profiles" / "llm-wiki" / "state.db",
+                    Path.home() / ".hermes" / "state.db",
+                ]
+                for db_p in db_candidates:
+                    if db_p.exists():
+                        try:
+                            conn = sqlite3.connect(f"file:{db_p}?mode=ro", uri=True, timeout=1.0)
+                            try:
+                                rows = conn.execute(
+                                    "SELECT role, content, timestamp FROM messages "
+                                    "WHERE role IN ('user', 'assistant') "
+                                    "AND content IS NOT NULL AND trim(content) != '' "
+                                    "ORDER BY id DESC LIMIT ?;",
+                                    (limit,)
+                                ).fetchall()
+                                for r in reversed(rows):
+                                    role, content, ts = r
+                                    dt_str = ""
+                                    if ts:
+                                        try:
+                                            dt = datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc)
+                                            dt_str = dt.strftime("%H:%M:%S UTC")
+                                        except Exception:
+                                            pass
+                                    sender = "Omar (User)" if role == "user" else "Aethelgard (Bot)"
+                                    messages.append({
+                                        "sender": sender,
+                                        "time": dt_str,
+                                        "text": content[:3500] if len(content) > 3500 else content,
+                                    })
+                                break
+                            finally:
+                                conn.close()
+                        except Exception as sqlexc:
+                            self.last_error = f"state.db read error: {sqlexc}"
+                return _record_action({"messages": messages, "count": len(messages)})
+
+            if name == "schedule_callback":
+                import async_callback_engine
+                minutes = max(1, int(args.get("minutes") or 5))
+                reason = str(args.get("reason") or "Scheduled follow-up callback").strip()
+                now_utc = datetime.datetime.now(datetime.timezone.utc)
+                trigger_at = (now_utc + datetime.timedelta(minutes=minutes)).isoformat()
+                job = async_callback_engine.enqueue_async_job(
+                    kind="timed_callback",
+                    title=f"Scheduled voice callback ({minutes}m)",
+                    payload={"trigger_at": trigger_at, "message": reason},
+                    delivery="call",
+                    urgent=True,
+                )
+                now_dam = now_utc + datetime.timedelta(hours=3)
+                call_time = (now_dam + datetime.timedelta(minutes=minutes)).strftime("%H:%M Damascus time")
+                conf_msg = (
+                    f"📞 **Scheduled Callback Confirmed**\n\n"
+                    f"I shall place an outgoing voice call to you in **{minutes} minutes** (~{call_time}).\n"
+                    f"📋 **Agenda:** {reason}\n\n"
+                    f"Stand by, Sir."
+                )
+                try:
+                    from proactive_scheduler import send_telegram
+                    send_telegram(conf_msg)
+                except Exception:
+                    pass
+                if hasattr(self, "caller") and self.caller and hasattr(self.caller, "schedule_outgoing_call_timer"):
+                    self.caller.schedule_outgoing_call_timer(
+                        delay_seconds=minutes * 60.0,
+                        opening_prompt=f"Hello Omar, Aethelgard calling you back as promised for {reason}."
+                    )
+                return _record_action({
+                    "scheduled": True,
+                    "minutes": minutes,
+                    "call_time_damascus": call_time,
+                    "job_id": job.get("job_id"),
+                })
+
             if name == "end_call":
                 self.end_call_requested = True
                 farewell = str(args.get("farewell") or "Goodbye Omar. Talk soon.")
-                return _record_action({"ending_call": True, "farewell": farewell})
+                cb_min = args.get("callback_minutes")
+                scheduled_info = None
+                if cb_min is not None:
+                    try:
+                        mins_int = int(cb_min)
+                        if mins_int > 0:
+                            cb_reason = str(args.get("callback_reason") or "Scheduled follow-up callback")
+                            import async_callback_engine
+                            now_utc = datetime.datetime.now(datetime.timezone.utc)
+                            trigger_at = (now_utc + datetime.timedelta(minutes=mins_int)).isoformat()
+                            job = async_callback_engine.enqueue_async_job(
+                                kind="timed_callback",
+                                title=f"Scheduled voice callback ({mins_int}m)",
+                                payload={"trigger_at": trigger_at, "message": cb_reason},
+                                delivery="call",
+                                urgent=True,
+                            )
+                            now_dam = now_utc + datetime.timedelta(hours=3)
+                            call_time = (now_dam + datetime.timedelta(minutes=mins_int)).strftime("%H:%M Damascus time")
+                            conf_msg = (
+                                f"📞 **Scheduled Callback Confirmed**\n\n"
+                                f"I shall place an outgoing voice call to you in **{mins_int} minutes** (~{call_time}).\n"
+                                f"📋 **Agenda:** {cb_reason}\n\n"
+                                f"Stand by, Sir."
+                            )
+                            try:
+                                from proactive_scheduler import send_telegram
+                                send_telegram(conf_msg)
+                            except Exception:
+                                pass
+                            if hasattr(self, "caller") and self.caller and hasattr(self.caller, "schedule_outgoing_call_timer"):
+                                self.caller.schedule_outgoing_call_timer(
+                                    delay_seconds=mins_int * 60.0,
+                                    opening_prompt=f"Hello Omar, Aethelgard calling you back as promised for {cb_reason}."
+                                )
+                            scheduled_info = {"minutes": mins_int, "time": call_time, "job_id": job.get("job_id")}
+                    except Exception as cb_err:
+                        self.last_error = f"end_call callback error: {cb_err}"
+                return _record_action({"ending_call": True, "farewell": farewell, "callback": scheduled_info})
 
             return _record_action({"error": f"Unknown voice tool: {name}"})
         except Exception as exc:
@@ -2173,6 +2301,7 @@ class TelegramP2PCallManager:
                         log_cb=self._log_event,
                         hangup_cb=lambda: self.hangup_call(peer_id),
                         notify_cb=lambda err: self._notify_user_telegram(peer_id, err),
+                        caller=self,
                     )
                     ctx["live_bridge"] = bridge
                     asyncio.run_coroutine_threadsafe(bridge.start(), self.loop)
@@ -2404,6 +2533,18 @@ class TelegramP2PCallManager:
         self.active_calls[peer_id] = ctx
         self.call_by_tg_id[tg_call_id] = peer_id
         return ctx
+
+    def schedule_outgoing_call_timer(self, delay_seconds: float, opening_prompt: str = "", target_user_id: Optional[int] = None) -> None:
+        """Dual-layer fail-safe: schedules an in-memory timer to initiate an outgoing call to Omar."""
+        async def _timer():
+            await asyncio.sleep(delay_seconds)
+            self._log_event(f"In-memory callback timer fired after {delay_seconds}s; placing outgoing call...")
+            try:
+                await self.initiate_outgoing_call(opening_prompt=opening_prompt, target_user_id=target_user_id)
+            except Exception as e:
+                self._log_event(f"Failed to place scheduled callback: {e}")
+        if self.loop and self.loop.is_running():
+            asyncio.run_coroutine_threadsafe(_timer(), self.loop)
 
     async def initiate_outgoing_call(self, opening_prompt: str = "", target_user_id: Optional[int] = None) -> Dict[str, Any]:
         if not self.ready or not self.client or not self.ntg:

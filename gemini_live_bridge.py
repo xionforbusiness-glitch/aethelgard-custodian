@@ -167,12 +167,38 @@ def get_live_tools() -> List[types.Tool]:
                     behavior="BLOCKING",
                 ),
                 types.FunctionDeclaration(
+                    name="get_recent_telegram_messages",
+                    description="Retrieves the most recent text messages sent by Omar or the assistant in Telegram chat (@aethelgard_vault_bot). Call this immediately whenever Omar mentions having sent or pasted notes, airline lists, documents, or texts in the chat, or asks if you can see what he sent.",
+                    parameters=types.Schema(
+                        type=types.Type.OBJECT,
+                        properties={
+                            "limit": types.Schema(type=types.Type.INTEGER, description="Number of recent messages to fetch (default 5, max 15)"),
+                        },
+                    ),
+                    behavior="BLOCKING",
+                ),
+                types.FunctionDeclaration(
+                    name="schedule_callback",
+                    description="Schedules an automatic outgoing voice phone call to Omar after a specified number of minutes. Call this whenever Omar requests to be called back later or in X minutes.",
+                    parameters=types.Schema(
+                        type=types.Type.OBJECT,
+                        properties={
+                            "minutes": types.Schema(type=types.Type.INTEGER, description="Delay in minutes before calling Omar back (e.g. 5)"),
+                            "reason": types.Schema(type=types.Type.STRING, description="Brief reason or topic for the follow-up call"),
+                        },
+                        required=["minutes"],
+                    ),
+                    behavior="BLOCKING",
+                ),
+                types.FunctionDeclaration(
                     name="end_call",
-                    description="Terminates the live Telegram call after speaking a brief polite farewell to Omar.",
+                    description="Terminates the live Telegram call after speaking a brief polite farewell to Omar. If Omar requested a callback or to call him back in a few minutes, specify callback_minutes.",
                     parameters=types.Schema(
                         type=types.Type.OBJECT,
                         properties={
                             "farewell": types.Schema(type=types.Type.STRING, description="Courteous closing remark, e.g. 'Goodbye Omar. Have a productive day.'"),
+                            "callback_minutes": types.Schema(type=types.Type.INTEGER, description="Optional delay in minutes before Aethelgard calls Omar back automatically."),
+                            "callback_reason": types.Schema(type=types.Type.STRING, description="Optional reason for the scheduled follow-up call"),
                         },
                     ),
                     behavior="BLOCKING",
@@ -196,10 +222,14 @@ class GeminiLiveBridgeSession:
         log_cb: Optional[Callable[[str], None]] = None,
         hangup_cb: Optional[Callable[[], Any]] = None,
         notify_cb: Optional[Callable[[str], Any]] = None,
+        caller: Optional[Any] = None,
     ):
         self.peer_id = peer_id
         self.call_ctx = call_ctx
         self.brain = brain
+        self.caller = caller
+        if self.brain and caller and not hasattr(self.brain, "caller"):
+            self.brain.caller = caller
         self.log_cb = log_cb or (lambda msg: None)
         self.hangup_cb = hangup_cb
         self.notify_cb = notify_cb
@@ -234,6 +264,14 @@ class GeminiLiveBridgeSession:
             creds = Credentials(token)
             self.client = genai.Client(vertexai=True, project=project, location="us-central1", credentials=creds)
 
+            # Warm shared context from Telegram bot & Obsidian vault
+            recent_context_blob = ""
+            if self.brain and hasattr(self.brain, "_read_shared_bot_and_vault_tail"):
+                try:
+                    recent_context_blob = self.brain._read_shared_bot_and_vault_tail()
+                except Exception:
+                    pass
+
             system_instruction = (
                 "You are Aethelgard, Omar's refined, loyal, and highly capable British butler custodian. "
                 "You are speaking with Omar on a live Telegram voice call. "
@@ -243,8 +281,12 @@ class GeminiLiveBridgeSession:
                 "3. Never recite code, raw JSON, or long markdown tables over voice. "
                 "4. When Omar asks to draft or compose an email, IMMEDIATELY call `save_gmail_draft` without hesitating. "
                 "5. If Omar speaks in Syrian/Levantine Arabic, respond fluently in Syrian Arabic. Otherwise, speak in British English. "
-                "6. When Omar says 'goodbye', 'end the call', 'hang up', or 'talk later', call `end_call` and say farewell."
+                "6. When Omar says 'goodbye', 'end the call', 'hang up', or 'talk later', call `end_call` and say farewell. "
+                "7. If Omar mentions having sent, pasted, or typed notes, airline lists, documents, or texts in the chat ('I pasted them in the bot', 'check the chat', 'can you see them now?', 'I sent them'), IMMEDIATELY call `get_recent_telegram_messages` to read what he provided. "
+                "8. If Omar asks you to call him back later or in a few minutes ('call me in 5 minutes', 'call me back'), call `schedule_callback` or specify `callback_minutes` in `end_call`, and confirm the callback time before hanging up."
             )
+            if recent_context_blob:
+                system_instruction += f"\n\nContext Snapshot at Call Connect:\n{recent_context_blob}"
 
             config = types.LiveConnectConfig(
                 response_modalities=[types.Modality.AUDIO],
@@ -486,6 +528,48 @@ class GeminiLiveBridgeSession:
             res = self.hangup_cb()
             if asyncio.iscoroutine(res):
                 await res
+        # Post-call debrief sent automatically to Omar's Telegram chat (@aethelgard_vault_bot)
+        asyncio.create_task(self._send_post_call_debrief())
+
+    async def _send_post_call_debrief(self) -> None:
+        """Dispatches an executive debrief of the live call to Omar's Telegram chat."""
+        try:
+            duration_s = int(time.monotonic() - self._start_mono)
+            mins = duration_s // 60
+            secs = duration_s % 60
+
+            actions_taken = []
+            if self.brain and hasattr(self.brain, "actions_log"):
+                for a in getattr(self.brain, "actions_log", []):
+                    tool = a.get("tool")
+                    if tool not in ("end_call", "get_recent_telegram_messages"):
+                        summary = a.get("summary") or tool
+                        actions_taken.append(summary)
+
+            if actions_taken:
+                act_str = "\n".join(f"• {x}" for x in actions_taken[-6:])
+            else:
+                act_str = "• Operational briefing and voice consultation completed."
+
+            debrief = (
+                f"📞 **Aethelgard Voice Session Summary**\n\n"
+                f"⏱️ **Duration:** {mins}m {secs}s\n"
+                f"⚡ **Actions Taken:**\n{act_str}\n\n"
+                f"🛡️ **Status:** Voice channel disconnected cleanly. Ready in chat."
+            )
+
+            # Send via notify_cb (Telethon peer direct) and proactive_scheduler.send_telegram (bot)
+            if self.notify_cb:
+                res = self.notify_cb(debrief)
+                if asyncio.iscoroutine(res):
+                    await res
+            try:
+                from proactive_scheduler import send_telegram
+                send_telegram(debrief)
+            except Exception:
+                pass
+        except Exception as exc:
+            self.log(f"Post-call debrief error: {exc}")
 
     async def close(self) -> None:
         """Gracefully closes Gemini Live WebSocket session and cancels background tasks."""
