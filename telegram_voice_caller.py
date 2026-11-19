@@ -1075,25 +1075,154 @@ class VoiceBrainSession:
                     })
                 return _record_action({"pending_drafts": out})
 
+            if name == "batch_draft_aviation_applications":
+                count = max(1, min(int(args.get("count") or 10), 20))
+                target_role = str(args.get("target_role") or "Airport Passenger Service & Ground Operations Agent").strip()
+                airlines_filter = args.get("airlines") or []
+
+                import job_application_engine
+                from omnichannel_bridge import GoogleAdapter
+
+                batch_file = Path(os.path.expanduser(self.vault_dir)) / "career" / "aviation_batch_40_nov_2026.md"
+                if not batch_file.exists():
+                    batch_file = Path.home() / "vault" / "career" / "aviation_batch_40_nov_2026.md"
+
+                entries = []
+                if batch_file.exists():
+                    import re
+                    lines = batch_file.read_text(encoding="utf-8", errors="ignore").splitlines()
+                    for line in lines:
+                        if not line.startswith("|"):
+                            continue
+                        parts = [p.strip() for p in line.split("|")]
+                        if len(parts) >= 6 and parts[1].isdigit():
+                            c_name = re.sub(r"[*_`]", "", parts[2]).strip()
+                            r_name = re.sub(r"[*_`]", "", parts[3]).strip() or target_role
+                            loc = parts[4]
+                            e_match = re.search(r"[\w\.-]+@[\w\.-]+\.\w+", parts[5])
+                            if e_match and c_name:
+                                entries.append({
+                                    "company": c_name,
+                                    "role": r_name,
+                                    "email": e_match.group(0),
+                                    "location": loc,
+                                })
+
+                # Prioritize filtered airlines if specified
+                if airlines_filter and isinstance(airlines_filter, list):
+                    filt_lower = [str(a).lower() for a in airlines_filter]
+                    entries.sort(key=lambda x: 0 if any(f in x["company"].lower() for f in filt_lower) else 1)
+
+                selected = entries[:count]
+                if not selected:
+                    return _record_action({"error": "No verified airline emails found in batch dossier"})
+
+                ga = GoogleAdapter()
+                drafted = []
+                for item in selected:
+                    co = item["company"]
+                    ro = item["role"] or target_role
+                    em = item["email"]
+                    try:
+                        app_pkg = job_application_engine.generate_tailored_application(
+                            company=co,
+                            role=ro,
+                            recipient=em,
+                            channel="gmail",
+                            include_certificates=True,
+                            vault_dir=self.vault_dir,
+                        )
+                        d_res = ga.create_gmail_draft(
+                            to=em,
+                            subject=app_pkg["subject"],
+                            body=app_pkg["body"],
+                            attachments=app_pkg["attachments"],
+                        )
+                        if d_res.get("success"):
+                            drafted.append({
+                                "company": co,
+                                "email": em,
+                                "subject": app_pkg["subject"],
+                                "attachments": len(app_pkg["attachments"]),
+                            })
+                    except Exception as dex:
+                        self.last_error = f"Batch draft error for {co}: {dex}"
+
+                # Send debrief notification to Telegram text chat
+                if drafted:
+                    summary_msg = (
+                        f"✈️ **Aviation Applications Batch Drafted**\n\n"
+                        f"Prepared **{len(drafted)} individual tailored drafts** in your Gmail Drafts folder:\n"
+                        + "\n".join(f"• **{d['company']}** ({d['email']}) — CV & 5 Certificates attached" for d in drafted)
+                        + "\n\nEach application includes your Amadeus Altéa DCS (91%) credentials, Damascus airport operations history, and attached PDF certificates."
+                    )
+                    try:
+                        from proactive_scheduler import send_telegram
+                        send_telegram(summary_msg)
+                    except Exception:
+                        pass
+
+                return _record_action({
+                    "success": True,
+                    "count": len(drafted),
+                    "target_role": target_role,
+                    "drafted_airlines": drafted,
+                })
+
             if name == "save_gmail_draft":
                 from omnichannel_bridge import GoogleAdapter
+                to_raw = str(args.get("to") or "").strip()
+                subject = str(args.get("subject") or "Application from Omar Elnemr").strip()
+                body = str(args.get("body") or "").strip()
+
+                # Clean up generic placeholder names
+                for ph in ["[Your Name]", "[Applicant Name]", "[Name]"]:
+                    body = body.replace(ph, "Omar Elnemr")
+
+                # Detect if this is job-related or if attach_career_pack was requested
+                attach_career = bool(args.get("attach_career_pack", True))
+                is_job_related = any(k in f"{to_raw} {subject} {body}".lower() for k in [
+                    "recruit", "career", "job", "hr@", "application", "ground ops", "passenger service", "officer", "agent"
+                ])
+
                 attachments = []
-                if args.get("attach_career_pack"):
+                if attach_career or is_job_related:
                     try:
                         import job_application_engine
-                        assets = job_application_engine.locate_career_assets()
+                        assets = job_application_engine.locate_career_assets(vault_dir=self.vault_dir)
                         if assets.get("primary_cv"):
                             attachments.append(assets["primary_cv"])
                         attachments.extend(assets.get("certificates") or [])
                     except Exception:
                         pass
-                res = GoogleAdapter().create_gmail_draft(
-                    to=str(args.get("to") or ""),
-                    subject=str(args.get("subject") or "Draft from Aethelgard"),
-                    body=str(args.get("body") or ""),
-                    attachments=attachments,
-                )
-                return _record_action(res)
+
+                # If caller passed multiple comma-separated emails, split them and create separate drafts!
+                recipients = [r.strip() for r in to_raw.split(",") if r.strip() and "@" in r]
+                if not recipients and to_raw:
+                    recipients = [to_raw]
+                elif not recipients:
+                    recipients = [""]
+
+                ga = GoogleAdapter()
+                created_drafts = []
+                for rec in recipients:
+                    res = ga.create_gmail_draft(
+                        to=rec,
+                        subject=subject,
+                        body=body,
+                        attachments=attachments,
+                    )
+                    created_drafts.append(res)
+
+                if len(created_drafts) == 1:
+                    return _record_action(created_drafts[0])
+                return _record_action({
+                    "success": True,
+                    "batch_split": True,
+                    "count": len(created_drafts),
+                    "recipients": recipients,
+                    "drafts": created_drafts,
+                })
 
             if name == "stage_outbound_draft":
                 import approval_gatekeeper

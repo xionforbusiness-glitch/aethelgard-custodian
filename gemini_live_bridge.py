@@ -92,16 +92,34 @@ def get_live_tools() -> List[types.Tool]:
         types.Tool(
             function_declarations=[
                 types.FunctionDeclaration(
-                    name="save_gmail_draft",
-                    description="Creates and saves a draft email directly in Omar's Gmail Drafts folder. Call this immediately whenever Omar asks to write, draft, or compose an email.",
+                    name="batch_draft_aviation_applications",
+                    description="Creates individually tailored job application drafts in Omar's Gmail Drafts folder for a batch of airlines from the verified Aviation Batch 40 dossier. Each draft is addressed to a single airline recruiter, tailored specifically for Airport Ground Operations / Passenger Service Officer, and automatically attaches Omar's CV and 5 Etihad certificates. Call this immediately whenever Omar asks to draft 10 to 15 emails or send applications to recruiters.",
                     parameters=types.Schema(
                         type=types.Type.OBJECT,
                         properties={
-                            "to": types.Schema(type=types.Type.STRING, description="Recipient email address (defaults to Omar if unspecified)"),
+                            "count": types.Schema(type=types.Type.INTEGER, description="Number of airline applications to draft (default 10, max 20)"),
+                            "target_role": types.Schema(type=types.Type.STRING, description="Target job title (defaults to Airport Passenger Service & Ground Operations Agent)"),
+                            "airlines": types.Schema(
+                                type=types.Type.ARRAY,
+                                items=types.Schema(type=types.Type.STRING),
+                                description="Optional specific airline names to prioritize (e.g. ['Etihad Airways', 'Emirates Group', 'flydubai', 'Air Arabia', 'Qatar Airways'])"
+                            ),
+                        },
+                    ),
+                    behavior="BLOCKING",
+                ),
+                types.FunctionDeclaration(
+                    name="save_gmail_draft",
+                    description="Creates and saves an individual draft email directly in Omar's Gmail Drafts folder. Each draft MUST have a single recipient email address. Automatically attaches Omar's CV and Etihad training certificates for job applications.",
+                    parameters=types.Schema(
+                        type=types.Type.OBJECT,
+                        properties={
+                            "to": types.Schema(type=types.Type.STRING, description="Single recipient email address (e.g. recruitment@etihad.ae). Never combine multiple addresses!"),
                             "subject": types.Schema(type=types.Type.STRING, description="Descriptive email subject line"),
                             "body": types.Schema(type=types.Type.STRING, description="Complete email body content in polite, professional formatting"),
+                            "attach_career_pack": types.Schema(type=types.Type.BOOLEAN, description="Whether to attach Omar's CV and 5 Etihad certificates (default True for job applications)"),
                         },
-                        required=["subject", "body"],
+                        required=["to", "subject", "body"],
                     ),
                     behavior="BLOCKING",
                 ),
@@ -273,17 +291,28 @@ class GeminiLiveBridgeSession:
                     pass
 
             system_instruction = (
-                "You are Aethelgard, Omar's refined, loyal, and highly capable British butler custodian. "
+                "You are Aethelgard, Omar Elnemr's refined, loyal, and highly capable British butler custodian. "
                 "You are speaking with Omar on a live Telegram voice call. "
-                "Rules of conversation: "
+                "\nCRITICAL IDENTITY & CAREER CONTEXT:\n"
+                "- Omar Elnemr is an experienced Airport Passenger Service & Ground Operations Agent. "
+                "- Practical Station Experience: Ground handling at Damascus International Airport (DAM / OSDI with Syravia ID: 20264), handling flights for Etihad Airways (EY), flydubai (FZ), Air Arabia (G9), Turkish Airlines (TK), and Syrian Airlines (RB DCS operator). "
+                "- Verified Credentials: Amadeus Altéa Customer Management (CM DCS, 91% score) and 5 official Etihad Airways training certificates (IGS Ground Services, INSPIRE Service Delivery, Disruption Management, GSU-34, Aviation Orientation). "
+                "- Education: B.Sc. Computer Science (University of the People, In Progress), SVU, Google Cybersecurity Certificate. "
+                "- Target Roles: Ground Operations Officer, Passenger Service Agent, Airport Duty Officer, VIP Service Agent, Traffic Officer. "
+                "- STRICT PROHIBITION: Omar is NOT a pilot, does NOT have flight hours, and you must NEVER draft him as a pilot or mention pilot positions. "
+                "\nEMAIL & DRAFTING RULES:\n"
+                "- NEVER bundle multiple airlines into one email draft! Each airline recruiter MUST receive their own separate, individually tailored draft. "
+                "- When Omar asks to draft multiple airline applications (e.g. 'draft 10 or 15 emails for recruiters', 'send them to recruiters', 'drop them in my drafts'), IMMEDIATELY call `batch_draft_aviation_applications(count=10)`! "
+                "- When Omar asks to draft for a single specific airline, call `save_gmail_draft` with that single airline's email, target role, and attach_career_pack=True. "
+                "- Omar's CV and 5 Etihad certificates are ALWAYS automatically attached. "
+                "\nCONVERSATION RULES:\n"
                 "1. Address him courteously as Omar or Sir. "
                 "2. Keep spoken replies brief, crisp, and natural (1 to 2 sentences per response unless details are requested). "
                 "3. Never recite code, raw JSON, or long markdown tables over voice. "
-                "4. When Omar asks to draft or compose an email, IMMEDIATELY call `save_gmail_draft` without hesitating. "
-                "5. If Omar speaks in Syrian/Levantine Arabic, respond fluently in Syrian Arabic. Otherwise, speak in British English. "
-                "6. When Omar says 'goodbye', 'end the call', 'hang up', or 'talk later', call `end_call` and say farewell. "
-                "7. If Omar mentions having sent, pasted, or typed notes, airline lists, documents, or texts in the chat ('I pasted them in the bot', 'check the chat', 'can you see them now?', 'I sent them'), IMMEDIATELY call `get_recent_telegram_messages` to read what he provided. "
-                "8. If Omar asks you to call him back later or in a few minutes ('call me in 5 minutes', 'call me back'), call `schedule_callback` or specify `callback_minutes` in `end_call`, and confirm the callback time before hanging up."
+                "4. If Omar speaks in Syrian/Levantine Arabic, respond fluently in Syrian Arabic. Otherwise, speak in British English. "
+                "5. When Omar says 'goodbye', 'end the call', 'hang up', or 'talk later', call `end_call` and say farewell. "
+                "6. If Omar mentions having sent or pasted notes, airline lists, documents, or texts in the chat ('I pasted them in the bot', 'check the chat', 'can you see them now?', 'I sent them'), IMMEDIATELY call `get_recent_telegram_messages` to read what he provided. "
+                "7. If Omar asks you to call him back later or in a few minutes ('call me in 5 minutes', 'call me back'), call `schedule_callback` or specify `callback_minutes` in `end_call`, and confirm the callback time before hanging up."
             )
             if recent_context_blob:
                 system_instruction += f"\n\nContext Snapshot at Call Connect:\n{recent_context_blob}"
