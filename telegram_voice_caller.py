@@ -1228,63 +1228,71 @@ class VoiceBrainSession:
                 if not selected:
                     return _record_action({"error": "No verified airline emails found in batch dossier"})
 
-                ga = GoogleAdapter()
-                drafted = []
-                for item in selected:
-                    co = item["company"]
-                    ro = item["role"] or target_role
-                    em = item["email"]
-                    try:
-                        app_pkg = job_application_engine.generate_tailored_application(
-                            company=co,
-                            role=ro,
-                            recipient=em,
-                            channel="gmail",
-                            include_certificates=True,
-                            vault_dir=self.vault_dir,
-                        )
-                        att_list = list(app_pkg["attachments"])
-                        if custom_attachments:
-                            for ca in custom_attachments:
-                                ca_p = Path(ca)
-                                if ca_p.exists() and str(ca_p) not in att_list:
-                                    att_list.append(str(ca_p))
+                target_co_names = [item["company"] for item in selected]
 
-                        d_res = ga.create_gmail_draft(
-                            to=em,
-                            subject=app_pkg["subject"],
-                            body=app_pkg["body"],
-                            attachments=att_list,
-                        )
-                        if d_res.get("success"):
-                            drafted.append({
-                                "company": co,
-                                "email": em,
-                                "subject": app_pkg["subject"],
-                                "attachments": len(att_list),
-                            })
-                    except Exception as dex:
-                        self.last_error = f"Batch draft error for {co}: {dex}"
+                def _background_batch_draft():
+                    ga = GoogleAdapter()
+                    drafted = []
+                    for item in selected:
+                        co = item["company"]
+                        ro = item["role"] or target_role
+                        em = item["email"]
+                        try:
+                            app_pkg = job_application_engine.generate_tailored_application(
+                                company=co,
+                                role=ro,
+                                recipient=em,
+                                channel="gmail",
+                                include_certificates=True,
+                                vault_dir=self.vault_dir,
+                            )
+                            att_list = list(app_pkg["attachments"])
+                            if custom_attachments:
+                                for ca in custom_attachments:
+                                    ca_p = Path(ca)
+                                    if ca_p.exists() and str(ca_p) not in att_list:
+                                        att_list.append(str(ca_p))
 
-                # Send debrief notification to Telegram text chat
-                if drafted:
-                    summary_msg = (
-                        f"✈️ **Aviation Applications Batch Drafted**\n\n"
-                        f"Prepared **{len(drafted)} individual tailored drafts** in your Gmail Drafts folder:\n"
-                        + "\n".join(f"• **{d['company']}** ({d['email']}) — CV & 5 Certificates attached" for d in drafted)
-                        + "\n\nEach application includes your Amadeus Altéa DCS (91%) credentials, Damascus airport operations history, and attached PDF certificates."
-                    )
-                    try:
-                        from proactive_scheduler import send_telegram
-                        send_telegram(summary_msg)
-                    except Exception:
-                        pass
+                            d_res = ga.create_gmail_draft(
+                                to=em,
+                                subject=app_pkg["subject"],
+                                body=app_pkg["body"],
+                                attachments=att_list,
+                            )
+                            if d_res.get("success"):
+                                drafted.append({
+                                    "company": co,
+                                    "email": em,
+                                    "subject": app_pkg["subject"],
+                                    "attachments": len(att_list),
+                                })
+                        except Exception as dex:
+                            self.last_error = f"Batch draft error for {co}: {dex}"
+
+                    # Send debrief notification to Telegram text chat
+                    if drafted:
+                        summary_msg = (
+                            f"✈️ **Aviation Applications Batch Drafted**\n\n"
+                            f"Prepared **{len(drafted)} individual tailored drafts** in your Gmail Drafts folder:\n"
+                            + "\n".join(f"• **{d['company']}** ({d['email']}) — CV & 5 Certificates attached" for d in drafted)
+                            + "\n\nEach application includes your Amadeus Altéa DCS (91%) credentials, Damascus airport operations history, and attached PDF certificates."
+                        )
+                        try:
+                            from proactive_scheduler import send_telegram
+                            send_telegram(summary_msg)
+                        except Exception:
+                            pass
+
+                import threading
+                worker_thread = threading.Thread(target=_background_batch_draft, daemon=True, name="AviationBatchDraftWorker")
+                worker_thread.start()
 
                 return _record_action({
-                    "success": True,
-                    "count": len(drafted),
+                    "status": "in_progress",
+                    "count": len(selected),
+                    "target_airlines": target_co_names[:5],
                     "target_role": target_role,
-                    "drafted_airlines": drafted,
+                    "details": f"Drafting {len(selected)} applications in background with attached CVs and 5 certificates. Acknowledge naturally and invite Omar to continue.",
                 })
 
             if name == "delete_gmail_draft":
