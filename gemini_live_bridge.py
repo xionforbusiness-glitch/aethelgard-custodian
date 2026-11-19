@@ -361,94 +361,95 @@ class GeminiLiveBridgeSession:
             self.log(f"Send audio error: {exc}")
 
     async def _receive_loop(self) -> None:
-        """Receives audio chunks, transcripts, interruptions, and tool calls from Gemini Live."""
-        try:
-            async for resp in self.session.receive():
-                if self.is_closing:
-                    break
+        """Receives audio chunks, transcripts, interruptions, and tool calls from Gemini Live across all conversation turns."""
+        while self.is_connected and not self.is_closing:
+            try:
+                async for resp in self.session.receive():
+                    if self.is_closing:
+                        break
 
-                sc = resp.server_content
-                if sc is not None:
-                    # 1. Spoken audio response from Gemini
-                    if sc.model_turn is not None:
-                        for part in sc.model_turn.parts:
-                            if part.inline_data and part.inline_data.data:
-                                pcm_24k = part.inline_data.data
-                                pcm_48k = upsample_24k_to_48k(pcm_24k)
-                                self._enqueue_telegram_audio(pcm_48k)
+                    sc = resp.server_content
+                    if sc is not None:
+                        # 1. Spoken audio response from Gemini
+                        if sc.model_turn is not None:
+                            for part in sc.model_turn.parts:
+                                if part.inline_data and part.inline_data.data:
+                                    pcm_24k = part.inline_data.data
+                                    pcm_48k = upsample_24k_to_48k(pcm_24k)
+                                    self._enqueue_telegram_audio(pcm_48k)
 
-                    # 2. Output and Input Transcripts
-                    if sc.output_transcription and sc.output_transcription.text:
-                        txt = sc.output_transcription.text.strip()
-                        if txt:
-                            self.log(f"Aethelgard: {txt}")
-                            if self.brain and hasattr(self.brain, "transcript_log"):
-                                self.brain.transcript_log.append(f"**Aethelgard:** {txt}")
+                        # 2. Output and Input Transcripts
+                        if sc.output_transcription and sc.output_transcription.text:
+                            txt = sc.output_transcription.text.strip()
+                            if txt:
+                                self.log(f"Aethelgard: {txt}")
+                                if self.brain and hasattr(self.brain, "transcript_log"):
+                                    self.brain.transcript_log.append(f"**Aethelgard:** {txt}")
 
-                    if sc.input_transcription and sc.input_transcription.text:
-                        u_txt = sc.input_transcription.text.strip()
-                        if u_txt:
-                            self.log(f"Omar: {u_txt}")
-                            if self.brain and hasattr(self.brain, "transcript_log"):
-                                self.brain.transcript_log.append(f"**Omar:** {u_txt}")
+                        if sc.input_transcription and sc.input_transcription.text:
+                            u_txt = sc.input_transcription.text.strip()
+                            if u_txt:
+                                self.log(f"Omar: {u_txt}")
+                                if self.brain and hasattr(self.brain, "transcript_log"):
+                                    self.brain.transcript_log.append(f"**Omar:** {u_txt}")
 
-                    # 3. Interruption / Barge-in (Omar spoke while Aethelgard was speaking)
-                    if sc.interrupted:
-                        self.log("Cloud VAD: Interruption detected! Purging playback audio queue.")
-                        self._purge_telegram_audio()
+                        # 3. Interruption / Barge-in (Omar spoke while Aethelgard was speaking)
+                        if sc.interrupted:
+                            self.log("Cloud VAD: Interruption detected! Purging playback audio queue.")
+                            self._purge_telegram_audio()
 
-                    if sc.turn_complete:
-                        self.log("Gemini model turn complete.")
-                        self.turn_complete_event.set()
+                        if sc.turn_complete:
+                            self.log("Gemini model turn complete.")
+                            self.turn_complete_event.set()
 
-                # 4. Tool Calls
-                tc = resp.tool_call
-                if tc is not None and tc.function_calls:
-                    for call in tc.function_calls:
-                        c_name = str(call.name or "")
-                        c_args = call.args or {}
-                        self.log(f"Tool Call received: {c_name} args={c_args}")
+                    # 4. Tool Calls
+                    tc = resp.tool_call
+                    if tc is not None and tc.function_calls:
+                        for call in tc.function_calls:
+                            c_name = str(call.name or "")
+                            c_args = call.args or {}
+                            self.log(f"Tool Call received: {c_name} args={c_args}")
 
-                        # Execute tool using VoiceBrainSession's proven execution dispatcher
-                        tool_res = {}
-                        try:
-                            if self.brain and hasattr(self.brain, "execute_tool_call"):
-                                tool_res = await asyncio.to_thread(
-                                    self.brain.execute_tool_call, c_name, c_args
-                                )
-                            else:
-                                tool_res = {"status": "ok"}
-                        except Exception as tex:
-                            self.log(f"Tool execution error on {c_name}: {tex}")
-                            tool_res = {"error": str(tex)}
+                            # Execute tool using VoiceBrainSession's proven execution dispatcher
+                            tool_res = {}
+                            try:
+                                if self.brain and hasattr(self.brain, "execute_tool_call"):
+                                    tool_res = await asyncio.to_thread(
+                                        self.brain.execute_tool_call, c_name, c_args
+                                    )
+                                else:
+                                    tool_res = {"status": "ok"}
+                            except Exception as tex:
+                                self.log(f"Tool execution error on {c_name}: {tex}")
+                                tool_res = {"error": str(tex)}
 
-                        self.log(f"Tool Result for {c_name}: {str(tool_res)[:120]}")
+                            self.log(f"Tool Result for {c_name}: {str(tool_res)[:120]}")
 
-                        # Send function response back to Gemini Live
-                        f_resp = types.FunctionResponse(
-                            id=call.id,
-                            name=call.name,
-                            response=tool_res,
+                            # Send function response back to Gemini Live
+                            f_resp = types.FunctionResponse(
+                                id=call.id,
+                                name=call.name,
+                                response=tool_res,
+                            )
+                            await self.session.send_tool_response(function_responses=[f_resp])
+
+                            # If tool was end_call, schedule graceful hangup after farewell audio drains
+                            if c_name == "end_call":
+                                self.log("end_call requested by model; scheduling hangup after farewell drain")
+                                asyncio.create_task(self._hangup_after_delay(delay=3.5))
+
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                if not self.is_closing:
+                    self.log(f"Live receive loop error: {type(exc).__name__}: {exc}")
+                    if self.notify_cb:
+                        asyncio.create_task(
+                            self.notify_cb(f"Aethelgard Voice Call dropped due to connection issue: {exc}")
                         )
-                        await self.session.send_tool_response(function_responses=[f_resp])
-
-                        # If tool was end_call, schedule graceful hangup after farewell audio drains
-                        if c_name == "end_call":
-                            self.log("end_call requested by model; scheduling hangup after farewell drain")
-                            asyncio.create_task(self._hangup_after_delay(delay=3.5))
-
-        except asyncio.CancelledError:
-            pass
-        except Exception as exc:
-            self.log(f"Live receive loop error: {type(exc).__name__}: {exc}")
-            # Follow agreed Hang Up & Notify protocol
-            if not self.is_closing:
-                if self.notify_cb:
-                    asyncio.create_task(
-                        self.notify_cb(f"Aethelgard Voice Call dropped due to connection issue: {exc}")
-                    )
-                if self.hangup_cb:
-                    asyncio.create_task(self.hangup_cb())
+                    if self.hangup_cb:
+                        asyncio.create_task(self.hangup_cb())
+                break
 
     def _enqueue_telegram_audio(self, pcm_48k: bytes) -> None:
         """Buffers 48kHz audio and pushes standard 20ms (1920-byte) frames to Telegram out_queue."""
