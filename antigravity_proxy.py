@@ -1083,6 +1083,77 @@ def _vertex_model_chain(requested_model: str, is_title: bool = False) -> list[tu
     ]
 
 
+def _sanitize_vertex_messages(raw_messages: list) -> list:
+    """
+    Sanitizes conversation messages for Google Vertex AI OpenAI endpoint:
+    1. Past completed tool loops (assistant tool_calls + tool responses that are followed
+       by a subsequent assistant reply or user turn) are compacted into clean assistant text
+       so Vertex AI's reasoning validator never hangs on older mock signatures.
+    2. Active tool turns (where the tool message is the latest in history) retain their
+       tool_calls and inject the thought_signature bypass.
+    """
+    if not raw_messages:
+        return []
+
+    latest_tool_idx = -1
+    for i in range(len(raw_messages) - 1, -1, -1):
+        m = raw_messages[i]
+        if isinstance(m, dict) and m.get("role") == "tool":
+            latest_tool_idx = i
+            break
+        elif isinstance(m, dict) and m.get("role") == "user":
+            break
+
+    sanitized = []
+    i = 0
+    while i < len(raw_messages):
+        m = raw_messages[i]
+        if not isinstance(m, dict):
+            sanitized.append(m)
+            i += 1
+            continue
+
+        role = m.get("role")
+        if role == "assistant" and m.get("tool_calls"):
+            is_active = (latest_tool_idx != -1 and i < latest_tool_idx) and all(
+                isinstance(raw_messages[k], dict) and raw_messages[k].get("role") in ("tool", "assistant")
+                for k in range(i + 1, len(raw_messages))
+            )
+            if is_active:
+                m_copy = dict(m)
+                tcs_copy = []
+                for tc in m["tool_calls"]:
+                    if isinstance(tc, dict):
+                        tc_c = dict(tc)
+                        if "extra_content" not in tc_c:
+                            tc_c["extra_content"] = {"google": {"thought_signature": "skip_thought_signature_validator"}}
+                        tcs_copy.append(tc_c)
+                    else:
+                        tcs_copy.append(tc)
+                m_copy["tool_calls"] = tcs_copy
+                if "extra_content" not in m_copy:
+                    m_copy["extra_content"] = {"google": {"thought_signature": "skip_thought_signature_validator"}}
+                sanitized.append(m_copy)
+            else:
+                content = m.get("content")
+                if content:
+                    sanitized.append({"role": "assistant", "content": content})
+            i += 1
+        elif role == "tool":
+            is_active = (i == latest_tool_idx or (latest_tool_idx != -1 and i < latest_tool_idx)) and all(
+                isinstance(raw_messages[k], dict) and raw_messages[k].get("role") in ("tool", "assistant")
+                for k in range(i, len(raw_messages))
+            )
+            if is_active:
+                sanitized.append(m)
+            i += 1
+        else:
+            sanitized.append(m)
+            i += 1
+
+    return sanitized
+
+
 def _proxy_to_vertex_openai(handler, body: dict, requested_model: str, is_stream: bool) -> bool:
     """
     Forwards OpenAI chat/completions directly to the official Vertex AI OpenAI-compatible
@@ -1132,27 +1203,8 @@ def _proxy_to_vertex_openai(handler, body: dict, requested_model: str, is_stream
         elif str(fwd.get("reasoning_effort") or "").lower() in ("none", "minimal"):
             fwd.pop("reasoning_effort", None)
 
-        # Inject thought_signature validator bypass for Vertex AI OpenAI endpoint on multi-turn tool history
-        msgs = []
-        for m in (fwd.get("messages") or []):
-            if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls"):
-                m_copy = dict(m)
-                tcs_copy = []
-                for tc in m["tool_calls"]:
-                    if isinstance(tc, dict):
-                        tc_c = dict(tc)
-                        if "extra_content" not in tc_c:
-                            tc_c["extra_content"] = {"google": {"thought_signature": "skip_thought_signature_validator"}}
-                        tcs_copy.append(tc_c)
-                    else:
-                        tcs_copy.append(tc)
-                m_copy["tool_calls"] = tcs_copy
-                if "extra_content" not in m_copy:
-                    m_copy["extra_content"] = {"google": {"thought_signature": "skip_thought_signature_validator"}}
-                msgs.append(m_copy)
-            else:
-                msgs.append(m)
-        fwd["messages"] = msgs
+        # Sanitize multi-turn history & inject thought_signature validator bypass for Vertex AI
+        fwd["messages"] = _sanitize_vertex_messages(fwd.get("messages") or [])
 
         payload_bytes = json.dumps(fwd, ensure_ascii=False).encode("utf-8")
 

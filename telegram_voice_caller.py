@@ -260,10 +260,10 @@ class AudioTurnDetector:
         self,
         speech_rms_threshold: float = 180.0,
         frame_ms: int = 20,
-        barge_in_ms: int = 280,
-        min_speech_ms: int = 220,
-        silence_end_ms: int = 450,
-        max_turn_ms: int = 18000,
+        barge_in_ms: int = 500,
+        min_speech_ms: int = 350,
+        silence_end_ms: int = 1200,
+        max_turn_ms: int = 25000,
     ):
         self.speech_rms_threshold = float(speech_rms_threshold)
         self.frame_ms = int(frame_ms)
@@ -1625,26 +1625,6 @@ class VoiceBrainSession:
 
         emitted_filler = False
         tool_cache: Dict[str, Any] = {}
-
-        # In live voice calls (wav_bytes provided), emit a natural conversational acknowledgment
-        # immediately to eliminate dead air while the LLM reasons
-        if on_speak_chunk is not None and wav_bytes:
-            t_lower = (text_prompt or "").lower()
-            if any(k in t_lower for k in ("draft", "email", "dispatch", "stage", "send", "mail")):
-                pre_filler = "Understood, checking the dispatch status and staging queue now..."
-            elif any(k in t_lower for k in ("telemetry", "compensator", "bypass", "valve", "maintenance", "vault", "notes", "log")):
-                pre_filler = "Checking our aircraft logs and operational notes now, one moment..."
-            elif any(k in t_lower for k in ("gmail", "inbox")):
-                pre_filler = "Checking your Gmail inbox now, one moment..."
-            elif any(k in t_lower for k in ("calendar", "slot", "gate", "schedule", "agenda")):
-                pre_filler = "Looking into your flight schedule and gate assignments now, one moment..."
-            elif any(k in t_lower for k in ("hangup", "bye", "talk later", "end call")):
-                pre_filler = ""
-            else:
-                pre_filler = "Understood, looking into that right away..."
-            if pre_filler:
-                _chunk_cb(pre_filler)
-                emitted_filler = True
 
         reply_text = ""
         try:
