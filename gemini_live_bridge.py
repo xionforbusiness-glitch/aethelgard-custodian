@@ -89,203 +89,13 @@ def upsample_24k_to_48k(pcm_24k: bytes) -> bytes:
 
 
 def get_live_tools() -> List[types.Tool]:
-    """Builds the function declarations exposed to Gemini 3.8 Live."""
-    return [
-        types.Tool(
-            function_declarations=[
-                types.FunctionDeclaration(
-                    name="batch_draft_aviation_applications",
-                    description="Creates individually tailored job application drafts in Omar's Gmail Drafts folder for a batch of airlines from the verified Aviation Batch 40 dossier. Each draft is addressed to a single airline recruiter, tailored specifically for Airport Ground Operations / Passenger Service Officer, and automatically attaches Omar's CV and 5 certificates. Supports excluding companies (e.g. Syravia) and attaching custom certificates. Call this immediately whenever Omar asks to draft 10 to 15 emails or send applications to recruiters.",
-                    parameters=types.Schema(
-                        type=types.Type.OBJECT,
-                        properties={
-                            "count": types.Schema(type=types.Type.INTEGER, description="Number of airline applications to draft (default 10, max 20)"),
-                            "target_role": types.Schema(type=types.Type.STRING, description="Target job title (defaults to Airport Passenger Service & Ground Operations Agent)"),
-                            "airlines": types.Schema(
-                                type=types.Type.ARRAY,
-                                items=types.Schema(type=types.Type.STRING),
-                                description="Optional specific airline names to prioritize (e.g. ['Etihad Airways', 'Emirates Group', 'flydubai', 'Air Arabia', 'Qatar Airways'])"
-                            ),
-                            "exclude_companies": types.Schema(
-                                type=types.Type.ARRAY,
-                                items=types.Schema(type=types.Type.STRING),
-                                description="Airlines or companies to exclude from drafting, e.g. ['Syravia']"
-                            ),
-                            "custom_attachments": types.Schema(
-                                type=types.Type.ARRAY,
-                                items=types.Schema(type=types.Type.STRING),
-                                description="Optional specific certificate or file paths to attach to each draft"
-                            ),
-                            "clean_existing": types.Schema(
-                                type=types.Type.BOOLEAN,
-                                description="Whether to delete existing application drafts before drafting the new batch"
-                            ),
-                        },
-                    ),
-                    behavior="BLOCKING",
-                ),
-                types.FunctionDeclaration(
-                    name="delete_gmail_draft",
-                    description="Deletes drafts directly from Omar's Gmail Drafts folder. Can target a specific draft by airline/company name (e.g. 'Syravia', 'Etihad'), recipient email address, subject keyword, or delete all existing drafts if delete_all is True. Call this immediately whenever Omar asks to delete, discard, or remove drafts.",
-                    parameters=types.Schema(
-                        type=types.Type.OBJECT,
-                        properties={
-                            "query": types.Schema(type=types.Type.STRING, description="Airline name, company name, or subject keyword to match and delete (e.g. 'Syravia', 'Etihad')"),
-                            "recipient": types.Schema(type=types.Type.STRING, description="Optional recipient email address to match (e.g. ops@syravia.com)"),
-                            "delete_all": types.Schema(type=types.Type.BOOLEAN, description="Set to True ONLY if Omar explicitly asks to delete all existing drafts"),
-                        },
-                    ),
-                    behavior="BLOCKING",
-                ),
-                types.FunctionDeclaration(
-                    name="send_gmail_draft",
-                    description="Directly dispatches and sends an email draft from Omar's real Gmail account to a recruiter or contact, complete with attached CV and training certificates. Removes the sent message from Drafts, logs to the career application tracker, and sends a Telegram card confirmation. Call this whenever Omar says 'send the draft', 'send the Etihad draft', 'let's send it', or gives confirmation to send.",
-                    parameters=types.Schema(
-                        type=types.Type.OBJECT,
-                        properties={
-                            "airline_or_company": types.Schema(type=types.Type.STRING, description="Airline or company name of the draft to send (e.g. 'Etihad Airways', 'Emirates', 'flydubai')"),
-                            "recipient": types.Schema(type=types.Type.STRING, description="Optional specific recipient email (e.g. recruitment@etihad.ae)"),
-                            "query": types.Schema(type=types.Type.STRING, description="Optional subject or text query to locate the draft"),
-                        },
-                    ),
-                    behavior="BLOCKING",
-                ),
-                types.FunctionDeclaration(
-                    name="modify_gmail_draft",
-                    description="Modifies an existing draft in Omar's Gmail Drafts folder — adding custom attachments (such as Syravia/Etihad certificates or specific CVs), updating subject, or amending the body.",
-                    parameters=types.Schema(
-                        type=types.Type.OBJECT,
-                        properties={
-                            "target": types.Schema(type=types.Type.STRING, description="Airline, recipient, or subject query identifying the draft to modify (e.g. 'Etihad Airways')"),
-                            "add_attachments": types.Schema(
-                                type=types.Type.ARRAY,
-                                items=types.Schema(type=types.Type.STRING),
-                                description="List of document names or paths to attach (e.g. ['Syravia', 'Etihad_01', 'CV'])"
-                            ),
-                            "updated_body": types.Schema(type=types.Type.STRING, description="Optional updated or appended body text"),
-                            "updated_subject": types.Schema(type=types.Type.STRING, description="Optional new subject line"),
-                        },
-                        required=["target"],
-                    ),
-                    behavior="BLOCKING",
-                ),
-                types.FunctionDeclaration(
-                    name="save_gmail_draft",
-                    description="Creates and saves an individual draft email directly in Omar's Gmail Drafts folder. Each draft MUST have a single recipient email address. Automatically attaches Omar's CV and Etihad training certificates for job applications.",
-                    parameters=types.Schema(
-                        type=types.Type.OBJECT,
-                        properties={
-                            "to": types.Schema(type=types.Type.STRING, description="Single recipient email address (e.g. recruitment@etihad.ae). Never combine multiple addresses!"),
-                            "subject": types.Schema(type=types.Type.STRING, description="Descriptive email subject line"),
-                            "body": types.Schema(type=types.Type.STRING, description="Complete email body content in polite, professional formatting"),
-                            "attach_career_pack": types.Schema(type=types.Type.BOOLEAN, description="Whether to attach Omar's CV and 5 Etihad certificates (default True for job applications)"),
-                        },
-                        required=["to", "subject", "body"],
-                    ),
-                    behavior="BLOCKING",
-                ),
-                types.FunctionDeclaration(
-                    name="check_gmail",
-                    description="Searches Omar's Gmail messages or lists recent emails with sender, subject, and snippet preview.",
-                    parameters=types.Schema(
-                        type=types.Type.OBJECT,
-                        properties={
-                            "query": types.Schema(type=types.Type.STRING, description="Optional search query or sender name"),
-                            "latest": types.Schema(type=types.Type.INTEGER, description="Number of recent emails to retrieve (1-5, default 3)"),
-                        },
-                    ),
-                    behavior="BLOCKING",
-                ),
-                types.FunctionDeclaration(
-                    name="read_email",
-                    description="Fetches the full text content of a specific Gmail message by ID.",
-                    parameters=types.Schema(
-                        type=types.Type.OBJECT,
-                        properties={
-                            "msg_id": types.Schema(type=types.Type.STRING, description="Gmail message ID from check_gmail"),
-                        },
-                        required=["msg_id"],
-                    ),
-                    behavior="BLOCKING",
-                ),
-                types.FunctionDeclaration(
-                    name="check_agenda",
-                    description="Retrieves Omar's upcoming calendar events, work shifts, and Damascus airport weather.",
-                    parameters=types.Schema(
-                        type=types.Type.OBJECT,
-                        properties={
-                            "hours_ahead": types.Schema(type=types.Type.INTEGER, description="Lookahead window in hours (default 24)"),
-                        },
-                    ),
-                    behavior="BLOCKING",
-                ),
-                types.FunctionDeclaration(
-                    name="search_vault",
-                    description="Searches Omar's Obsidian knowledge vault for operational notes, flight logs, or memories.",
-                    parameters=types.Schema(
-                        type=types.Type.OBJECT,
-                        properties={
-                            "query": types.Schema(type=types.Type.STRING, description="Topic, aircraft term, or keyword"),
-                            "note_name": types.Schema(type=types.Type.STRING, description="Optional specific note file name"),
-                        },
-                        required=["query"],
-                    ),
-                    behavior="BLOCKING",
-                ),
-                types.FunctionDeclaration(
-                    name="append_vault_note",
-                    description="Appends a quick dated observation or log entry to Omar's Obsidian vault notes.",
-                    parameters=types.Schema(
-                        type=types.Type.OBJECT,
-                        properties={
-                            "content": types.Schema(type=types.Type.STRING, description="Text to append"),
-                            "note_name": types.Schema(type=types.Type.STRING, description="Note filename (defaults to Daily Log.md)"),
-                        },
-                        required=["content"],
-                    ),
-                    behavior="BLOCKING",
-                ),
-                types.FunctionDeclaration(
-                    name="get_recent_telegram_messages",
-                    description="Retrieves the most recent text messages sent by Omar or the assistant in Telegram chat (@aethelgard_vault_bot). Call this immediately whenever Omar mentions having sent or pasted notes, airline lists, documents, or texts in the chat, or asks if you can see what he sent.",
-                    parameters=types.Schema(
-                        type=types.Type.OBJECT,
-                        properties={
-                            "limit": types.Schema(type=types.Type.INTEGER, description="Number of recent messages to fetch (default 5, max 15)"),
-                        },
-                    ),
-                    behavior="BLOCKING",
-                ),
-                types.FunctionDeclaration(
-                    name="schedule_callback",
-                    description="Schedules an automatic outgoing voice phone call to Omar after a specified number of minutes. Call this whenever Omar requests to be called back later or in X minutes.",
-                    parameters=types.Schema(
-                        type=types.Type.OBJECT,
-                        properties={
-                            "minutes": types.Schema(type=types.Type.INTEGER, description="Delay in minutes before calling Omar back (e.g. 5)"),
-                            "reason": types.Schema(type=types.Type.STRING, description="Brief reason or topic for the follow-up call"),
-                        },
-                        required=["minutes"],
-                    ),
-                    behavior="BLOCKING",
-                ),
-                types.FunctionDeclaration(
-                    name="end_call",
-                    description="Terminates the live Telegram call after speaking a brief polite farewell to Omar. If Omar requested a callback or to call him back in a few minutes, specify callback_minutes.",
-                    parameters=types.Schema(
-                        type=types.Type.OBJECT,
-                        properties={
-                            "farewell": types.Schema(type=types.Type.STRING, description="Courteous closing remark, e.g. 'Goodbye Omar. Have a productive day.'"),
-                            "callback_minutes": types.Schema(type=types.Type.INTEGER, description="Optional delay in minutes before Aethelgard calls Omar back automatically."),
-                            "callback_reason": types.Schema(type=types.Type.STRING, description="Optional reason for the scheduled follow-up call"),
-                        },
-                    ),
-                    behavior="BLOCKING",
-                ),
-            ]
-        ),
-        types.Tool(google_search=types.GoogleSearch()),
-    ]
+    """Builds the function declarations exposed to Gemini 3.8 Live from the modular registry."""
+    try:
+        import voice_tools_registry
+        return voice_tools_registry.get_voice_tool_declarations()
+    except Exception as exc:
+        logger.warning(f"Failed to load tools from voice_tools_registry: {exc}")
+        return []
 
 
 def _get_last_call_state_path() -> Path:
@@ -485,7 +295,10 @@ class GeminiLiveBridgeSession:
                 "6. If Omar mentions having sent or pasted notes, airline lists, documents, or texts in the chat ('I pasted them in the bot', 'check the chat', 'can you see them now?', 'I sent them'), IMMEDIATELY call `get_recent_telegram_messages` to read what he provided. "
                 "7. If Omar asks you to call him back later or in a few minutes ('call me in 5 minutes', 'call me back'), call `schedule_callback` or specify `callback_minutes` in `end_call`, and confirm the callback time before hanging up. "
                 "8. NATURAL CONVERSATIONAL STYLE & ZERO-ROBOTIC VARIETY: NEVER sound like a scripted IVR robot repeating canned lines like 'Right away, Sir. I have initiated...' or 'Consider it underway...'. When taking on a task, respond authentically, sharply, and spontaneously like a real trusted partner ('Got it, Sir, I\\'ll do that right now', 'I got you. Setting that in motion—what\\'s next?', 'Leave that with me, Omar. I\\'ll get those rolling while we talk', 'All over it. Go ahead, I\\'m listening'). If speaking Syrian Arabic: 'تكرم عينك، فوراً عم جهزلك ياهن، كمل معي شو في كمان؟' أو 'صار عندك، شغال عليهن هلق.' Heavy tasks run asynchronously in the background, so acknowledge the job in 1-2 punchy, natural words and keep the dialogue flowing smoothly with zero dead air! "
-                "9. DYNAMIC GREETING & CALL STATE MEMORY: Every time a call connects, greet Omar with spontaneous, contextual variety. If the previous call was cut off abruptly or he hung up unexpectedly, acknowledge it naturally or ask with subtle wit if the line dropped or if he hung up on you. If he redials right after saying goodbye, acknowledge the quick return ('Back already, Sir?'). Always adapt to the local time in Damascus and current tasks. NEVER repeat identical canned greeting phrases like 'Aethelgard listening, Omar' or 'online and at your service'."
+                "9. DYNAMIC GREETING & CALL STATE MEMORY: Every time a call connects, greet Omar with spontaneous, contextual variety. If the previous call was cut off abruptly or he hung up unexpectedly, acknowledge it naturally or ask with subtle wit if the line dropped or if he hung up on you. If he redials right after saying goodbye, acknowledge the quick return ('Back already, Sir?'). Always adapt to the local time in Damascus and current tasks. NEVER repeat identical canned greeting phrases like 'Aethelgard listening, Omar' or 'online and at your service'. "
+                "10. TELEGRAM FILE & DOCUMENT DELIVERY: If Omar asks you to send his CV, certificates, or documents to the chat ('can you send them on the chat?', 'send my CV to Telegram', 'send the certificates to my chat'), IMMEDIATELY call `send_telegram_file(file_type='all' or 'cv' or 'certificates')`! Confirm courteously once dispatched. "
+                "11. REAL-TIME DRAFT STATUS: If Omar asks where the drafts are, how many were created, or if they are ready, call `check_draft_status` to report current drafts and whether the background generator is actively uploading. "
+                "12. LIVE WEB SEARCH & RECRUITER PITCHING: If Omar asks you to search the internet, look up airlines, or pitch to a recruiter, call `live_web_search(query=...)` or `pitch_recruiter(company=...)`."
             )
             if recent_context_blob:
                 system_instruction += f"\n\nContext Snapshot at Call Connect:\n{recent_context_blob}"

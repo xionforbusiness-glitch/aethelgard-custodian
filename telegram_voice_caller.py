@@ -1195,6 +1195,20 @@ class VoiceBrainSession:
             return res
 
         try:
+            # First check modular voice tools registry
+            try:
+                import voice_tools_registry
+                session_ctx = {
+                    "vault_dir": self.vault_dir,
+                    "caller": getattr(self, "caller", None),
+                    "brain": self,
+                }
+                handled, res = voice_tools_registry.try_dispatch_new_voice_tool(name, args, session_ctx)
+                if handled:
+                    return _record_action(res)
+            except Exception as v_err:
+                logging.getLogger("telegram_caller").warning(f"voice_tools_registry error on {name}: {v_err}")
+
             if name == "check_gmail":
                 from omnichannel_bridge import GoogleAdapter
                 ga = GoogleAdapter()
@@ -2234,6 +2248,8 @@ class VoiceBrainSession:
     def _summarize_tool_result(name: str, args: Dict[str, Any], res: Dict[str, Any]) -> str:
         if res.get("error"):
             return f"{name} error: {str(res['error'])[:80]}"
+        if res.get("summary"):
+            return str(res["summary"])[:100]
         if name == "check_gmail":
             return f"checked Gmail ({len(res.get('emails') or [])} emails, query={args.get('query') or 'latest'})"
         if name == "check_whatsapp":

@@ -322,9 +322,13 @@ def tick_async_jobs(
     Returns summary counters for observability and testing.
     """
     global _ACTIVE_WORKERS
-    ref_now = now or datetime.datetime.now(datetime.timezone.utc)
-    if ref_now.tzinfo is None:
-        ref_now = ref_now.replace(tzinfo=datetime.timezone.utc)
+    if now is not None:
+        if now.tzinfo is not None:
+            ref_now = now.astimezone(datetime.timezone.utc)
+        else:
+            ref_now = now.replace(tzinfo=datetime.timezone.utc)
+    else:
+        ref_now = datetime.datetime.now(datetime.timezone.utc)
 
     jobs = _load_jobs()
     triggered = 0

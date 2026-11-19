@@ -15,8 +15,8 @@ TELEGRAM_USER_ID = os.environ.get("TELEGRAM_ALLOWED_USERS", "1021125594")
 
 def get_damascus_now():
     """Returns current datetime in Damascus (UTC+3)."""
-    utc_now = datetime.datetime.now(datetime.timezone.utc)
-    return utc_now + datetime.timedelta(hours=3)
+    damascus_tz = datetime.timezone(datetime.timedelta(hours=3))
+    return datetime.datetime.now(damascus_tz)
 
 def send_telegram(text, buttons=None, chat_id=TELEGRAM_USER_ID, token=TELEGRAM_BOT_TOKEN):
     """Sends a Telegram message with optional interactive ReplyKeyboardMarkup."""
