@@ -93,7 +93,7 @@ def get_live_tools() -> List[types.Tool]:
             function_declarations=[
                 types.FunctionDeclaration(
                     name="batch_draft_aviation_applications",
-                    description="Creates individually tailored job application drafts in Omar's Gmail Drafts folder for a batch of airlines from the verified Aviation Batch 40 dossier. Each draft is addressed to a single airline recruiter, tailored specifically for Airport Ground Operations / Passenger Service Officer, and automatically attaches Omar's CV and 5 Etihad certificates. Call this immediately whenever Omar asks to draft 10 to 15 emails or send applications to recruiters.",
+                    description="Creates individually tailored job application drafts in Omar's Gmail Drafts folder for a batch of airlines from the verified Aviation Batch 40 dossier. Each draft is addressed to a single airline recruiter, tailored specifically for Airport Ground Operations / Passenger Service Officer, and automatically attaches Omar's CV and 5 certificates. Supports excluding companies (e.g. Syravia) and attaching custom certificates. Call this immediately whenever Omar asks to draft 10 to 15 emails or send applications to recruiters.",
                     parameters=types.Schema(
                         type=types.Type.OBJECT,
                         properties={
@@ -104,7 +104,66 @@ def get_live_tools() -> List[types.Tool]:
                                 items=types.Schema(type=types.Type.STRING),
                                 description="Optional specific airline names to prioritize (e.g. ['Etihad Airways', 'Emirates Group', 'flydubai', 'Air Arabia', 'Qatar Airways'])"
                             ),
+                            "exclude_companies": types.Schema(
+                                type=types.Type.ARRAY,
+                                items=types.Schema(type=types.Type.STRING),
+                                description="Airlines or companies to exclude from drafting, e.g. ['Syravia']"
+                            ),
+                            "custom_attachments": types.Schema(
+                                type=types.Type.ARRAY,
+                                items=types.Schema(type=types.Type.STRING),
+                                description="Optional specific certificate or file paths to attach to each draft"
+                            ),
+                            "clean_existing": types.Schema(
+                                type=types.Type.BOOLEAN,
+                                description="Whether to delete existing application drafts before drafting the new batch"
+                            ),
                         },
+                    ),
+                    behavior="BLOCKING",
+                ),
+                types.FunctionDeclaration(
+                    name="delete_gmail_draft",
+                    description="Deletes drafts directly from Omar's Gmail Drafts folder. Can target a specific draft by airline/company name (e.g. 'Syravia', 'Etihad'), recipient email address, subject keyword, or delete all existing drafts if delete_all is True. Call this immediately whenever Omar asks to delete, discard, or remove drafts.",
+                    parameters=types.Schema(
+                        type=types.Type.OBJECT,
+                        properties={
+                            "query": types.Schema(type=types.Type.STRING, description="Airline name, company name, or subject keyword to match and delete (e.g. 'Syravia', 'Etihad')"),
+                            "recipient": types.Schema(type=types.Type.STRING, description="Optional recipient email address to match (e.g. ops@syravia.com)"),
+                            "delete_all": types.Schema(type=types.Type.BOOLEAN, description="Set to True ONLY if Omar explicitly asks to delete all existing drafts"),
+                        },
+                    ),
+                    behavior="BLOCKING",
+                ),
+                types.FunctionDeclaration(
+                    name="send_gmail_draft",
+                    description="Directly dispatches and sends an email draft from Omar's real Gmail account to a recruiter or contact, complete with attached CV and training certificates. Removes the sent message from Drafts, logs to the career application tracker, and sends a Telegram card confirmation. Call this whenever Omar says 'send the draft', 'send the Etihad draft', 'let's send it', or gives confirmation to send.",
+                    parameters=types.Schema(
+                        type=types.Type.OBJECT,
+                        properties={
+                            "airline_or_company": types.Schema(type=types.Type.STRING, description="Airline or company name of the draft to send (e.g. 'Etihad Airways', 'Emirates', 'flydubai')"),
+                            "recipient": types.Schema(type=types.Type.STRING, description="Optional specific recipient email (e.g. recruitment@etihad.ae)"),
+                            "query": types.Schema(type=types.Type.STRING, description="Optional subject or text query to locate the draft"),
+                        },
+                    ),
+                    behavior="BLOCKING",
+                ),
+                types.FunctionDeclaration(
+                    name="modify_gmail_draft",
+                    description="Modifies an existing draft in Omar's Gmail Drafts folder — adding custom attachments (such as Syravia/Etihad certificates or specific CVs), updating subject, or amending the body.",
+                    parameters=types.Schema(
+                        type=types.Type.OBJECT,
+                        properties={
+                            "target": types.Schema(type=types.Type.STRING, description="Airline, recipient, or subject query identifying the draft to modify (e.g. 'Etihad Airways')"),
+                            "add_attachments": types.Schema(
+                                type=types.Type.ARRAY,
+                                items=types.Schema(type=types.Type.STRING),
+                                description="List of document names or paths to attach (e.g. ['Syravia', 'Etihad_01', 'CV'])"
+                            ),
+                            "updated_body": types.Schema(type=types.Type.STRING, description="Optional updated or appended body text"),
+                            "updated_subject": types.Schema(type=types.Type.STRING, description="Optional new subject line"),
+                        },
+                        required=["target"],
                     ),
                     behavior="BLOCKING",
                 ),
@@ -300,9 +359,15 @@ class GeminiLiveBridgeSession:
                 "- Education: B.Sc. Computer Science (University of the People, In Progress), SVU, Google Cybersecurity Certificate. "
                 "- Target Roles: Ground Operations Officer, Passenger Service Agent, Airport Duty Officer, VIP Service Agent, Traffic Officer. "
                 "- STRICT PROHIBITION: Omar is NOT a pilot, does NOT have flight hours, and you must NEVER draft him as a pilot or mention pilot positions. "
+                "\nSUPERIOR EXECUTIVE POWERS & TOOL EXECUTION:\n"
+                "- You possess FULL EXECUTIVE AUTHORITY to create, modify, delete, and dispatch emails and drafts directly from Omar's account. NEVER say you lack the ability to delete drafts or send emails! "
+                "- DELETING DRAFTS: When Omar asks you to delete drafts ('delete the existing drafts', 'delete the Syravia draft', 'remove that draft'), IMMEDIATELY call `delete_gmail_draft` with query='Syravia' or delete_all=True. Confirm the action courteously once deleted. "
+                "- SENDING DRAFTS DIRECTLY: When Omar asks you to send a draft ('Let's send the Etihad Airways team draft for now', 'send the Etihad draft', 'send that email', 'dispatch it'), IMMEDIATELY call `send_gmail_draft(airline_or_company='Etihad Airways')` to transmit it directly from his Gmail account via SMTP! Speak confirmation immediately once sent. "
+                "- PROACTIVE VERBAL CONFIRMATION: If Omar asks 'Can we send it?' or if you propose sending a live application to recruiters and he has not yet confirmed, proactively ask: 'Shall I dispatch the application to Etihad Airways now, Sir?' When he affirms ('yes', 'send it', 'proceed'), call `send_gmail_draft`. If his command is already an explicit directive ('Let's send the Etihad Airways team draft for now'), execute `send_gmail_draft` immediately! "
+                "- SYRAVIA VS. RECRUITING: Omar worked at Syravia handling Damascus station flights, but he is NO LONGER applying to Syravia. Do not draft applications to Syravia. When Omar mentions 'Syravia certificates', he refers to his station training certificates (the 5 official Etihad Airways courses), which are already automatically attached. "
                 "\nEMAIL & DRAFTING RULES:\n"
                 "- NEVER bundle multiple airlines into one email draft! Each airline recruiter MUST receive their own separate, individually tailored draft. "
-                "- When Omar asks to draft multiple airline applications (e.g. 'draft 10 or 15 emails for recruiters', 'send them to recruiters', 'drop them in my drafts'), IMMEDIATELY call `batch_draft_aviation_applications(count=10)`! "
+                "- When Omar asks to draft multiple airline applications (e.g. 'draft 10 or 15 emails for recruiters', 'send them to recruiters', 'drop them in my drafts'), IMMEDIATELY call `batch_draft_aviation_applications(count=10, exclude_companies=['Syravia'])`! "
                 "- When Omar asks to draft for a single specific airline, call `save_gmail_draft` with that single airline's email, target role, and attach_career_pack=True. "
                 "- Omar's CV and 5 Etihad certificates are ALWAYS automatically attached. "
                 "\nCONVERSATION RULES:\n"

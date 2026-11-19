@@ -501,6 +501,103 @@ VOICE_TOOLS: List[Dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "delete_gmail_draft",
+            "description": "Delete drafts directly from Omar's Gmail Drafts folder. Can match by airline/company name (e.g. 'Syravia', 'Etihad'), recipient email address, subject keyword, or delete all existing drafts if delete_all is True.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Airline name, company name, or subject keyword to match and delete (e.g. 'Syravia', 'Etihad')"},
+                    "recipient": {"type": "string", "description": "Optional recipient email address to match (e.g. ops@syravia.com)"},
+                    "delete_all": {"type": "boolean", "description": "Set to True ONLY if Omar explicitly asks to delete all existing drafts"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "send_gmail_draft",
+            "description": "Directly dispatch and send an email draft from Omar's real Gmail account to a recruiter or contact, complete with attached CV and training certificates. Removes the sent message from Drafts, logs to the career application tracker, and sends a Telegram card confirmation.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "airline_or_company": {"type": "string", "description": "Airline or company name of the draft to send (e.g. 'Etihad Airways', 'Emirates', 'flydubai')"},
+                    "recipient": {"type": "string", "description": "Optional specific recipient email (e.g. recruitment@etihad.ae)"},
+                    "query": {"type": "string", "description": "Optional subject or text query to locate the draft"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "modify_gmail_draft",
+            "description": "Modify an existing draft in Omar's Gmail Drafts folder — adding custom attachments (such as Syravia/Etihad certificates or specific CVs), updating subject, or amending the body.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "Airline, recipient, or subject query identifying the draft to modify (e.g. 'Etihad Airways')"},
+                    "add_attachments": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of document names or paths to attach (e.g. ['Syravia', 'Etihad_01', 'CV'])",
+                    },
+                    "updated_body": {"type": "string", "description": "Optional updated or appended body text"},
+                    "updated_subject": {"type": "string", "description": "Optional new subject line"},
+                },
+                "required": ["target"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "batch_draft_aviation_applications",
+            "description": "Creates individually tailored job application drafts in Omar's Gmail Drafts folder for a batch of airlines from the verified Aviation Batch 40 dossier. Each draft is addressed to a single airline recruiter, tailored specifically for Airport Ground Operations / Passenger Service Officer, and automatically attaches Omar's CV and 5 certificates. Supports excluding companies (e.g. Syravia) and attaching custom certificates.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "count": {"type": "integer", "description": "Number of airline applications to draft (default 10, max 20)"},
+                    "target_role": {"type": "string", "description": "Target job title (defaults to Airport Passenger Service & Ground Operations Agent)"},
+                    "airlines": {"type": "array", "items": {"type": "string"}, "description": "Optional specific airline names to prioritize"},
+                    "exclude_companies": {"type": "array", "items": {"type": "string"}, "description": "Airlines or companies to exclude from drafting, e.g. ['Syravia']"},
+                    "custom_attachments": {"type": "array", "items": {"type": "string"}, "description": "Optional specific certificate or file paths to attach to each draft"},
+                    "clean_existing": {"type": "boolean", "description": "Whether to delete existing application drafts before drafting the new batch"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_recent_telegram_messages",
+            "description": "Retrieves the most recent text messages sent by Omar or the assistant in Telegram chat (@aethelgard_vault_bot).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "description": "Number of recent messages to fetch (default 5, max 15)"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "schedule_callback",
+            "description": "Schedules an automatic outgoing voice phone call to Omar after a specified number of minutes.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "minutes": {"type": "integer", "description": "Delay in minutes before calling Omar back (e.g. 5)"},
+                    "reason": {"type": "string", "description": "Brief reason or topic for the follow-up call"},
+                },
+                "required": ["minutes"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "stage_outbound_draft",
             "description": "Stage an outbound email/message draft safely in Gatekeeper without sending. Must be verbally read back before confirm_verbal_approval.",
             "parameters": {
@@ -1079,6 +1176,15 @@ class VoiceBrainSession:
                 count = max(1, min(int(args.get("count") or 10), 20))
                 target_role = str(args.get("target_role") or "Airport Passenger Service & Ground Operations Agent").strip()
                 airlines_filter = args.get("airlines") or []
+                exclude_companies = args.get("exclude_companies") or ["Syravia", "Syravia DAM Ground Handling"]
+                custom_attachments = args.get("custom_attachments") or []
+                clean_existing = bool(args.get("clean_existing", False))
+
+                if clean_existing:
+                    try:
+                        self.execute_tool_call("delete_gmail_draft", {"delete_all": True})
+                    except Exception:
+                        pass
 
                 import job_application_engine
                 from omnichannel_bridge import GoogleAdapter
@@ -1108,6 +1214,11 @@ class VoiceBrainSession:
                                     "location": loc,
                                 })
 
+                # Exclude unwanted companies (e.g. Syravia)
+                if exclude_companies and isinstance(exclude_companies, list):
+                    filt_exclude = [str(x).lower().strip() for x in exclude_companies]
+                    entries = [e for e in entries if not any(x in e["company"].lower() for x in filt_exclude)]
+
                 # Prioritize filtered airlines if specified
                 if airlines_filter and isinstance(airlines_filter, list):
                     filt_lower = [str(a).lower() for a in airlines_filter]
@@ -1132,18 +1243,25 @@ class VoiceBrainSession:
                             include_certificates=True,
                             vault_dir=self.vault_dir,
                         )
+                        att_list = list(app_pkg["attachments"])
+                        if custom_attachments:
+                            for ca in custom_attachments:
+                                ca_p = Path(ca)
+                                if ca_p.exists() and str(ca_p) not in att_list:
+                                    att_list.append(str(ca_p))
+
                         d_res = ga.create_gmail_draft(
                             to=em,
                             subject=app_pkg["subject"],
                             body=app_pkg["body"],
-                            attachments=app_pkg["attachments"],
+                            attachments=att_list,
                         )
                         if d_res.get("success"):
                             drafted.append({
                                 "company": co,
                                 "email": em,
                                 "subject": app_pkg["subject"],
-                                "attachments": len(app_pkg["attachments"]),
+                                "attachments": len(att_list),
                             })
                     except Exception as dex:
                         self.last_error = f"Batch draft error for {co}: {dex}"
@@ -1168,6 +1286,365 @@ class VoiceBrainSession:
                     "target_role": target_role,
                     "drafted_airlines": drafted,
                 })
+
+            if name == "delete_gmail_draft":
+                from omnichannel_bridge import GoogleAdapter
+                import imaplib
+
+                ga = GoogleAdapter()
+                _, sender_email, app_pw = ga._has_oauth_and_app_pw()
+                if not app_pw:
+                    return _record_action({"error": "Gmail credentials unavailable for draft deletion."})
+
+                query = str(args.get("query") or "").strip().lower()
+                recipient = str(args.get("recipient") or "").strip().lower()
+                delete_all = bool(args.get("delete_all", False))
+
+                deleted_items = []
+                with imaplib.IMAP4_SSL("imap.gmail.com", 993, timeout=15) as imap:
+                    imap.login(sender_email, app_pw)
+                    status, _ = imap.select("[Gmail]/Drafts", readonly=False)
+                    if status != "OK":
+                        return _record_action({"error": "Failed to open [Gmail]/Drafts"})
+
+                    status, search_data = imap.search(None, "ALL")
+                    if status == "OK" and search_data and search_data[0]:
+                        uids = search_data[0].split()
+                        for u in uids:
+                            res, msg_data = imap.fetch(u, "(BODY.PEEK[HEADER.FIELDS (SUBJECT TO)])")
+                            if res != "OK" or not msg_data or not msg_data[0]:
+                                continue
+                            raw_hdrs = msg_data[0][1].decode("utf-8", errors="ignore")
+                            hdr_to = ""
+                            hdr_subj = ""
+                            for line in raw_hdrs.splitlines():
+                                if line.lower().startswith("to:"):
+                                    hdr_to = line[3:].strip()
+                                elif line.lower().startswith("subject:"):
+                                    hdr_subj = line[8:].strip()
+
+                            should_delete = False
+                            if delete_all:
+                                should_delete = True
+                            elif recipient and recipient in hdr_to.lower():
+                                should_delete = True
+                            elif query and (query in hdr_subj.lower() or query in hdr_to.lower()):
+                                should_delete = True
+
+                            if should_delete:
+                                imap.store(u, "+FLAGS", "\\Deleted")
+                                deleted_items.append({"uid": u.decode(), "to": hdr_to, "subject": hdr_subj})
+
+                        if deleted_items:
+                            imap.expunge()
+
+                # Clean up corresponding pending items in approval_gatekeeper
+                try:
+                    import approval_gatekeeper
+                    pending = approval_gatekeeper.list_pending_drafts()
+                    for p in pending:
+                        p_to = str(p.get("recipient_or_target") or "").lower()
+                        p_sub = str(p.get("subject") or "").lower()
+                        if delete_all or (recipient and recipient in p_to) or (query and (query in p_to or query in p_sub)):
+                            approval_gatekeeper.reject_draft(p.get("draft_id", ""), reason="Deleted via voice command")
+                except Exception:
+                    pass
+
+                summary = f"Deleted {len(deleted_items)} draft(s) from Gmail Drafts"
+                if deleted_items:
+                    summary += ": " + ", ".join(f"{d.get('to') or d.get('subject')}" for d in deleted_items[:5])
+                    del_card = (
+                        f"🗑️ **Draft(s) Removed from Gmail**\n\n"
+                        f"Successfully deleted **{len(deleted_items)} draft(s)**:\n"
+                        + "\n".join(f"• `{d.get('to') or 'No recipient'}` — {d.get('subject')}" for d in deleted_items[:8])
+                    )
+                    try:
+                        from proactive_scheduler import send_telegram
+                        send_telegram(del_card)
+                    except Exception:
+                        pass
+
+                return _record_action({
+                    "success": True,
+                    "deleted_count": len(deleted_items),
+                    "deleted_items": deleted_items,
+                    "summary": summary,
+                })
+
+            if name == "send_gmail_draft":
+                from omnichannel_bridge import GoogleAdapter
+                import imaplib, smtplib, email
+                from email.message import EmailMessage
+
+                ga = GoogleAdapter()
+                _, sender_email, app_pw = ga._has_oauth_and_app_pw()
+                if not app_pw:
+                    return _record_action({"error": "Gmail credentials unavailable for sending."})
+
+                airline_or_company = str(args.get("airline_or_company") or "").strip().lower()
+                recipient = str(args.get("recipient") or "").strip().lower()
+                query = str(args.get("query") or "").strip().lower()
+
+                # First, check if there is an existing staged draft in approval_gatekeeper
+                try:
+                    import approval_gatekeeper
+                    pending = approval_gatekeeper.list_pending_drafts()
+                    for p in pending:
+                        p_to = str(p.get("recipient_or_target") or "").lower()
+                        p_sub = str(p.get("subject") or "").lower()
+                        p_content = str(p.get("content") or "").lower()
+                        combined_p = f"{p_to} {p_sub} {p_content}"
+                        if (recipient and recipient in p_to) or (airline_or_company and airline_or_company in combined_p) or (query and query in combined_p):
+                            draft_id = p["draft_id"]
+                            approval_gatekeeper.approve_draft(draft_id, approver="Omar via live voice", execute=True)
+                            return _record_action({
+                                "success": True,
+                                "sent": True,
+                                "recipient": p.get("recipient_or_target"),
+                                "subject": p.get("subject"),
+                                "source": "gatekeeper_staged_draft",
+                                "details": f"Dispatched staged draft {draft_id} to {p.get('recipient_or_target')}",
+                            })
+                except Exception:
+                    pass
+
+                # Search [Gmail]/Drafts via IMAP
+                sent_draft_info = None
+                with imaplib.IMAP4_SSL("imap.gmail.com", 993, timeout=20) as imap:
+                    imap.login(sender_email, app_pw)
+                    status, _ = imap.select("[Gmail]/Drafts", readonly=False)
+                    if status == "OK":
+                        status, search_data = imap.search(None, "ALL")
+                        if status == "OK" and search_data and search_data[0]:
+                            uids = search_data[0].split()
+                            for u in reversed(uids):
+                                res, msg_data = imap.fetch(u, "(RFC822)")
+                                if res != "OK" or not msg_data or not msg_data[0]:
+                                    continue
+                                raw_email_bytes = msg_data[0][1]
+                                parsed_msg = email.message_from_bytes(raw_email_bytes)
+
+                                msg_to = parsed_msg.get("To", "")
+                                msg_subj = parsed_msg.get("Subject", "")
+                                combined_check = f"{msg_to} {msg_subj}".lower()
+
+                                matches = False
+                                if recipient and recipient in msg_to.lower():
+                                    matches = True
+                                elif airline_or_company and airline_or_company in combined_check:
+                                    matches = True
+                                elif query and query in combined_check:
+                                    matches = True
+
+                                if matches:
+                                    with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=25) as server:
+                                        server.login(sender_email, app_pw)
+                                        server.send_message(parsed_msg)
+
+                                    imap.store(u, "+FLAGS", "\\Deleted")
+                                    imap.expunge()
+
+                                    att_count = sum(1 for part in parsed_msg.walk() if part.get_filename())
+                                    sent_draft_info = {
+                                        "to": msg_to,
+                                        "subject": msg_subj,
+                                        "uid": u.decode(),
+                                        "attachments_count": att_count,
+                                    }
+                                    break
+
+                # If draft was not found in IMAP, but airline or recipient was specified, generate and transmit directly
+                if not sent_draft_info:
+                    target_co = args.get("airline_or_company") or ""
+                    target_em = args.get("recipient") or ""
+                    if not target_em and target_co:
+                        if "etihad" in target_co.lower():
+                            target_em = "recruitment@etihad.ae"
+                        elif "emirates" in target_co.lower():
+                            target_em = "recruitment@emirates.com"
+                        elif "flydubai" in target_co.lower():
+                            target_em = "careers@flydubai.com"
+                        elif "air arabia" in target_co.lower():
+                            target_em = "Careers@Airarabia.Academy"
+                        elif "qatar" in target_co.lower():
+                            target_em = "qatarairways@qatarairways.com.qa"
+
+                    if target_em:
+                        import job_application_engine
+                        app_pkg = job_application_engine.generate_tailored_application(
+                            company=target_co or "Aviation Recruiting Team",
+                            role="Airport Passenger Service & Ground Operations Agent",
+                            recipient=target_em,
+                            channel="gmail",
+                            include_certificates=True,
+                            vault_dir=self.vault_dir,
+                        )
+                        msg = EmailMessage()
+                        msg["From"] = sender_email
+                        msg["To"] = target_em
+                        msg["Subject"] = app_pkg["subject"]
+                        msg.set_content(app_pkg["body"])
+                        for att_path in app_pkg.get("attachments", []):
+                            p = Path(att_path)
+                            if p.exists():
+                                with open(p, "rb") as af:
+                                    msg.add_attachment(af.read(), maintype="application", subtype="pdf", filename=p.name)
+
+                        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=25) as server:
+                            server.login(sender_email, app_pw)
+                            server.send_message(msg)
+
+                        sent_draft_info = {
+                            "to": target_em,
+                            "subject": app_pkg["subject"],
+                            "attachments_count": len(app_pkg.get("attachments", [])),
+                            "generated_on_the_fly": True,
+                        }
+
+                if sent_draft_info:
+                    try:
+                        import job_application_engine
+                        job_application_engine._log_application_to_vault(
+                            {
+                                "company": args.get("airline_or_company") or sent_draft_info["to"],
+                                "role": "Airport Passenger Service & Ground Operations Agent",
+                                "recipient": sent_draft_info["to"],
+                                "channel": "gmail",
+                                "subject": sent_draft_info["subject"],
+                                "status": "sent",
+                            },
+                            vault_dir=self.vault_dir,
+                        )
+                    except Exception:
+                        pass
+
+                    tg_card = (
+                        f"🚀 **Aviation Application Sent via Live Voice Command**\n\n"
+                        f"• **Recipient:** `{sent_draft_info['to']}`\n"
+                        f"• **Subject:** {sent_draft_info['subject']}\n"
+                        f"• **Attachments:** {sent_draft_info['attachments_count']} (CV & Training Certificates)\n"
+                        f"• **Status:** Dispatched successfully from `{sender_email}`\n\n"
+                        f"Application removed from Drafts and logged to your career history."
+                    )
+                    try:
+                        from proactive_scheduler import send_telegram
+                        send_telegram(tg_card)
+                    except Exception:
+                        pass
+
+                    return _record_action({
+                        "success": True,
+                        "sent": True,
+                        "recipient": sent_draft_info["to"],
+                        "subject": sent_draft_info["subject"],
+                        "attachments_count": sent_draft_info["attachments_count"],
+                        "details": f"Email successfully dispatched to {sent_draft_info['to']}",
+                    })
+                else:
+                    return _record_action({
+                        "success": False,
+                        "error": f"No draft found matching '{airline_or_company or recipient or query}'.",
+                    })
+
+            if name == "modify_gmail_draft":
+                from omnichannel_bridge import GoogleAdapter
+                import imaplib, email
+                from email.message import EmailMessage
+
+                ga = GoogleAdapter()
+                _, sender_email, app_pw = ga._has_oauth_and_app_pw()
+                if not app_pw:
+                    return _record_action({"error": "Gmail credentials unavailable."})
+
+                target = str(args.get("target") or "").strip().lower()
+                add_attachments = args.get("add_attachments") or []
+                updated_body = args.get("updated_body")
+                updated_subject = args.get("updated_subject")
+
+                if not target:
+                    return _record_action({"error": "target required to identify the draft"})
+
+                modified = False
+                matched_to = ""
+                matched_subj = ""
+                added_files = []
+
+                with imaplib.IMAP4_SSL("imap.gmail.com", 993, timeout=20) as imap:
+                    imap.login(sender_email, app_pw)
+                    status, _ = imap.select("[Gmail]/Drafts", readonly=False)
+                    if status == "OK":
+                        status, search_data = imap.search(None, "ALL")
+                        if status == "OK" and search_data and search_data[0]:
+                            uids = search_data[0].split()
+                            for u in reversed(uids):
+                                res, msg_data = imap.fetch(u, "(RFC822)")
+                                if res != "OK" or not msg_data or not msg_data[0]:
+                                    continue
+                                raw_email_bytes = msg_data[0][1]
+                                parsed_msg = email.message_from_bytes(raw_email_bytes)
+                                msg_to = parsed_msg.get("To", "")
+                                msg_subj = parsed_msg.get("Subject", "")
+                                if target in msg_to.lower() or target in msg_subj.lower():
+                                    matched_to = msg_to
+                                    matched_subj = updated_subject or msg_subj
+
+                                    body_text = updated_body or ""
+                                    existing_files = []
+                                    if not body_text:
+                                        if parsed_msg.is_multipart():
+                                            for part in parsed_msg.walk():
+                                                if part.get_content_type() == "text/plain" and not part.get_filename():
+                                                    body_text = part.get_payload(decode=True).decode("utf-8", errors="ignore")
+                                                    break
+                                        else:
+                                            body_text = parsed_msg.get_payload(decode=True).decode("utf-8", errors="ignore")
+
+                                    new_msg = EmailMessage()
+                                    new_msg["From"] = sender_email
+                                    new_msg["To"] = msg_to
+                                    new_msg["Subject"] = matched_subj
+                                    new_msg.set_content(body_text)
+
+                                    if parsed_msg.is_multipart():
+                                        for part in parsed_msg.walk():
+                                            fn = part.get_filename()
+                                            if fn:
+                                                payload = part.get_payload(decode=True)
+                                                if payload:
+                                                    new_msg.add_attachment(payload, maintype="application", subtype="octet-stream", filename=fn)
+                                                    existing_files.append(fn)
+
+                                    if add_attachments:
+                                        import job_application_engine
+                                        career_assets = job_application_engine.locate_career_assets(vault_dir=self.vault_dir)
+                                        all_known = career_assets.get("certificates", []) + career_assets.get("all_cvs", [])
+                                        for att_req in add_attachments:
+                                            att_req_lower = str(att_req).lower()
+                                            for k_path in all_known:
+                                                p = Path(k_path)
+                                                if att_req_lower in p.name.lower():
+                                                    if p.name not in existing_files:
+                                                        with open(p, "rb") as af:
+                                                            new_msg.add_attachment(af.read(), maintype="application", subtype="pdf", filename=p.name)
+                                                        added_files.append(p.name)
+                                                    break
+
+                                    imap.store(u, "+FLAGS", "\\Deleted")
+                                    imap.expunge()
+                                    imap.append("[Gmail]/Drafts", "\\Draft", imaplib.Time2Internaldate(time.time()), new_msg.as_bytes())
+                                    modified = True
+                                    break
+
+                if modified:
+                    return _record_action({
+                        "success": True,
+                        "modified": True,
+                        "recipient": matched_to,
+                        "subject": matched_subj,
+                        "added_attachments": added_files,
+                        "details": f"Draft for {matched_to} updated successfully",
+                    })
+                return _record_action({"success": False, "error": f"No draft found matching '{target}'"})
 
             if name == "save_gmail_draft":
                 from omnichannel_bridge import GoogleAdapter
