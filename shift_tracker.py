@@ -17,6 +17,7 @@ import uuid
 import datetime
 import urllib.request
 import subprocess
+from typing import Any, Dict, List, Optional, Tuple
 
 if hasattr(sys.stdout, "reconfigure"):
     try:
