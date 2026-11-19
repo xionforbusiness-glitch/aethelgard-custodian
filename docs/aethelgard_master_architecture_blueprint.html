@@ -9,462 +9,948 @@
   <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet" />
 
-  <!-- Mermaid CDN -->
-  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
-
   <style>
-    :root {
-      --bg: #0d0f12;
-      --surface: #16181d;
-      --border: rgba(255, 255, 255, 0.12);
-      --text: #f0f2f5;
-      --text-muted: #9aa0a6;
-      --blue: #8ab4f8;
-      --green: #81c995;
-    }
-
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-      user-select: none;
-    }
-
+    * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
     body, html {
-      width: 100%;
-      height: 100%;
-      overflow: hidden;
-      background-color: var(--bg);
+      width: 100%; height: 100%; overflow: hidden;
+      background-color: #0b0d11;
       font-family: 'Google Sans', system-ui, sans-serif;
-      color: var(--text);
+      color: #f1f3f4;
     }
 
-    /* Subtle Blueprint Dot Grid */
     .grid-bg {
-      position: absolute;
-      inset: 0;
+      position: absolute; inset: 0;
       background-image: 
         radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.05) 1px, transparent 0),
-        linear-gradient(to right, rgba(255, 255, 255, 0.02) 1px, transparent 1px),
-        linear-gradient(to bottom, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
-      background-size: 24px 24px, 120px 120px, 120px 120px;
-      pointer-events: none;
-      z-index: 0;
+        linear-gradient(to right, rgba(255, 255, 255, 0.015) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(255, 255, 255, 0.015) 1px, transparent 1px);
+      background-size: 28px 28px, 140px 140px, 140px 140px;
+      pointer-events: none; z-index: 0;
     }
 
-    /* Viewport & Pan-Zoom Canvas */
     #viewport {
-      position: absolute;
-      inset: 0;
-      overflow: hidden;
-      cursor: grab;
-      z-index: 1;
+      position: absolute; inset: 0; overflow: hidden;
+      cursor: grab; z-index: 1;
     }
-
-    #viewport.dragging {
-      cursor: grabbing;
-    }
+    #viewport.dragging { cursor: grabbing; }
 
     #graph-container {
-      position: absolute;
-      transform-origin: 0 0;
-      padding: 100px;
-      transition: transform 0.05s ease-out;
+      position: absolute; transform-origin: 0 0;
+      transition: transform 0.04s ease-out;
     }
 
-    /* Floating Top HUD Bar */
-    .top-hud {
-      position: fixed;
-      top: 16px;
-      left: 20px;
-      z-index: 10;
-      background: rgba(22, 24, 29, 0.88);
-      backdrop-filter: blur(16px);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 8px 16px;
-      display: flex;
-      align-items: center;
-      gap: 16px;
-      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
-    }
-
-    .brand-title {
-      font-size: 15px;
-      font-weight: 700;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-
-    .status-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: var(--green);
-      box-shadow: 0 0 8px var(--green);
-    }
-
-    .badge {
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 11px;
-      background: rgba(138, 180, 248, 0.12);
-      border: 1px solid rgba(138, 180, 248, 0.3);
-      color: var(--blue);
-      padding: 2px 8px;
-      border-radius: 6px;
-    }
-
-    /* Floating Navigation Controls (Bottom Right) */
     .controls-hud {
-      position: fixed;
-      bottom: 24px;
-      right: 24px;
-      z-index: 10;
-      background: rgba(22, 24, 29, 0.9);
-      backdrop-filter: blur(16px);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 6px;
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+      position: fixed; bottom: 24px; right: 24px; z-index: 100;
+      background: rgba(20, 24, 33, 0.92); backdrop-filter: blur(16px);
+      border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 12px;
+      padding: 6px; display: flex; align-items: center; gap: 4px;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
     }
-
     .hud-btn {
-      background: transparent;
-      border: none;
-      color: var(--text);
-      width: 38px;
-      height: 38px;
-      border-radius: 8px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      cursor: pointer;
-      transition: all 0.15s ease;
+      background: transparent; border: none; color: #f1f3f4;
+      width: 38px; height: 38px; border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer; transition: all 0.15s ease;
     }
-
-    .hud-btn:hover {
-      background: rgba(255, 255, 255, 0.1);
-    }
-
+    .hud-btn:hover { background: rgba(255, 255, 255, 0.12); }
     .zoom-level {
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 12px;
-      padding: 0 10px;
-      color: var(--text-muted);
-      min-width: 60px;
-      text-align: center;
+      font-family: 'JetBrains Mono', monospace; font-size: 12px;
+      padding: 0 10px; color: #9aa0a6; min-width: 60px; text-align: center;
     }
 
-    /* Helper Hint */
     .hint-hud {
-      position: fixed;
-      bottom: 24px;
-      left: 24px;
-      z-index: 10;
-      background: rgba(22, 24, 29, 0.85);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 6px 12px;
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 11px;
-      color: var(--text-muted);
-      display: flex;
-      align-items: center;
-      gap: 6px;
+      position: fixed; bottom: 24px; left: 24px; z-index: 100;
+      background: rgba(20, 24, 33, 0.88); border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 8px; padding: 8px 14px; font-family: 'JetBrains Mono', monospace;
+      font-size: 11px; color: #9aa0a6; display: flex; align-items: center; gap: 8px;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
     }
 
-    /* Loading Spinner */
-    #loading {
-      position: absolute;
-      inset: 0;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      background: var(--bg);
-      z-index: 100;
-      gap: 16px;
-      font-size: 14px;
-      color: var(--text-muted);
+    svg { display: block; }
+    .node-card {
+      transition: all 0.2s ease;
+      cursor: pointer;
     }
-
-    .spinner {
-      width: 40px;
-      height: 40px;
-      border: 3px solid rgba(255, 255, 255, 0.1);
-      border-top-color: var(--blue);
-      border-radius: 50%;
-      animation: spin 0.8s linear infinite;
+    .node-card:hover {
+      filter: brightness(1.15) drop-shadow(0 0 16px rgba(138, 180, 248, 0.3));
     }
-
-    @keyframes spin {
-      to { transform: rotate(360deg); }
+    .flow-line {
+      stroke-dasharray: 8 6;
+      animation: dash 3s linear infinite;
     }
-
-    /* Custom Mermaid SVG Overrides */
-    .node rect, .node circle, .node polygon {
-      stroke-width: 2px !important;
-    }
-
-    .cluster rect {
-      stroke-width: 1.5px !important;
-      fill-opacity: 0.25 !important;
-    }
-
-    .edgeLabel {
-      background-color: #12141a !important;
-      color: #e8eaed !important;
-      font-family: 'JetBrains Mono', monospace !important;
-      font-size: 11px !important;
-      padding: 3px 6px !important;
-      border-radius: 4px !important;
-      border: 1px solid rgba(255, 255, 255, 0.1) !important;
-    }
-
-    .node .label {
-      font-family: 'Google Sans', system-ui, sans-serif !important;
-      color: #fff !important;
+    @keyframes dash {
+      to { stroke-dashoffset: -28; }
     }
   </style>
 </head>
 <body>
-
   <div class="grid-bg"></div>
 
-  <!-- Loading Screen -->
-  <div id="loading">
-    <div class="spinner"></div>
-    <div>Synthesizing Master Architecture Topology Graph...</div>
-  </div>
-
-  <!-- Top Floating Header -->
-  <div class="top-hud">
-    <div class="status-dot"></div>
-    <div class="brand-title">Aethelgard System Architecture & Topology</div>
-    <span class="badge">V4.0 FRONTIER</span>
-    <span style="font-size: 12px; color: var(--text-muted);">Azure VM: 68.210.150.57</span>
-  </div>
-
-  <!-- Bottom Floating Hint -->
   <div class="hint-hud">
-    <span class="material-symbols-outlined" style="font-size: 14px;">mouse</span>
-    Scroll to Zoom (10% - 1000%) • Drag to Pan Canvas
+    <span class="material-symbols-outlined" style="font-size: 15px; color: #8ab4f8;">mouse</span>
+    Scroll to Zoom (10% - 1000%) • Drag anywhere to Pan Canvas
   </div>
 
-  <!-- Floating Zoom Controls -->
   <div class="controls-hud">
-    <button class="hud-btn" id="btn-zoom-out" title="Zoom Out">
-      <span class="material-symbols-outlined">remove</span>
-    </button>
+    <button class="hud-btn" id="btn-zoom-out" title="Zoom Out"><span class="material-symbols-outlined">remove</span></button>
     <div class="zoom-level" id="zoom-text">100%</div>
-    <button class="hud-btn" id="btn-zoom-in" title="Zoom In">
-      <span class="material-symbols-outlined">add</span>
-    </button>
-    <div style="width: 1px; height: 20px; background: var(--border); margin: 0 4px;"></div>
-    <button class="hud-btn" id="btn-fit" title="Fit to Screen">
-      <span class="material-symbols-outlined">fit_screen</span>
-    </button>
-    <button class="hud-btn" id="btn-reset" title="Reset Zoom">
-      <span class="material-symbols-outlined">restart_alt</span>
-    </button>
+    <button class="hud-btn" id="btn-zoom-in" title="Zoom In"><span class="material-symbols-outlined">add</span></button>
+    <div style="width: 1px; height: 20px; background: rgba(255,255,255,0.12); margin: 0 4px;"></div>
+    <button class="hud-btn" id="btn-fit" title="Fit to Screen"><span class="material-symbols-outlined">fit_screen</span></button>
+    <button class="hud-btn" id="btn-reset" title="Reset Zoom"><span class="material-symbols-outlined">restart_alt</span></button>
   </div>
 
-  <!-- Interactive Pan-Zoom Viewport -->
   <div id="viewport">
     <div id="graph-container">
-      <div class="mermaid" id="mermaid-code">
-graph TD
-    %% =========================================================================
-    %% SUBGRAPH 1: 5-ERA INFRASTRUCTURE & COMPUTE EVOLUTION
-    %% =========================================================================
-    subgraph EVOLUTION ["📜 5-Era Evolution Journey: From Local Hermes to Azure"]
-        direction LR
-        ERA1["<b>Era 1: Local Hermes Prototype</b><br/>• Local Terminal Sandbox<br/>• Ephemeral SQLite Memory<br/>• Latency: >3,500ms"]
-        ERA2["<b>Era 2: Windows Workstation</b><br/>• Local run.py Daemon<br/>• Telegram Bot API + Piper/Edge TTS<br/>• Bound to PC Awake Time"]
-        ERA3["<b>Era 3: Kaggle Cloud Runner</b><br/>• Headless Cloud Notebooks<br/>• Dual T4 / P100 GPUs<br/>• 12-Hour Session Limit"]
-        ERA4["<b>Era 4: Google Cloud Platform</b><br/>• Always Free e2-micro VM<br/>• 1.0 GB RAM Hardware Ceiling<br/>• Swap Thrashing & OOM Kills"]
-        ERA5["<b>Era 5: Microsoft Azure Cloud</b><br/>• Standard D4s v3 (16GB RAM / 4 vCPUs)<br/>• systemd 24/7 Production Daemon<br/>• Gemini 3.8 Live Full-Duplex WebRTC"]
+      <svg width="4400" height="3000" viewBox="0 0 4400 3000" xmlns="http://www.w3.org/2000/svg">
+<defs>
+      <!-- Arrow Markers -->
+      <marker id="arr-blue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#8ab4f8" />
+      </marker>
+      <marker id="arr-green" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#81c995" />
+      </marker>
+      <marker id="arr-purple" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#c58af9" />
+      </marker>
+      <marker id="arr-yellow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#fdd663" />
+      </marker>
+      <marker id="arr-red" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#f28b82" />
+      </marker>
+      <marker id="arr-gray" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#9aa0a6" />
+      </marker>
 
-        ERA1 -->|"Terminal closes / Need background uptime"| ERA2
-        ERA2 -->|"Local PC tied down / Need cloud autonomy"| ERA3
-        ERA3 -->|"12h timeout & dynamic IP / Need fixed host"| ERA4
-        ERA4 -->|"1GB RAM OOM thrashing / Need 16GB RAM"| ERA5
-    end
+      <!-- Glow Filters -->
+      <filter id="glow-blue" x="-20%" y="-20%" width="140%" height="140%">
+        <feGaussianBlur stdDeviation="8" result="blur" />
+        <feComposite in="SourceGraphic" in2="blur" operator="over" />
+      </filter>
+      <filter id="glow-purple" x="-20%" y="-20%" width="140%" height="140%">
+        <feGaussianBlur stdDeviation="8" result="blur" />
+        <feComposite in="SourceGraphic" in2="blur" operator="over" />
+      </filter>
+    </defs>
 
-    %% =========================================================================
-    %% SUBGRAPH 2: CLIENT & TELEPHONY INGRESS
-    %% =========================================================================
-    subgraph CLIENT ["📱 Client Layer (Omar's Phone / Workstation)"]
-        OMAR["👤 Omar Elnemr<br/>(Telegram User ID: 1021125594)"]
-        MIC["🎤 Phone / PC Microphone<br/>(48kHz Audio Capture)"]
-        SPEAKER["🔊 Phone / PC Speaker<br/>(Audio Playback)"]
-        TG_APP["📱 Telegram Client App<br/>(VoIP Call Engine)"]
+    <!-- SUBGRAPH 1: THE 5-ERA EVOLUTION JOURNEY -->
+    <rect x="60" y="50" width="4280" height="360" rx="20" ry="20" fill="#11141a" stroke="rgba(255,255,255,0.12)" stroke-width="2" />
+    <rect x="80" y="65" width="460" height="34" rx="8" ry="8" fill="#181d28" stroke="#8ab4f8" stroke-width="1.5" />
+    <text x="96" y="88" fill="#8ab4f8" font-family="'JetBrains Mono', monospace" font-size="14" font-weight="700">📜 SUBGRAPH 01: THE 5-ERA INFRASTRUCTURE & COMPUTE EVOLUTION</text>
+    
 
-        OMAR -->|"Speaks voice command"| MIC
-        MIC -->|"Acoustic input"| TG_APP
-        TG_APP -->|"Acoustic output"| SPEAKER
-        SPEAKER -.->|"Acoustic bleed echo (~200 RMS)"| MIC
-    end
+    <!-- SUBGRAPH 2: AZURE PRODUCTION HOSTING -->
+    <rect x="60" y="450" width="4280" height="2480" rx="24" ry="24" fill="#0f1117" stroke="#81c995" stroke-width="2.5" />
+    <rect x="90" y="470" width="580" height="38" rx="8" ry="8" fill="#16201a" stroke="#81c995" stroke-width="1.5" />
+    <text x="108" y="495" fill="#81c995" font-family="'JetBrains Mono', monospace" font-size="15" font-weight="700">☁️ SUBGRAPH 02: AZURE PRODUCTION VM (68.210.150.57 | Standard D4s v3 | 16GB RAM)</text>
+    
 
-    %% =========================================================================
-    %% SUBGRAPH 3: AZURE CLOUD VM (68.210.150.57)
-    %% =========================================================================
-    subgraph AZURE_VM ["☁️ Azure Production VM (68.210.150.57 | Standard D4s v3 | 16GB RAM)"]
-        
-        subgraph TELEPHONY_ENGINE ["📞 WebRTC Telephony Pipeline (NTgCalls)"]
-            TG_BRIDGE["🎛️ NTgCalls WebRTC Core<br/>(MTProto Voice Protocol)"]
-            FRAME_PACER["⏱️ 10ms Frame Pacer<br/>(Strictly 960 Bytes @ 48kHz Mono s16le)"]
-            ECHO_GATE["🛡️ Dynamic RMS Echo Gate<br/>(Discards audio < 520 RMS when AI speaks)"]
-            RESAMPLE_DOWN["📉 Linear Downsampler<br/>(48,000 Hz ➔ 16,000 Hz Mono PCM)"]
-            RESAMPLE_UP["📈 Linear Upsampler<br/>(24,000 Hz ➔ 48,000 Hz Mono PCM)"]
-            HANGUP_CTRL["🛑 Call Session Controller<br/>(3s Farewell Drain + DiscardCallRequest)"]
-        end
+    <rect x="90" y="530" width="520" height="2360" rx="18" ry="18" fill="#131620" stroke="rgba(138,180,248,0.3)" stroke-width="1.5" stroke-dasharray="6 4" />
+    <text x="110" y="565" fill="#8ab4f8" font-family="'JetBrains Mono', monospace" font-size="13" font-weight="700">ZONE A: CLIENT & AUDIO CAPTURE INGRESS</text>
+    
 
-        subgraph LIVE_BRIDGE ["⚡ Real-Time Live Gateway (gemini_live_bridge.py)"]
-            WS_CLIENT["🔌 BidiGenerateContent WebSocket<br/>(Full-Duplex wss:// stream)"]
-            RECEIVER_LOOP["🔄 Persistent Multi-Turn Receiver Loop<br/>(while is_connected: generator wrapper)"]
-            TOOL_ROUTER["🎛️ Async Tool Router<br/>(Dispatches toolCall & collects toolResponse)"]
-        end
+    <rect x="650" y="530" width="580" height="2360" rx="18" ry="18" fill="#131620" stroke="rgba(129,201,149,0.3)" stroke-width="1.5" stroke-dasharray="6 4" />
+    <text x="670" y="565" fill="#81c995" font-family="'JetBrains Mono', monospace" font-size="13" font-weight="700">ZONE B: WEBRTC TELEPHONY & AUDIO DSP (NTgCalls)</text>
+    
 
-        subgraph GATEWAY_PROXY ["🛡️ Resilient Local Gateway Proxy (:20128)"]
-            PROXY["In-Process Proxy (:20128)<br/>• OAuth Token Auto-Renewal (20 min)<br/>• Thought-Leak Sanitizer<br/>• Circuit-Breaker Failover"]
-            FALLBACK_LLM["🧠 Secondary Fallback Brain<br/>• Gemini 3.8 Flash High (1M Context)<br/>• Claude Sonnet 4.6 Thinking"]
-        end
+    <rect x="1270" y="530" width="680" height="2360" rx="18" ry="18" fill="#161424" stroke="rgba(197,138,249,0.4)" stroke-width="1.5" stroke-dasharray="6 4" />
+    <text x="1290" y="565" fill="#c58af9" font-family="'JetBrains Mono', monospace" font-size="13" font-weight="700">ZONE C: REAL-TIME COGNITIVE LIVE GATEWAY</text>
+    
 
-        subgraph SECURITY_ARMOR ["🚨 Zero-Trust Security Armor"]
-            GATEKEEPER["Two-Step Verbal Gatekeeper<br/>• Step 1: Stage Outbound Action<br/>• Step 2: Strict Readback Protocol<br/>• Rejects Vague / Injected Approvals"]
-        end
+    <rect x="1990" y="530" width="680" height="2360" rx="18" ry="18" fill="#171328" stroke="rgba(197,138,249,0.5)" stroke-width="2" />
+    <text x="2010" y="565" fill="#c58af9" font-family="'JetBrains Mono', monospace" font-size="13" font-weight="700">ZONE D: GOOGLE CLOUD VERTEX AI (us-central1)</text>
+    
 
-        subgraph GROUNDED_TOOLS ["⚡ Omnichannel Operational Subsystems"]
-            GMAIL["📬 Gmail IMAP / SMTP Suite<br/>• save_gmail_draft (18ms)<br/>• Search & Read Emails"]
-            VAULT["📓 Obsidian Knowledge Vault<br/>• 2-Way Git Auto-Merge (-X ours)<br/>• 3-Minute Background Sync"]
-            METAR["✈️ Damascus Radar METAR<br/>• Live Runway Weather (OSDI/DAM)<br/>• Realtime Wind & Visibility"]
-            ATTENDANCE["📋 Shift & Attendance Engine<br/>• Automated Excel Generator<br/>• Standardized Monthly Delivery"]
-            PLAYWRIGHT["🌐 Autonomous Web Portals<br/>• Playwright Headless Automations<br/>• Checkpoint Screenshot Alerts"]
-        end
+    <rect x="2710" y="530" width="740" height="2360" rx="18" ry="18" fill="#161822" stroke="rgba(138,180,248,0.3)" stroke-width="1.5" stroke-dasharray="6 4" />
+    <text x="2730" y="565" fill="#8ab4f8" font-family="'JetBrains Mono', monospace" font-size="13" font-weight="700">ZONE E: RESILIENT GATEWAY PROXY (:20128) & ZERO-TRUST ARMOR</text>
+    
 
-        subgraph SWARM_QA ["🐝 Red-Team Chaos Swarms"]
-            SWARM_TESTER["MiroFish Swarm Tester<br/>(77/77 Passing Regression Tests)"]
-            SWARM_AGENTS["@ALEX (Ops Lead)<br/>@REBEL (Hacker Injector)<br/>@SCRIBE (Vault Custodian)"]
-            SWARM_TESTER --- SWARM_AGENTS
-        end
-    end
-
-    %% =========================================================================
-    %% SUBGRAPH 4: GOOGLE CLOUD VERTEX AI
-    %% =========================================================================
-    subgraph GOOGLE_CLOUD ["🌐 Google Cloud Vertex AI (us-central1)"]
-        GEMINI_38_LIVE["🧠 Google Gemini 3.8 Live<br/>(gemini-3.8-live / Native Audio)"]
-        CHARON_VOICE["🎙️ Native Voice Model<br/>('Charon' British Butler Timbre)"]
-        CLOUD_VAD["☁️ Google Cloud Acoustic VAD<br/>(Dynamic Pause & Boundary Detection)"]
-        
-        GEMINI_38_LIVE --- CHARON_VOICE
-        GEMINI_38_LIVE --- CLOUD_VAD
-    end
-
-    %% =========================================================================
-    %% CONNECTING ARROWS & DATA FLOWS
-    %% =========================================================================
-
-    %% Ingress & Audio Processing
-    TG_APP <==|"RTP UDP Audio Stream (48kHz Mono)"|==> TG_BRIDGE
-    TG_BRIDGE -->|"Incoming 48kHz Frames"| ECHO_GATE
-    ECHO_GATE -->|"Gated Speech Audio (>520 RMS)"| RESAMPLE_DOWN
-    ECHO_GATE -.->|"Drop Speaker Bleed (<520 RMS)"| TG_BRIDGE
-    RESAMPLE_DOWN -->|"16,000 Hz PCM Audio Stream"| WS_CLIENT
-
-    %% WebSocket to Google Gemini Live
-    WS_CLIENT <==|"Full-Duplex Secure WebSocket (wss://)"|==> GEMINI_38_LIVE
-    GEMINI_38_LIVE -->|"24,000 Hz Audio Chunks (Charon)"| WS_CLIENT
-    WS_CLIENT -->|"Streamed Audio Payload"| RECEIVER_LOOP
-    RECEIVER_LOOP -->|"Continuous Dialogue Frames"| RESAMPLE_UP
-    RESAMPLE_UP -->|"48,000 Hz PCM Frames"| FRAME_PACER
-    FRAME_PACER -->|"Strict 10ms (960B) Frames"| TG_BRIDGE
-
-    %% Tool Calling Loop
-    GEMINI_38_LIVE -->|"Tool Call: save_gmail_draft"| TOOL_ROUTER
-    TOOL_ROUTER -->|"IMAP APPEND to [Gmail]/Drafts"| GMAIL
-    GMAIL -->|"Draft Created UID (18ms)"| TOOL_ROUTER
-    TOOL_ROUTER -->|"Tool Result: success=True"| WS_CLIENT
-    WS_CLIENT -->|"Spoken Confirmation: 'Consider it done, Sir...'"| GEMINI_38_LIVE
-
-    %% Call Termination Flow
-    GEMINI_38_LIVE -->|"Tool Call: end_call"| HANGUP_CTRL
-    HANGUP_CTRL -->|"Drain Farewell Audio (3s)"| FRAME_PACER
-    HANGUP_CTRL -->|"DiscardCallRequest"| TG_BRIDGE
-    TG_BRIDGE -->|"Hang Up Call"| TG_APP
-
-    %% Grounding & Vault Tools
-    TOOL_ROUTER <-->|"Sync Notes & Memories"| VAULT
-    TOOL_ROUTER <-->|"Fetch Airport Runway Weather"| METAR
-    TOOL_ROUTER <-->|"Generate Monthly Roster"| ATTENDANCE
-    TOOL_ROUTER <-->|"Portal Automation"| PLAYWRIGHT
-
-    %% Gatekeeper Security
-    TOOL_ROUTER -->|"Outbound Action Request"| GATEKEEPER
-    GATEKEEPER -->|"Require Explicit Spoken Confirmation"| WS_CLIENT
-
-    %% Gateway Fallback
-    PROXY <-->|"Model Fallback & Token Refresh"| FALLBACK_LLM
-
-    %% Evolution Link
-    ERA5 ===>|"Hosts Production System"| AZURE_VM
-
-    %% =========================================================================
-    %% STYLES & THEMING (Deep Dark Charcoal & Crisp Accents)
-    %% =========================================================================
-    classDef clientStyle fill:#1a1e28,stroke:#8ab4f8,stroke-width:2px,color:#f1f3f4;
-    classDef vmStyle fill:#141720,stroke:#81c995,stroke-width:2px,color:#f1f3f4;
-    classDef googleStyle fill:#241830,stroke:#c58af9,stroke-width:2.5px,color:#f1f3f4;
-    classDef toolStyle fill:#1c1d22,stroke:#fdd663,stroke-width:2px,color:#f1f3f4;
-    classDef securityStyle fill:#2b1619,stroke:#f28b82,stroke-width:2px,color:#f1f3f4;
-    classDef evoStyle fill:#161922,stroke:#5f6368,stroke-width:1.5px,color:#f1f3f4;
-
-    class OMAR,MIC,SPEAKER,TG_APP clientStyle;
-    class TG_BRIDGE,FRAME_PACER,ECHO_GATE,RESAMPLE_DOWN,RESAMPLE_UP,HANGUP_CTRL,WS_CLIENT,RECEIVER_LOOP,TOOL_ROUTER vmStyle;
-    class GEMINI_38_LIVE,CHARON_VOICE,CLOUD_VAD googleStyle;
-    class GMAIL,VAULT,METAR,ATTENDANCE,PLAYWRIGHT toolStyle;
-    class GATEKEEPER securityStyle;
-    class ERA1,ERA2,ERA3,ERA4,ERA5 evoStyle;
-      </div>
+    <rect x="3490" y="530" width="790" height="2360" rx="18" ry="18" fill="#17181c" stroke="rgba(253,214,99,0.3)" stroke-width="1.5" stroke-dasharray="6 4" />
+    <text x="3510" y="565" fill="#fdd663" font-family="'JetBrains Mono', monospace" font-size="13" font-weight="700">ZONE F: GROUNDED OPERATIONS & CHAOS SWARMS</text>
+    
+<g class="node-card" transform="translate(80, 110)">
+<rect width="780" height="260" rx="14" ry="14" fill="#181b24" stroke="#9aa0a6" stroke-width="2" filter="drop-shadow(0 8px 24px rgba(0,0,0,0.45))" />
+<rect width="780" height="5" rx="2" ry="2" fill="#9aa0a6" />
+<rect x="665" y="14" width="100" height="22" rx="6" ry="6" fill="rgba(255,255,255,0.06)" stroke="#9aa0a6" stroke-width="1" />
+<text x="715" y="29" fill="#9aa0a6" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700" text-anchor="middle">LEGACY</text>
+<text x="20" y="34" fill="#ffffff" font-family="'Google Sans', system-ui, sans-serif" font-size="16" font-weight="700">Era 01: Local Hermes Prototype</text>
+<text x="20" y="52" fill="#9aa0a6" font-family="'JetBrains Mono', monospace" font-size="11">Sandbox Terminal • Genesis Engine</text>
+<line x1="20" y1="64" x2="760" y2="64" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
+<circle cx="26" cy="82" r="3" fill="#9aa0a6" />
+<text x="38" y="86" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Hosting: Local Developer Terminal session (CLI)</text>
+<circle cx="26" cy="104" r="3" fill="#9aa0a6" />
+<text x="38" y="108" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Memory: Ephemeral SQLite file database</text>
+<circle cx="26" cy="126" r="3" fill="#9aa0a6" />
+<text x="38" y="130" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Speech: Zero voice capability (Manual text input only)</text>
+<circle cx="26" cy="148" r="3" fill="#9aa0a6" />
+<text x="38" y="152" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Latency: &gt;3,500ms multi-turn tool evaluation</text>
+<circle cx="26" cy="170" r="3" fill="#9aa0a6" />
+<text x="38" y="174" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">CEILING: Bound to active shell; died whenever window closed</text>
+</g>
+<g class="node-card" transform="translate(920, 110)">
+<rect width="780" height="260" rx="14" ry="14" fill="#181b24" stroke="#8ab4f8" stroke-width="2" filter="drop-shadow(0 8px 24px rgba(0,0,0,0.45))" />
+<rect width="780" height="5" rx="2" ry="2" fill="#8ab4f8" />
+<rect x="665" y="14" width="100" height="22" rx="6" ry="6" fill="rgba(255,255,255,0.06)" stroke="#8ab4f8" stroke-width="1" />
+<text x="715" y="29" fill="#8ab4f8" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700" text-anchor="middle">LOCAL</text>
+<text x="20" y="34" fill="#ffffff" font-family="'Google Sans', system-ui, sans-serif" font-size="16" font-weight="700">Era 02: Local Workstation Daemon</text>
+<text x="20" y="52" fill="#9aa0a6" font-family="'JetBrains Mono', monospace" font-size="11">Windows Background Host • run.py</text>
+<line x1="20" y1="64" x2="760" y2="64" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
+<circle cx="26" cy="82" r="3" fill="#8ab4f8" />
+<text x="38" y="86" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Hosting: Personal Windows Workstation (Local run.py daemon)</text>
+<circle cx="26" cy="104" r="3" fill="#8ab4f8" />
+<text x="38" y="108" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Telephony: Early Telegram Bot API long-polling wrapper</text>
+<circle cx="26" cy="126" r="3" fill="#8ab4f8" />
+<text x="38" y="130" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Audio: Sequential Piper / Edge-TTS audio note synthesis</text>
+<circle cx="26" cy="148" r="3" fill="#8ab4f8" />
+<text x="38" y="152" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Gatekeeper: Early regex verbal authorization blocks</text>
+<circle cx="26" cy="170" r="3" fill="#8ab4f8" />
+<text x="38" y="174" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">CEILING: Tied to personal PC uptime; sleep mode terminated bot</text>
+</g>
+<g class="node-card" transform="translate(1760, 110)">
+<rect width="780" height="260" rx="14" ry="14" fill="#181b24" stroke="#fdd663" stroke-width="2" filter="drop-shadow(0 8px 24px rgba(0,0,0,0.45))" />
+<rect width="780" height="5" rx="2" ry="2" fill="#fdd663" />
+<rect x="665" y="14" width="100" height="22" rx="6" ry="6" fill="rgba(255,255,255,0.06)" stroke="#fdd663" stroke-width="1" />
+<text x="715" y="29" fill="#fdd663" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700" text-anchor="middle">EXPERIMENTAL</text>
+<text x="20" y="34" fill="#ffffff" font-family="'Google Sans', system-ui, sans-serif" font-size="16" font-weight="700">Era 03: Kaggle Hybrid Cloud Runner</text>
+<text x="20" y="52" fill="#9aa0a6" font-family="'JetBrains Mono', monospace" font-size="11">Remote Cloud GPUs • 12hr Execution</text>
+<line x1="20" y1="64" x2="760" y2="64" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
+<circle cx="26" cy="82" r="3" fill="#fdd663" />
+<text x="38" y="86" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Hosting: Headless Kaggle Notebook instance (Dual T4 / P100)</text>
+<circle cx="26" cy="104" r="3" fill="#fdd663" />
+<text x="38" y="108" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Compute: High-throughput GPU token generation experiments</text>
+<circle cx="26" cy="126" r="3" fill="#fdd663" />
+<text x="38" y="130" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Persistence: 2-way GitHub webhook synchronization</text>
+<circle cx="26" cy="148" r="3" fill="#fdd663" />
+<text x="38" y="152" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Uptime: Ephemeral runtime with manual re-deployment triggers</text>
+<circle cx="26" cy="170" r="3" fill="#fdd663" />
+<text x="38" y="174" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">CEILING: Strict 12-hour timeout kill &amp; dynamic non-routable IPs</text>
+</g>
+<g class="node-card" transform="translate(2600, 110)">
+<rect width="780" height="260" rx="14" ry="14" fill="#181b24" stroke="#f28b82" stroke-width="2" filter="drop-shadow(0 8px 24px rgba(0,0,0,0.45))" />
+<rect width="780" height="5" rx="2" ry="2" fill="#f28b82" />
+<rect x="665" y="14" width="100" height="22" rx="6" ry="6" fill="rgba(255,255,255,0.06)" stroke="#f28b82" stroke-width="1" />
+<text x="715" y="29" fill="#f28b82" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700" text-anchor="middle">CRASHED</text>
+<text x="20" y="34" fill="#ffffff" font-family="'Google Sans', system-ui, sans-serif" font-size="16" font-weight="700">Era 04: Google Cloud Platform (GCP)</text>
+<text x="20" y="52" fill="#9aa0a6" font-family="'JetBrains Mono', monospace" font-size="11">Compute Engine e2-micro • 1GB RAM</text>
+<line x1="20" y1="64" x2="760" y2="64" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
+<circle cx="26" cy="82" r="3" fill="#f28b82" />
+<text x="38" y="86" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Hosting: GCP Always-Free Tier e2-micro VM (Debian Linux)</text>
+<circle cx="26" cy="104" r="3" fill="#f28b82" />
+<text x="38" y="108" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Uptime: First continuous 24/7 deployment under Linux systemd</text>
+<circle cx="26" cy="126" r="3" fill="#f28b82" />
+<text x="38" y="130" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Telephony: PyTgCalls MTProto VoIP calling integration</text>
+<circle cx="26" cy="148" r="3" fill="#f28b82" />
+<text x="38" y="152" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Obsidian: Automated 3-minute git auto-merge synchronization</text>
+<circle cx="26" cy="170" r="3" fill="#f28b82" />
+<text x="38" y="174" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">CEILING: 1.0 GB RAM caused swap thrashing &amp; OOM daemon kills</text>
+</g>
+<g class="node-card" transform="translate(3440, 110)">
+<rect width="860" height="260" rx="14" ry="14" fill="#181b24" stroke="#81c995" stroke-width="2" filter="drop-shadow(0 8px 24px rgba(0,0,0,0.45))" />
+<rect width="860" height="5" rx="2" ry="2" fill="#81c995" />
+<rect x="745" y="14" width="100" height="22" rx="6" ry="6" fill="rgba(255,255,255,0.06)" stroke="#81c995" stroke-width="1" />
+<text x="795" y="29" fill="#81c995" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700" text-anchor="middle">LIVE NOW</text>
+<text x="20" y="34" fill="#ffffff" font-family="'Google Sans', system-ui, sans-serif" font-size="16" font-weight="700">Era 05: Microsoft Azure Production</text>
+<text x="20" y="52" fill="#9aa0a6" font-family="'JetBrains Mono', monospace" font-size="11">Standard D4s v3 • 16GB RAM • 4 vCPUs</text>
+<line x1="20" y1="64" x2="840" y2="64" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
+<circle cx="26" cy="82" r="3" fill="#81c995" />
+<text x="38" y="86" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Hosting: Azure Cloud VM (68.210.150.57 / Ubuntu 24.04 LTS)</text>
+<circle cx="26" cy="104" r="3" fill="#81c995" />
+<text x="38" y="108" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Hardware: 16.0 GB DDR4 RAM, 4 dedicated vCPUs, Zero swap thrashing</text>
+<circle cx="26" cy="126" r="3" fill="#81c995" />
+<text x="38" y="130" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Speech Brain: Native Gemini 3.8 Live Full-Duplex WebRTC (Charon)</text>
+<circle cx="26" cy="148" r="3" fill="#81c995" />
+<text x="38" y="152" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Pacing: Strictly 10ms (960B) NTgCalls buffer &amp; dynamic RMS echo gate</text>
+<circle cx="26" cy="170" r="3" fill="#81c995" />
+<text x="38" y="174" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">TRIUMPH: 100% 24/7 uptime, &lt;280ms speech-to-speech, ms tool dispatch</text>
+</g>
+<path d="M 860 240 C 890.0 240, 890.0 240, 920 240" fill="none" stroke="#9aa0a6" stroke-width="2.5" opacity="0.85" stroke-dasharray="8 6" class="flow-line" marker-end="url(#arr-gray)" />
+<g transform="translate(890.0, 240.0)">
+<rect x="-111.25" y="-13" width="222.5" height="24" rx="6" ry="6" fill="#10131a" stroke="#9aa0a6" stroke-width="1.2" filter="drop-shadow(0 2px 8px rgba(0,0,0,0.8))" />
+<text x="0" y="3.5" fill="#9aa0a6" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="600" text-anchor="middle">Need background persistence</text>
+</g>
+<path d="M 1700 240 C 1730.0 240, 1730.0 240, 1760 240" fill="none" stroke="#8ab4f8" stroke-width="2.5" opacity="0.85" stroke-dasharray="8 6" class="flow-line" marker-end="url(#arr-blue)" />
+<g transform="translate(1730.0, 240.0)">
+<rect x="-107.5" y="-13" width="215.0" height="24" rx="6" ry="6" fill="#10131a" stroke="#8ab4f8" stroke-width="1.2" filter="drop-shadow(0 2px 8px rgba(0,0,0,0.8))" />
+<text x="0" y="3.5" fill="#8ab4f8" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="600" text-anchor="middle">Need remote cloud autonomy</text>
+</g>
+<path d="M 2540 240 C 2570.0 240, 2570.0 240, 2600 240" fill="none" stroke="#fdd663" stroke-width="2.5" opacity="0.85" stroke-dasharray="8 6" class="flow-line" marker-end="url(#arr-yellow)" />
+<g transform="translate(2570.0, 240.0)">
+<rect x="-107.5" y="-13" width="215.0" height="24" rx="6" ry="6" fill="#10131a" stroke="#fdd663" stroke-width="1.2" filter="drop-shadow(0 2px 8px rgba(0,0,0,0.8))" />
+<text x="0" y="3.5" fill="#fdd663" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="600" text-anchor="middle">Need fixed IP &amp; open ports</text>
+</g>
+<path d="M 3380 240 C 3410.0 240, 3410.0 240, 3440 240" fill="none" stroke="#f28b82" stroke-width="2.5" opacity="0.85" stroke-dasharray="8 6" class="flow-line" marker-end="url(#arr-red)" />
+<g transform="translate(3410.0, 240.0)">
+<rect x="-111.25" y="-13" width="222.5" height="24" rx="6" ry="6" fill="#10131a" stroke="#f28b82" stroke-width="1.2" filter="drop-shadow(0 2px 8px rgba(0,0,0,0.8))" />
+<text x="0" y="3.5" fill="#f28b82" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="600" text-anchor="middle">1GB RAM OOM -&gt; Upgrade 16GB</text>
+</g>
+<path d="M 3870 370 L 3870 450" fill="none" stroke="#81c995" stroke-width="2.5" opacity="0.85" stroke-dasharray="8 6" class="flow-line" marker-end="url(#arr-green)" />
+<g transform="translate(3870.0, 410.0)">
+<rect x="-126.25" y="-13" width="252.5" height="24" rx="6" ry="6" fill="#10131a" stroke="#81c995" stroke-width="1.2" filter="drop-shadow(0 2px 8px rgba(0,0,0,0.8))" />
+<text x="0" y="3.5" fill="#81c995" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="600" text-anchor="middle">Deployed to Azure Production VM</text>
+</g>
+<g class="node-card" transform="translate(120, 600)">
+<rect width="460" height="250" rx="14" ry="14" fill="#181b24" stroke="#8ab4f8" stroke-width="2" filter="drop-shadow(0 8px 24px rgba(0,0,0,0.45))" />
+<rect width="460" height="5" rx="2" ry="2" fill="#8ab4f8" />
+<rect x="345" y="14" width="100" height="22" rx="6" ry="6" fill="rgba(255,255,255,0.06)" stroke="#8ab4f8" stroke-width="1" />
+<text x="395" y="29" fill="#8ab4f8" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700" text-anchor="middle">ACTIVE</text>
+<text x="20" y="34" fill="#ffffff" font-family="'Google Sans', system-ui, sans-serif" font-size="16" font-weight="700">Omar Elnemr (Caller)</text>
+<text x="20" y="52" fill="#9aa0a6" font-family="'JetBrains Mono', monospace" font-size="11">Telegram UID: 1021125594</text>
+<line x1="20" y1="64" x2="440" y2="64" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
+<circle cx="26" cy="82" r="3" fill="#8ab4f8" />
+<text x="38" y="86" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Identity: Omar Elnemr (Authorized Master)</text>
+<circle cx="26" cy="104" r="3" fill="#8ab4f8" />
+<text x="38" y="108" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Client: Telegram Desktop (Windows) / Telegram Mobile</text>
+<circle cx="26" cy="126" r="3" fill="#8ab4f8" />
+<text x="38" y="130" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Interface: Direct 1-on-1 Voice Call to @aethelgard_vault_bot</text>
+<circle cx="26" cy="148" r="3" fill="#8ab4f8" />
+<text x="38" y="152" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Speech Cadence: Natural conversational speech &amp; directives</text>
+</g>
+<g class="node-card" transform="translate(120, 940)">
+<rect width="460" height="270" rx="14" ry="14" fill="#181b24" stroke="#8ab4f8" stroke-width="2" filter="drop-shadow(0 8px 24px rgba(0,0,0,0.45))" />
+<rect width="460" height="5" rx="2" ry="2" fill="#8ab4f8" />
+<rect x="345" y="14" width="100" height="22" rx="6" ry="6" fill="rgba(255,255,255,0.06)" stroke="#8ab4f8" stroke-width="1" />
+<text x="395" y="29" fill="#8ab4f8" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700" text-anchor="middle">ACTIVE</text>
+<text x="20" y="34" fill="#ffffff" font-family="'Google Sans', system-ui, sans-serif" font-size="16" font-weight="700">Phone / PC Microphone</text>
+<text x="20" y="52" fill="#9aa0a6" font-family="'JetBrains Mono', monospace" font-size="11">Acoustic Audio Ingress</text>
+<line x1="20" y1="64" x2="440" y2="64" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
+<circle cx="26" cy="82" r="3" fill="#8ab4f8" />
+<text x="38" y="86" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Hardware: Native microphone hardware capture</text>
+<circle cx="26" cy="104" r="3" fill="#8ab4f8" />
+<text x="38" y="108" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Sample Rate: 48,000 Hz, 16-bit Mono S16LE PCM</text>
+<circle cx="26" cy="126" r="3" fill="#8ab4f8" />
+<text x="38" y="130" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Acoustic Leak: Captures ambient speech + speaker bleed (~200 RMS)</text>
+<circle cx="26" cy="148" r="3" fill="#8ab4f8" />
+<text x="38" y="152" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Dynamic Range: 0 to 32,767 PCM amplitude values</text>
+</g>
+<g class="node-card" transform="translate(120, 1310)">
+<rect width="460" height="280" rx="14" ry="14" fill="#181b24" stroke="#8ab4f8" stroke-width="2" filter="drop-shadow(0 8px 24px rgba(0,0,0,0.45))" />
+<rect width="460" height="5" rx="2" ry="2" fill="#8ab4f8" />
+<rect x="345" y="14" width="100" height="22" rx="6" ry="6" fill="rgba(255,255,255,0.06)" stroke="#8ab4f8" stroke-width="1" />
+<text x="395" y="29" fill="#8ab4f8" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700" text-anchor="middle">ACTIVE</text>
+<text x="20" y="34" fill="#ffffff" font-family="'Google Sans', system-ui, sans-serif" font-size="16" font-weight="700">Telegram Client VoIP Engine</text>
+<text x="20" y="52" fill="#9aa0a6" font-family="'JetBrains Mono', monospace" font-size="11">MTProto Voice Transport</text>
+<line x1="20" y1="64" x2="440" y2="64" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
+<circle cx="26" cy="82" r="3" fill="#8ab4f8" />
+<text x="38" y="86" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Protocol: Telegram MTProto VoIP signaling</text>
+<circle cx="26" cy="104" r="3" fill="#8ab4f8" />
+<text x="38" y="108" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Transport: RTP UDP packet streaming over public Internet</text>
+<circle cx="26" cy="126" r="3" fill="#8ab4f8" />
+<text x="38" y="130" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Session ID: Peer 1021125594 call connection</text>
+<circle cx="26" cy="148" r="3" fill="#8ab4f8" />
+<text x="38" y="152" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Jitter Buffer: Adaptive client-side WebRTC jitter absorption</text>
+</g>
+<g class="node-card" transform="translate(120, 1690)">
+<rect width="460" height="260" rx="14" ry="14" fill="#181b24" stroke="#8ab4f8" stroke-width="2" filter="drop-shadow(0 8px 24px rgba(0,0,0,0.45))" />
+<rect width="460" height="5" rx="2" ry="2" fill="#8ab4f8" />
+<rect x="345" y="14" width="100" height="22" rx="6" ry="6" fill="rgba(255,255,255,0.06)" stroke="#8ab4f8" stroke-width="1" />
+<text x="395" y="29" fill="#8ab4f8" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700" text-anchor="middle">ACTIVE</text>
+<text x="20" y="34" fill="#ffffff" font-family="'Google Sans', system-ui, sans-serif" font-size="16" font-weight="700">Phone Speaker / Earpiece</text>
+<text x="20" y="52" fill="#9aa0a6" font-family="'JetBrains Mono', monospace" font-size="11">Acoustic Audio Egress</text>
+<line x1="20" y1="64" x2="440" y2="64" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
+<circle cx="26" cy="82" r="3" fill="#8ab4f8" />
+<text x="38" y="86" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Hardware: Device speaker / earpiece output transducer</text>
+<circle cx="26" cy="104" r="3" fill="#8ab4f8" />
+<text x="38" y="108" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Audio Stream: 48,000 Hz continuous 10ms frame playback</text>
+<circle cx="26" cy="126" r="3" fill="#8ab4f8" />
+<text x="38" y="130" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Persona Audio: Google Native &#x27;Charon&#x27; British butler speech</text>
+<circle cx="26" cy="148" r="3" fill="#8ab4f8" />
+<text x="38" y="152" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Acoustic Feedback: Radiates speaker sound back to microphone</text>
+</g>
+<g class="node-card" transform="translate(680, 600)">
+<rect width="520" height="280" rx="14" ry="14" fill="#181b24" stroke="#81c995" stroke-width="2" filter="drop-shadow(0 8px 24px rgba(0,0,0,0.45))" />
+<rect width="520" height="5" rx="2" ry="2" fill="#81c995" />
+<rect x="405" y="14" width="100" height="22" rx="6" ry="6" fill="rgba(255,255,255,0.06)" stroke="#81c995" stroke-width="1" />
+<text x="455" y="29" fill="#81c995" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700" text-anchor="middle">ACTIVE</text>
+<text x="20" y="34" fill="#ffffff" font-family="'Google Sans', system-ui, sans-serif" font-size="16" font-weight="700">NTgCalls WebRTC Core Engine</text>
+<text x="20" y="52" fill="#9aa0a6" font-family="'JetBrains Mono', monospace" font-size="11">C++ Transport Bridge</text>
+<line x1="20" y1="64" x2="500" y2="64" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
+<circle cx="26" cy="82" r="3" fill="#81c995" />
+<text x="38" y="86" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Engine: NTgCalls native C++ WebRTC bindings</text>
+<circle cx="26" cy="104" r="3" fill="#81c995" />
+<text x="38" y="108" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Network: Binds to UDP VoIP signaling socket on Azure VM</text>
+<circle cx="26" cy="126" r="3" fill="#81c995" />
+<text x="38" y="130" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Buffering: Circular ring buffer for continuous full-duplex I/O</text>
+<circle cx="26" cy="148" r="3" fill="#81c995" />
+<text x="38" y="152" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Frame Expectation: Strictly 10ms PCM audio frames (960 Bytes)</text>
+</g>
+<g class="node-card" transform="translate(680, 960)">
+<rect width="520" height="310" rx="14" ry="14" fill="#181b24" stroke="#f28b82" stroke-width="2" filter="drop-shadow(0 8px 24px rgba(0,0,0,0.45))" />
+<rect width="520" height="5" rx="2" ry="2" fill="#f28b82" />
+<rect x="405" y="14" width="100" height="22" rx="6" ry="6" fill="rgba(255,255,255,0.06)" stroke="#f28b82" stroke-width="1" />
+<text x="455" y="29" fill="#f28b82" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700" text-anchor="middle">ACTIVE</text>
+<text x="20" y="34" fill="#ffffff" font-family="'Google Sans', system-ui, sans-serif" font-size="16" font-weight="700">Dynamic RMS Echo Gate</text>
+<text x="20" y="52" fill="#9aa0a6" font-family="'JetBrains Mono', monospace" font-size="11">Acoustic Feedback Suppressor</text>
+<line x1="20" y1="64" x2="500" y2="64" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
+<circle cx="26" cy="82" r="3" fill="#f28b82" />
+<text x="38" y="86" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Algorithm: In-process Root-Mean-Square (RMS) amplitude evaluation</text>
+<circle cx="26" cy="104" r="3" fill="#f28b82" />
+<text x="38" y="108" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Suppression Rule: While ai_speaking is True, drop frames &lt; 520 RMS</text>
+<circle cx="26" cy="126" r="3" fill="#f28b82" />
+<text x="38" y="130" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Human Barge-in Rule: Requires &gt; 200ms of sustained loud speech (&gt;520)</text>
+<circle cx="26" cy="148" r="3" fill="#f28b82" />
+<text x="38" y="152" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Result: 100% elimination of self-interruption loops (&#x27;I am listening&#x27;)</text>
+</g>
+<g class="node-card" transform="translate(680, 1350)">
+<rect width="520" height="250" rx="14" ry="14" fill="#181b24" stroke="#81c995" stroke-width="2" filter="drop-shadow(0 8px 24px rgba(0,0,0,0.45))" />
+<rect width="520" height="5" rx="2" ry="2" fill="#81c995" />
+<rect x="405" y="14" width="100" height="22" rx="6" ry="6" fill="rgba(255,255,255,0.06)" stroke="#81c995" stroke-width="1" />
+<text x="455" y="29" fill="#81c995" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700" text-anchor="middle">ACTIVE</text>
+<text x="20" y="34" fill="#ffffff" font-family="'Google Sans', system-ui, sans-serif" font-size="16" font-weight="700">Linear Downsampler (48k -&gt; 16k)</text>
+<text x="20" y="52" fill="#9aa0a6" font-family="'JetBrains Mono', monospace" font-size="11">PCM Rate Conversion</text>
+<line x1="20" y1="64" x2="500" y2="64" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
+<circle cx="26" cy="82" r="3" fill="#81c995" />
+<text x="38" y="86" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Source Format: 48,000 Hz 16-bit Mono PCM (NTgCalls)</text>
+<circle cx="26" cy="104" r="3" fill="#81c995" />
+<text x="38" y="108" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Target Format: 16,000 Hz 16-bit Mono PCM (Gemini Live)</text>
+<circle cx="26" cy="126" r="3" fill="#81c995" />
+<text x="38" y="130" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Decimation: High-performance linear decimation algorithm</text>
+<circle cx="26" cy="148" r="3" fill="#81c995" />
+<text x="38" y="152" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Latency Overhead: &lt; 0.8ms per 10ms chunk</text>
+</g>
+<g class="node-card" transform="translate(680, 1680)">
+<rect width="520" height="250" rx="14" ry="14" fill="#181b24" stroke="#81c995" stroke-width="2" filter="drop-shadow(0 8px 24px rgba(0,0,0,0.45))" />
+<rect width="520" height="5" rx="2" ry="2" fill="#81c995" />
+<rect x="405" y="14" width="100" height="22" rx="6" ry="6" fill="rgba(255,255,255,0.06)" stroke="#81c995" stroke-width="1" />
+<text x="455" y="29" fill="#81c995" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700" text-anchor="middle">ACTIVE</text>
+<text x="20" y="34" fill="#ffffff" font-family="'Google Sans', system-ui, sans-serif" font-size="16" font-weight="700">Linear Upsampler (24k -&gt; 48k)</text>
+<text x="20" y="52" fill="#9aa0a6" font-family="'JetBrains Mono', monospace" font-size="11">PCM Rate Expansion</text>
+<line x1="20" y1="64" x2="500" y2="64" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
+<circle cx="26" cy="82" r="3" fill="#81c995" />
+<text x="38" y="86" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Source Format: 24,000 Hz 16-bit Mono PCM (Gemini Live Audio)</text>
+<circle cx="26" cy="104" r="3" fill="#81c995" />
+<text x="38" y="108" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Target Format: 48,000 Hz 16-bit Mono PCM (NTgCalls Audio)</text>
+<circle cx="26" cy="126" r="3" fill="#81c995" />
+<text x="38" y="130" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Interpolation: Linear 2x PCM sample interpolation</text>
+<circle cx="26" cy="148" r="3" fill="#81c995" />
+<text x="38" y="152" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Purity: Zero audible distortion or harmonic artifacts</text>
+</g>
+<g class="node-card" transform="translate(680, 2010)">
+<rect width="520" height="270" rx="14" ry="14" fill="#181b24" stroke="#81c995" stroke-width="2" filter="drop-shadow(0 8px 24px rgba(0,0,0,0.45))" />
+<rect width="520" height="5" rx="2" ry="2" fill="#81c995" />
+<rect x="405" y="14" width="100" height="22" rx="6" ry="6" fill="rgba(255,255,255,0.06)" stroke="#81c995" stroke-width="1" />
+<text x="455" y="29" fill="#81c995" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700" text-anchor="middle">ACTIVE</text>
+<text x="20" y="34" fill="#ffffff" font-family="'Google Sans', system-ui, sans-serif" font-size="16" font-weight="700">Strict 10ms Frame Pacer</text>
+<text x="20" y="52" fill="#9aa0a6" font-family="'JetBrains Mono', monospace" font-size="11">Buffer Pacing &amp; Frame Sizing</text>
+<line x1="20" y1="64" x2="500" y2="64" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
+<circle cx="26" cy="82" r="3" fill="#81c995" />
+<text x="38" y="86" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Frame Sizing: FRAME_MS = 10, TELEGRAM_FRAME_BYTES = 960</text>
+<circle cx="26" cy="104" r="3" fill="#81c995" />
+<text x="38" y="108" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Pacing Loop: Strict 100 Hz cadence (10ms sleep intervals)</text>
+<circle cx="26" cy="126" r="3" fill="#81c995" />
+<text x="38" y="130" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Fix: Solved 20ms/1920B mismatch that caused 2x chipmunk audio</text>
+<circle cx="26" cy="148" r="3" fill="#81c995" />
+<text x="38" y="152" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Pacing Accuracy: Monotonic clock timer with drift correction</text>
+</g>
+<g class="node-card" transform="translate(680, 2360)">
+<rect width="520" height="260" rx="14" ry="14" fill="#181b24" stroke="#fdd663" stroke-width="2" filter="drop-shadow(0 8px 24px rgba(0,0,0,0.45))" />
+<rect width="520" height="5" rx="2" ry="2" fill="#fdd663" />
+<rect x="405" y="14" width="100" height="22" rx="6" ry="6" fill="rgba(255,255,255,0.06)" stroke="#fdd663" stroke-width="1" />
+<text x="455" y="29" fill="#fdd663" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700" text-anchor="middle">ACTIVE</text>
+<text x="20" y="34" fill="#ffffff" font-family="'Google Sans', system-ui, sans-serif" font-size="16" font-weight="700">Call Session Controller</text>
+<text x="20" y="52" fill="#9aa0a6" font-family="'JetBrains Mono', monospace" font-size="11">WebRTC Termination Engine</text>
+<line x1="20" y1="64" x2="500" y2="64" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
+<circle cx="26" cy="82" r="3" fill="#fdd663" />
+<text x="38" y="86" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Protocol: DiscardCallRequest dispatcher</text>
+<circle cx="26" cy="104" r="3" fill="#fdd663" />
+<text x="38" y="108" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Farewell Buffer: 3.0-second audio drain before disconnecting socket</text>
+<circle cx="26" cy="126" r="3" fill="#fdd663" />
+<text x="38" y="130" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Async Fix: Dual synchronous / coroutine callback resolution</text>
+<circle cx="26" cy="148" r="3" fill="#fdd663" />
+<text x="38" y="152" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Cleanup: Full garbage collection of session sockets &amp; tasks</text>
+</g>
+<g class="node-card" transform="translate(1300, 600)">
+<rect width="620" height="340" rx="14" ry="14" fill="#181b24" stroke="#c58af9" stroke-width="2" filter="drop-shadow(0 8px 24px rgba(0,0,0,0.45))" />
+<rect width="620" height="5" rx="2" ry="2" fill="#c58af9" />
+<rect x="505" y="14" width="100" height="22" rx="6" ry="6" fill="rgba(255,255,255,0.06)" stroke="#c58af9" stroke-width="1" />
+<text x="555" y="29" fill="#c58af9" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700" text-anchor="middle">ACTIVE</text>
+<text x="20" y="34" fill="#ffffff" font-family="'Google Sans', system-ui, sans-serif" font-size="16" font-weight="700">Gemini Live WebSocket Client</text>
+<text x="20" y="52" fill="#9aa0a6" font-family="'JetBrains Mono', monospace" font-size="11">BidiGenerateContent Engine</text>
+<line x1="20" y1="64" x2="600" y2="64" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
+<circle cx="26" cy="82" r="3" fill="#c58af9" />
+<text x="38" y="86" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Module: gemini_live_bridge.py using google-genai SDK</text>
+<circle cx="26" cy="104" r="3" fill="#c58af9" />
+<text x="38" y="108" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Endpoint: wss://generativelanguage.googleapis.com (Vertex AI)</text>
+<circle cx="26" cy="126" r="3" fill="#c58af9" />
+<text x="38" y="130" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Configuration: LiveConnectConfig(response_modalities=[AUDIO])</text>
+<circle cx="26" cy="148" r="3" fill="#c58af9" />
+<text x="38" y="152" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Voice Preset: prebuilt_voice_config = {&#x27;voice_name&#x27;: &#x27;Charon&#x27;}</text>
+<circle cx="26" cy="170" r="3" fill="#c58af9" />
+<text x="38" y="174" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Batching: 30ms-60ms socket chunk aggregation (reduces 100Hz -&gt; 33Hz)</text>
+</g>
+<g class="node-card" transform="translate(1300, 1020)">
+<rect width="620" height="300" rx="14" ry="14" fill="#181b24" stroke="#c58af9" stroke-width="2" filter="drop-shadow(0 8px 24px rgba(0,0,0,0.45))" />
+<rect width="620" height="5" rx="2" ry="2" fill="#c58af9" />
+<rect x="505" y="14" width="100" height="22" rx="6" ry="6" fill="rgba(255,255,255,0.06)" stroke="#c58af9" stroke-width="1" />
+<text x="555" y="29" fill="#c58af9" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700" text-anchor="middle">ACTIVE</text>
+<text x="20" y="34" fill="#ffffff" font-family="'Google Sans', system-ui, sans-serif" font-size="16" font-weight="700">Persistent Multi-Turn Receiver</text>
+<text x="20" y="52" fill="#9aa0a6" font-family="'JetBrains Mono', monospace" font-size="11">Generator Life-Cycle Wrapper</text>
+<line x1="20" y1="64" x2="600" y2="64" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
+<circle cx="26" cy="82" r="3" fill="#c58af9" />
+<text x="38" y="86" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Engine: while self.is_connected and not self.is_closing loop</text>
+<circle cx="26" cy="104" r="3" fill="#c58af9" />
+<text x="38" y="108" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Fix: Solved single-turn generator termination in session.receive()</text>
+<circle cx="26" cy="126" r="3" fill="#c58af9" />
+<text x="38" y="130" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Event Routing: Parses text fragments, serverContent, &amp; audio payloads</text>
+<circle cx="26" cy="148" r="3" fill="#c58af9" />
+<text x="38" y="152" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Turn Completion: Emits turn_complete and immediately awaits next turn</text>
+</g>
+<g class="node-card" transform="translate(1300, 1400)">
+<rect width="620" height="320" rx="14" ry="14" fill="#181b24" stroke="#c58af9" stroke-width="2" filter="drop-shadow(0 8px 24px rgba(0,0,0,0.45))" />
+<rect width="620" height="5" rx="2" ry="2" fill="#c58af9" />
+<rect x="505" y="14" width="100" height="22" rx="6" ry="6" fill="rgba(255,255,255,0.06)" stroke="#c58af9" stroke-width="1" />
+<text x="555" y="29" fill="#c58af9" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700" text-anchor="middle">ACTIVE</text>
+<text x="20" y="34" fill="#ffffff" font-family="'Google Sans', system-ui, sans-serif" font-size="16" font-weight="700">Async Tool Call Router</text>
+<text x="20" y="52" fill="#9aa0a6" font-family="'JetBrains Mono', monospace" font-size="11">Mid-Flight Function Dispatcher</text>
+<line x1="20" y1="64" x2="600" y2="64" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
+<circle cx="26" cy="82" r="3" fill="#c58af9" />
+<text x="38" y="86" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Event: Intercepts toolCall messages over the active WebSocket</text>
+<circle cx="26" cy="104" r="3" fill="#c58af9" />
+<text x="38" y="108" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Schema: Validates save_gmail_draft, check_gmail, search_vault, end_call</text>
+<circle cx="26" cy="126" r="3" fill="#c58af9" />
+<text x="38" y="130" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Local Dispatch: Executes subroutines asynchronously in background</text>
+<circle cx="26" cy="148" r="3" fill="#c58af9" />
+<text x="38" y="152" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Tool Response: Injects toolResponse back into WebSocket session</text>
+<circle cx="26" cy="170" r="3" fill="#c58af9" />
+<text x="38" y="174" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Voice Confirmation: Directs model to voice natural spoken confirmation</text>
+</g>
+<g class="node-card" transform="translate(1300, 1800)">
+<rect width="620" height="280" rx="14" ry="14" fill="#181b24" stroke="#fdd663" stroke-width="2" filter="drop-shadow(0 8px 24px rgba(0,0,0,0.45))" />
+<rect width="620" height="5" rx="2" ry="2" fill="#fdd663" />
+<rect x="505" y="14" width="100" height="22" rx="6" ry="6" fill="rgba(255,255,255,0.06)" stroke="#fdd663" stroke-width="1" />
+<text x="555" y="29" fill="#fdd663" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700" text-anchor="middle">ACTIVE</text>
+<text x="20" y="34" fill="#ffffff" font-family="'Google Sans', system-ui, sans-serif" font-size="16" font-weight="700">Call Session State Machine</text>
+<text x="20" y="52" fill="#9aa0a6" font-family="'JetBrains Mono', monospace" font-size="11">Safety &amp; Lifetime Armor</text>
+<line x1="20" y1="64" x2="600" y2="64" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
+<circle cx="26" cy="82" r="3" fill="#fdd663" />
+<text x="38" y="86" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Duration Cap: 15-minute continuous call safety ceiling</text>
+<circle cx="26" cy="104" r="3" fill="#fdd663" />
+<text x="38" y="108" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Audio Warning: Chimes courteous warning at 14 minutes</text>
+<circle cx="26" cy="126" r="3" fill="#fdd663" />
+<text x="38" y="130" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Failure Policy: Graceful farewell hangup + Telegram DM diagnostic log</text>
+<circle cx="26" cy="148" r="3" fill="#fdd663" />
+<text x="38" y="152" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Health Ping: Bi-directional WebSocket ping-pong keepalives</text>
+</g>
+<g class="node-card" transform="translate(2020, 600)">
+<rect width="620" height="350" rx="14" ry="14" fill="#181b24" stroke="#c58af9" stroke-width="2" filter="drop-shadow(0 8px 24px rgba(0,0,0,0.45))" />
+<rect width="620" height="5" rx="2" ry="2" fill="#c58af9" />
+<rect x="505" y="14" width="100" height="22" rx="6" ry="6" fill="rgba(255,255,255,0.06)" stroke="#c58af9" stroke-width="1" />
+<text x="555" y="29" fill="#c58af9" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700" text-anchor="middle">ACTIVE</text>
+<text x="20" y="34" fill="#ffffff" font-family="'Google Sans', system-ui, sans-serif" font-size="16" font-weight="700">Google Gemini 3.8 Live</text>
+<text x="20" y="52" fill="#9aa0a6" font-family="'JetBrains Mono', monospace" font-size="11">Native Speech-to-Speech Model</text>
+<line x1="20" y1="64" x2="600" y2="64" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
+<circle cx="26" cy="82" r="3" fill="#c58af9" />
+<text x="38" y="86" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Model Name: gemini-3.8-live on Vertex AI (us-central1)</text>
+<circle cx="26" cy="104" r="3" fill="#c58af9" />
+<text x="38" y="108" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Architecture: End-to-end multimodal neural speech transformer</text>
+<circle cx="26" cy="126" r="3" fill="#c58af9" />
+<text x="38" y="130" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Latency: Sub-280ms speech-to-speech Time-To-First-Voice (TTFV)</text>
+<circle cx="26" cy="148" r="3" fill="#c58af9" />
+<text x="38" y="152" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">System Instruction: Refined British Butler Custodian persona</text>
+<circle cx="26" cy="170" r="3" fill="#c58af9" />
+<text x="38" y="174" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Input Modality: 16,000 Hz Mono PCM raw audio stream</text>
+</g>
+<g class="node-card" transform="translate(2020, 1030)">
+<rect width="620" height="270" rx="14" ry="14" fill="#181b24" stroke="#c58af9" stroke-width="2" filter="drop-shadow(0 8px 24px rgba(0,0,0,0.45))" />
+<rect width="620" height="5" rx="2" ry="2" fill="#c58af9" />
+<rect x="505" y="14" width="100" height="22" rx="6" ry="6" fill="rgba(255,255,255,0.06)" stroke="#c58af9" stroke-width="1" />
+<text x="555" y="29" fill="#c58af9" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700" text-anchor="middle">ACTIVE</text>
+<text x="20" y="34" fill="#ffffff" font-family="'Google Sans', system-ui, sans-serif" font-size="16" font-weight="700">Native Voice Model: &#x27;Charon&#x27;</text>
+<text x="20" y="52" fill="#9aa0a6" font-family="'JetBrains Mono', monospace" font-size="11">Neural Acoustic Synthesizer</text>
+<line x1="20" y1="64" x2="600" y2="64" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
+<circle cx="26" cy="82" r="3" fill="#c58af9" />
+<text x="38" y="86" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Voice Persona: Google DeepMind &#x27;Charon&#x27; preset</text>
+<circle cx="26" cy="104" r="3" fill="#c58af9" />
+<text x="38" y="108" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Acoustic Timbre: Deep, calm, authoritative British butler cadence</text>
+<circle cx="26" cy="126" r="3" fill="#c58af9" />
+<text x="38" y="130" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Output Stream: 24,000 Hz Mono S16LE PCM streamed in realtime</text>
+<circle cx="26" cy="148" r="3" fill="#c58af9" />
+<text x="38" y="152" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Expressiveness: Dynamic pitch modulation &amp; contextual intonation</text>
+</g>
+<g class="node-card" transform="translate(2020, 1380)">
+<rect width="620" height="270" rx="14" ry="14" fill="#181b24" stroke="#c58af9" stroke-width="2" filter="drop-shadow(0 8px 24px rgba(0,0,0,0.45))" />
+<rect width="620" height="5" rx="2" ry="2" fill="#c58af9" />
+<rect x="505" y="14" width="100" height="22" rx="6" ry="6" fill="rgba(255,255,255,0.06)" stroke="#c58af9" stroke-width="1" />
+<text x="555" y="29" fill="#c58af9" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700" text-anchor="middle">ACTIVE</text>
+<text x="20" y="34" fill="#ffffff" font-family="'Google Sans', system-ui, sans-serif" font-size="16" font-weight="700">Cloud-Native Acoustic VAD</text>
+<text x="20" y="52" fill="#9aa0a6" font-family="'JetBrains Mono', monospace" font-size="11">Speech Boundary &amp; Barge-in</text>
+<line x1="20" y1="64" x2="600" y2="64" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
+<circle cx="26" cy="82" r="3" fill="#c58af9" />
+<text x="38" y="86" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Detection: Cloud-side neural Voice Activity Detection</text>
+<circle cx="26" cy="104" r="3" fill="#c58af9" />
+<text x="38" y="108" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Pause Threshold: Dynamic conversational turn-taking boundaries</text>
+<circle cx="26" cy="126" r="3" fill="#c58af9" />
+<text x="38" y="130" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Interruption Signal: Emits serverContent.interrupted on user speech</text>
+<circle cx="26" cy="148" r="3" fill="#c58af9" />
+<text x="38" y="152" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Buffer Flush: Signals client to purge pending playback buffers instantly</text>
+</g>
+<g class="node-card" transform="translate(2740, 600)">
+<rect width="680" height="340" rx="14" ry="14" fill="#181b24" stroke="#8ab4f8" stroke-width="2" filter="drop-shadow(0 8px 24px rgba(0,0,0,0.45))" />
+<rect width="680" height="5" rx="2" ry="2" fill="#8ab4f8" />
+<rect x="565" y="14" width="100" height="22" rx="6" ry="6" fill="rgba(255,255,255,0.06)" stroke="#8ab4f8" stroke-width="1" />
+<text x="615" y="29" fill="#8ab4f8" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700" text-anchor="middle">ACTIVE</text>
+<text x="20" y="34" fill="#ffffff" font-family="'Google Sans', system-ui, sans-serif" font-size="16" font-weight="700">Antigravity Gateway Proxy (:20128)</text>
+<text x="20" y="52" fill="#9aa0a6" font-family="'JetBrains Mono', monospace" font-size="11">In-Process Zero-Lockout Router</text>
+<line x1="20" y1="64" x2="660" y2="64" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
+<circle cx="26" cy="82" r="3" fill="#8ab4f8" />
+<text x="38" y="86" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Port: http://127.0.0.1:20128/v1 (Circuit-Broken Local Proxy)</text>
+<circle cx="26" cy="104" r="3" fill="#8ab4f8" />
+<text x="38" y="108" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">OAuth Renewal: Automated Google OAuth token refresh every 20 minutes</text>
+<circle cx="26" cy="126" r="3" fill="#8ab4f8" />
+<text x="38" y="130" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Thought-Leak Sanitizer: Strips internal thinking tags from voice output</text>
+<circle cx="26" cy="148" r="3" fill="#8ab4f8" />
+<text x="38" y="152" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Failover: Instant automatic failover between primary &amp; fallback LLMs</text>
+<circle cx="26" cy="170" r="3" fill="#8ab4f8" />
+<text x="38" y="174" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Concurrency: Async FastAPI/Starlette proxy engine</text>
+</g>
+<g class="node-card" transform="translate(2740, 1020)">
+<rect width="680" height="270" rx="14" ry="14" fill="#181b24" stroke="#8ab4f8" stroke-width="2" filter="drop-shadow(0 8px 24px rgba(0,0,0,0.45))" />
+<rect width="680" height="5" rx="2" ry="2" fill="#8ab4f8" />
+<rect x="565" y="14" width="100" height="22" rx="6" ry="6" fill="rgba(255,255,255,0.06)" stroke="#8ab4f8" stroke-width="1" />
+<text x="615" y="29" fill="#8ab4f8" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700" text-anchor="middle">ACTIVE</text>
+<text x="20" y="34" fill="#ffffff" font-family="'Google Sans', system-ui, sans-serif" font-size="16" font-weight="700">Gemini 3.8 Flash High (1M Context)</text>
+<text x="20" y="52" fill="#9aa0a6" font-family="'JetBrains Mono', monospace" font-size="11">Primary Cognitive Reasoner</text>
+<line x1="20" y1="64" x2="660" y2="64" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
+<circle cx="26" cy="82" r="3" fill="#8ab4f8" />
+<text x="38" y="86" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Model: antigravity/gemini-3.8-flash-low / gemini-3.8-flash-high</text>
+<circle cx="26" cy="104" r="3" fill="#8ab4f8" />
+<text x="38" y="108" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Context Window: 1,048,576 tokens (Instant Low-Latency Pruning)</text>
+<circle cx="26" cy="126" r="3" fill="#8ab4f8" />
+<text x="38" y="130" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Knowledge Ingestion: Full ingestion of Obsidian second-brain notes</text>
+<circle cx="26" cy="148" r="3" fill="#8ab4f8" />
+<text x="38" y="152" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Task Execution: Deep analytical reasoning and long-term planning</text>
+</g>
+<g class="node-card" transform="translate(2740, 1370)">
+<rect width="680" height="270" rx="14" ry="14" fill="#181b24" stroke="#fdd663" stroke-width="2" filter="drop-shadow(0 8px 24px rgba(0,0,0,0.45))" />
+<rect width="680" height="5" rx="2" ry="2" fill="#fdd663" />
+<rect x="565" y="14" width="100" height="22" rx="6" ry="6" fill="rgba(255,255,255,0.06)" stroke="#fdd663" stroke-width="1" />
+<text x="615" y="29" fill="#fdd663" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700" text-anchor="middle">ACTIVE</text>
+<text x="20" y="34" fill="#ffffff" font-family="'Google Sans', system-ui, sans-serif" font-size="16" font-weight="700">Claude Sonnet 4.6 Thinking</text>
+<text x="20" y="52" fill="#9aa0a6" font-family="'JetBrains Mono', monospace" font-size="11">Circuit-Broken Fallback Brain</text>
+<line x1="20" y1="64" x2="660" y2="64" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
+<circle cx="26" cy="82" r="3" fill="#fdd663" />
+<text x="38" y="86" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Model: Anthropic Claude Sonnet 4.6 Thinking Edition</text>
+<circle cx="26" cy="104" r="3" fill="#fdd663" />
+<text x="38" y="108" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Trigger: Automatically activates if Google API limits or 429 occurs</text>
+<circle cx="26" cy="126" r="3" fill="#fdd663" />
+<text x="38" y="130" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Capabilities: Extended chain-of-thought mathematical &amp; logic verification</text>
+<circle cx="26" cy="148" r="3" fill="#fdd663" />
+<text x="38" y="152" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Streaming: Real-time token streaming to local voice synthesizer</text>
+</g>
+<g class="node-card" transform="translate(2740, 1720)">
+<rect width="680" height="280" rx="14" ry="14" fill="#181b24" stroke="#f28b82" stroke-width="2" filter="drop-shadow(0 8px 24px rgba(0,0,0,0.45))" />
+<rect width="680" height="5" rx="2" ry="2" fill="#f28b82" />
+<rect x="565" y="14" width="100" height="22" rx="6" ry="6" fill="rgba(255,255,255,0.06)" stroke="#f28b82" stroke-width="1" />
+<text x="615" y="29" fill="#f28b82" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700" text-anchor="middle">ACTIVE</text>
+<text x="20" y="34" fill="#ffffff" font-family="'Google Sans', system-ui, sans-serif" font-size="16" font-weight="700">Zero-Trust Verbal Gatekeeper</text>
+<text x="20" y="52" fill="#9aa0a6" font-family="'JetBrains Mono', monospace" font-size="11">Deterministic Security Armor</text>
+<line x1="20" y1="64" x2="660" y2="64" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
+<circle cx="26" cy="82" r="3" fill="#f28b82" />
+<text x="38" y="86" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Protocol: Two-step verbal confirmation for all state-altering actions</text>
+<circle cx="26" cy="104" r="3" fill="#f28b82" />
+<text x="38" y="108" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Readback Rule: Dictates Recipient, Subject, and Body before dispatch</text>
+<circle cx="26" cy="126" r="3" fill="#f28b82" />
+<text x="38" y="130" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Adversarial Defense: Rejects prompt injections and vague consent</text>
+<circle cx="26" cy="148" r="3" fill="#f28b82" />
+<text x="38" y="152" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Audit Trail: Commits security events directly to Obsidian ledger</text>
+</g>
+<g class="node-card" transform="translate(2740, 2080)">
+<rect width="680" height="260" rx="14" ry="14" fill="#181b24" stroke="#81c995" stroke-width="2" filter="drop-shadow(0 8px 24px rgba(0,0,0,0.45))" />
+<rect width="680" height="5" rx="2" ry="2" fill="#81c995" />
+<rect x="565" y="14" width="100" height="22" rx="6" ry="6" fill="rgba(255,255,255,0.06)" stroke="#81c995" stroke-width="1" />
+<text x="615" y="29" fill="#81c995" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700" text-anchor="middle">ACTIVE</text>
+<text x="20" y="34" fill="#ffffff" font-family="'Google Sans', system-ui, sans-serif" font-size="16" font-weight="700">Sub-70ms Acoustic Filler Generator</text>
+<text x="20" y="52" fill="#9aa0a6" font-family="'JetBrains Mono', monospace" font-size="11">Dead-Air Interleaving Engine</text>
+<line x1="20" y1="64" x2="660" y2="64" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
+<circle cx="26" cy="82" r="3" fill="#81c995" />
+<text x="38" y="86" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Purpose: Eliminates awkward conversational dead air in sequential mode</text>
+<circle cx="26" cy="104" r="3" fill="#81c995" />
+<text x="38" y="108" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Latency: &lt; 70ms TTFV instant acoustic phrase generation</text>
+<circle cx="26" cy="126" r="3" fill="#81c995" />
+<text x="38" y="130" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Phrases: &#x27;Understood, looking into that right away, Sir...&#x27;</text>
+<circle cx="26" cy="148" r="3" fill="#81c995" />
+<text x="38" y="152" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Execution: Streams concurrently while underlying LLM computes reasoning</text>
+</g>
+<g class="node-card" transform="translate(3520, 600)">
+<rect width="730" height="280" rx="14" ry="14" fill="#181b24" stroke="#f28b82" stroke-width="2" filter="drop-shadow(0 8px 24px rgba(0,0,0,0.45))" />
+<rect width="730" height="5" rx="2" ry="2" fill="#f28b82" />
+<rect x="615" y="14" width="100" height="22" rx="6" ry="6" fill="rgba(255,255,255,0.06)" stroke="#f28b82" stroke-width="1" />
+<text x="665" y="29" fill="#f28b82" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700" text-anchor="middle">ACTIVE</text>
+<text x="20" y="34" fill="#ffffff" font-family="'Google Sans', system-ui, sans-serif" font-size="16" font-weight="700">Gmail IMAP / SMTP Suite</text>
+<text x="20" y="52" fill="#9aa0a6" font-family="'JetBrains Mono', monospace" font-size="11">save_gmail_draft &amp; Mailbox Custodian</text>
+<line x1="20" y1="64" x2="710" y2="64" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
+<circle cx="26" cy="82" r="3" fill="#f28b82" />
+<text x="38" y="86" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Tool Declaration: save_gmail_draft(subject, body, to)</text>
+<circle cx="26" cy="104" r="3" fill="#f28b82" />
+<text x="38" y="108" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Transport: IMAP APPEND direct socket injection into [Gmail]/Drafts</text>
+<circle cx="26" cy="126" r="3" fill="#f28b82" />
+<text x="38" y="130" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Latency: Verified 18ms execution on live call with Omar</text>
+<circle cx="26" cy="148" r="3" fill="#f28b82" />
+<text x="38" y="152" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Search &amp; Read: IMAP SSL fetch for unread VIP briefings</text>
+</g>
+<g class="node-card" transform="translate(3520, 960)">
+<rect width="730" height="280" rx="14" ry="14" fill="#181b24" stroke="#c58af9" stroke-width="2" filter="drop-shadow(0 8px 24px rgba(0,0,0,0.45))" />
+<rect width="730" height="5" rx="2" ry="2" fill="#c58af9" />
+<rect x="615" y="14" width="100" height="22" rx="6" ry="6" fill="rgba(255,255,255,0.06)" stroke="#c58af9" stroke-width="1" />
+<text x="665" y="29" fill="#c58af9" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700" text-anchor="middle">ACTIVE</text>
+<text x="20" y="34" fill="#ffffff" font-family="'Google Sans', system-ui, sans-serif" font-size="16" font-weight="700">Obsidian Vault Custodian</text>
+<text x="20" y="52" fill="#9aa0a6" font-family="'JetBrains Mono', monospace" font-size="11">2-Way Git Auto-Merge Engine</text>
+<line x1="20" y1="64" x2="710" y2="64" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
+<circle cx="26" cy="82" r="3" fill="#c58af9" />
+<text x="38" y="86" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Repository: GitHub xionforbusiness-glitch/aethelgard-vault</text>
+<circle cx="26" cy="104" r="3" fill="#c58af9" />
+<text x="38" y="108" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Sync Interval: Background daemon commits every 3 minutes</text>
+<circle cx="26" cy="126" r="3" fill="#c58af9" />
+<text x="38" y="130" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Merge Strategy: git pull -X ours (Resolves conflicts atomically)</text>
+<circle cx="26" cy="148" r="3" fill="#c58af9" />
+<text x="38" y="152" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Second Brain: Syncs notes, promises, attendance, &amp; personal journal</text>
+</g>
+<g class="node-card" transform="translate(3520, 1320)">
+<rect width="730" height="280" rx="14" ry="14" fill="#181b24" stroke="#8ab4f8" stroke-width="2" filter="drop-shadow(0 8px 24px rgba(0,0,0,0.45))" />
+<rect width="730" height="5" rx="2" ry="2" fill="#8ab4f8" />
+<rect x="615" y="14" width="100" height="22" rx="6" ry="6" fill="rgba(255,255,255,0.06)" stroke="#8ab4f8" stroke-width="1" />
+<text x="665" y="29" fill="#8ab4f8" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700" text-anchor="middle">ACTIVE</text>
+<text x="20" y="34" fill="#ffffff" font-family="'Google Sans', system-ui, sans-serif" font-size="16" font-weight="700">Damascus Radar METAR Engine</text>
+<text x="20" y="52" fill="#9aa0a6" font-family="'JetBrains Mono', monospace" font-size="11">Aviation Runway Weather Observer</text>
+<line x1="20" y1="64" x2="710" y2="64" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
+<circle cx="26" cy="82" r="3" fill="#8ab4f8" />
+<text x="38" y="86" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Station: Damascus International Airport (OSDI / DAM)</text>
+<circle cx="26" cy="104" r="3" fill="#8ab4f8" />
+<text x="38" y="108" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Parameters: Real-time METAR parsing: CAVOK, temperature, QNH, winds</text>
+<circle cx="26" cy="126" r="3" fill="#8ab4f8" />
+<text x="38" y="130" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Spoken Delivery: Conversational runway summaries during morning calls</text>
+<circle cx="26" cy="148" r="3" fill="#8ab4f8" />
+<text x="38" y="152" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Alerts: Proactive notifications on sudden weather pattern shifts</text>
+</g>
+<g class="node-card" transform="translate(3520, 1680)">
+<rect width="730" height="280" rx="14" ry="14" fill="#181b24" stroke="#81c995" stroke-width="2" filter="drop-shadow(0 8px 24px rgba(0,0,0,0.45))" />
+<rect width="730" height="5" rx="2" ry="2" fill="#81c995" />
+<rect x="615" y="14" width="100" height="22" rx="6" ry="6" fill="rgba(255,255,255,0.06)" stroke="#81c995" stroke-width="1" />
+<text x="665" y="29" fill="#81c995" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700" text-anchor="middle">ACTIVE</text>
+<text x="20" y="34" fill="#ffffff" font-family="'Google Sans', system-ui, sans-serif" font-size="16" font-weight="700">Shift &amp; Attendance Engine</text>
+<text x="20" y="52" fill="#9aa0a6" font-family="'JetBrains Mono', monospace" font-size="11">Standardized Excel Delivery</text>
+<line x1="20" y1="64" x2="710" y2="64" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
+<circle cx="26" cy="82" r="3" fill="#81c995" />
+<text x="38" y="86" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Data Target: Standardized monthly attendance spreadsheets (.xlsx)</text>
+<circle cx="26" cy="104" r="3" fill="#81c995" />
+<text x="38" y="108" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Automation: Generates individual employee shift breakdown tabs</text>
+<circle cx="26" cy="126" r="3" fill="#81c995" />
+<text x="38" y="130" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Formulas: Computes flight hours, overtime, rest periods, &amp; ground shifts</text>
+<circle cx="26" cy="148" r="3" fill="#81c995" />
+<text x="38" y="152" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Delivery: Automated dispatch to Telegram and email staging</text>
+</g>
+<g class="node-card" transform="translate(3520, 2040)">
+<rect width="730" height="280" rx="14" ry="14" fill="#181b24" stroke="#fdd663" stroke-width="2" filter="drop-shadow(0 8px 24px rgba(0,0,0,0.45))" />
+<rect width="730" height="5" rx="2" ry="2" fill="#fdd663" />
+<rect x="615" y="14" width="100" height="22" rx="6" ry="6" fill="rgba(255,255,255,0.06)" stroke="#fdd663" stroke-width="1" />
+<text x="665" y="29" fill="#fdd663" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700" text-anchor="middle">ACTIVE</text>
+<text x="20" y="34" fill="#ffffff" font-family="'Google Sans', system-ui, sans-serif" font-size="16" font-weight="700">Playwright Headless Browser</text>
+<text x="20" y="52" fill="#9aa0a6" font-family="'JetBrains Mono', monospace" font-size="11">Autonomous Web Portals</text>
+<line x1="20" y1="64" x2="710" y2="64" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
+<circle cx="26" cy="82" r="3" fill="#fdd663" />
+<text x="38" y="86" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Engine: Headless Chromium via Playwright Python API</text>
+<circle cx="26" cy="104" r="3" fill="#fdd663" />
+<text x="38" y="108" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Capabilities: Form filling, multi-step job applications, shift logins</text>
+<circle cx="26" cy="126" r="3" fill="#fdd663" />
+<text x="38" y="130" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Visual Proof: Takes full-page screenshots at operational checkpoints</text>
+<circle cx="26" cy="148" r="3" fill="#fdd663" />
+<text x="38" y="152" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Human-in-the-Loop: Sends photo to Telegram for 2FA approvals</text>
+</g>
+<g class="node-card" transform="translate(3520, 2400)">
+<rect width="730" height="280" rx="14" ry="14" fill="#181b24" stroke="#81c995" stroke-width="2" filter="drop-shadow(0 8px 24px rgba(0,0,0,0.45))" />
+<rect width="730" height="5" rx="2" ry="2" fill="#81c995" />
+<rect x="615" y="14" width="100" height="22" rx="6" ry="6" fill="rgba(255,255,255,0.06)" stroke="#81c995" stroke-width="1" />
+<text x="665" y="29" fill="#81c995" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700" text-anchor="middle">ACTIVE</text>
+<text x="20" y="34" fill="#ffffff" font-family="'Google Sans', system-ui, sans-serif" font-size="16" font-weight="700">MiroFish Chaos Swarm Tester</text>
+<text x="20" y="52" fill="#9aa0a6" font-family="'JetBrains Mono', monospace" font-size="11">77/77 Passing Regression Suite</text>
+<line x1="20" y1="64" x2="710" y2="64" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
+<circle cx="26" cy="82" r="3" fill="#81c995" />
+<text x="38" y="86" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Architecture: Multi-Agent Red-Team Swarm (tests/swarm_voice_tester.py)</text>
+<circle cx="26" cy="104" r="3" fill="#81c995" />
+<text x="38" y="108" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Personas: @ALEX (Ops Lead), @REBEL (Hacker Injector), @SCRIBE (Memory)</text>
+<circle cx="26" cy="126" r="3" fill="#81c995" />
+<text x="38" y="130" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Campaigns: 48-hour continuous stress testing, latency fuzzing, prompt jams</text>
+<circle cx="26" cy="148" r="3" fill="#81c995" />
+<text x="38" y="152" fill="#d1d5db" font-family="'JetBrains Mono', monospace" font-size="11.5">Certification: 77/77 Automated end-to-end regression tests green (100%)</text>
+</g>
+<path d="M 350 850 L 350 940" fill="none" stroke="#8ab4f8" stroke-width="2.5" opacity="0.85" stroke-dasharray="8 6" class="flow-line" marker-end="url(#arr-blue)" />
+<g transform="translate(350.0, 895.0)">
+<rect x="-85.0" y="-13" width="170.0" height="24" rx="6" ry="6" fill="#10131a" stroke="#8ab4f8" stroke-width="1.2" filter="drop-shadow(0 2px 8px rgba(0,0,0,0.8))" />
+<text x="0" y="3.5" fill="#8ab4f8" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="600" text-anchor="middle">Spoken voice command</text>
+</g>
+<path d="M 350 1210 L 350 1310" fill="none" stroke="#8ab4f8" stroke-width="2.5" opacity="0.85" stroke-dasharray="8 6" class="flow-line" marker-end="url(#arr-blue)" />
+<g transform="translate(350.0, 1260.0)">
+<rect x="-100.0" y="-13" width="200.0" height="24" rx="6" ry="6" fill="#10131a" stroke="#8ab4f8" stroke-width="1.2" filter="drop-shadow(0 2px 8px rgba(0,0,0,0.8))" />
+<text x="0" y="3.5" fill="#8ab4f8" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="600" text-anchor="middle">Raw acoustic PCM capture</text>
+</g>
+<path d="M 580 1450 C 630.0 1450, 630.0 740, 680 740" fill="none" stroke="#8ab4f8" stroke-width="2.5" opacity="0.85" stroke-dasharray="8 6" class="flow-line" marker-end="url(#arr-blue)" />
+<g transform="translate(630.0, 1095.0)">
+<rect x="-130.0" y="-13" width="260.0" height="24" rx="6" ry="6" fill="#10131a" stroke="#8ab4f8" stroke-width="1.2" filter="drop-shadow(0 2px 8px rgba(0,0,0,0.8))" />
+<text x="0" y="3.5" fill="#8ab4f8" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="600" text-anchor="middle">RTP UDP VoIP Stream (48kHz Mono)</text>
+</g>
+<path d="M 940 880 L 940 960" fill="none" stroke="#81c995" stroke-width="2.5" opacity="0.85" stroke-dasharray="8 6" class="flow-line" marker-end="url(#arr-green)" />
+<g transform="translate(940.0, 920.0)">
+<rect x="-111.25" y="-13" width="222.5" height="24" rx="6" ry="6" fill="#10131a" stroke="#81c995" stroke-width="1.2" filter="drop-shadow(0 2px 8px rgba(0,0,0,0.8))" />
+<text x="0" y="3.5" fill="#81c995" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="600" text-anchor="middle">Incoming 48kHz audio frames</text>
+</g>
+<path d="M 940 1270 L 940 1350" fill="none" stroke="#81c995" stroke-width="2.5" opacity="0.85" stroke-dasharray="8 6" class="flow-line" marker-end="url(#arr-green)" />
+<g transform="translate(940.0, 1310.0)">
+<rect x="-96.25" y="-13" width="192.5" height="24" rx="6" ry="6" fill="#10131a" stroke="#81c995" stroke-width="1.2" filter="drop-shadow(0 2px 8px rgba(0,0,0,0.8))" />
+<text x="0" y="3.5" fill="#81c995" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="600" text-anchor="middle">Gated speech (&gt;520 RMS)</text>
+</g>
+<path d="M 350 1690 L 350 1210" fill="none" stroke="#f28b82" stroke-width="2.5" opacity="0.85" stroke-dasharray="6 4" marker-end="url(#arr-red)" />
+<g transform="translate(350.0, 1450.0)">
+<rect x="-118.75" y="-13" width="237.5" height="24" rx="6" ry="6" fill="#10131a" stroke="#f28b82" stroke-width="1.2" filter="drop-shadow(0 2px 8px rgba(0,0,0,0.8))" />
+<text x="0" y="3.5" fill="#f28b82" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="600" text-anchor="middle">Speaker Bleed Leak (~200 RMS)</text>
+</g>
+<path d="M 680 1100 L 580 1100" fill="none" stroke="#f28b82" stroke-width="2.5" opacity="0.85" stroke-dasharray="6 4" marker-end="url(#arr-red)" />
+<g transform="translate(630.0, 1100.0)">
+<rect x="-100.0" y="-13" width="200.0" height="24" rx="6" ry="6" fill="#10131a" stroke="#f28b82" stroke-width="1.2" filter="drop-shadow(0 2px 8px rgba(0,0,0,0.8))" />
+<text x="0" y="3.5" fill="#f28b82" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="600" text-anchor="middle">Dropped by RMS Echo Gate</text>
+</g>
+<path d="M 1200 1475 C 1250.0 1475, 1250.0 770, 1300 770" fill="none" stroke="#81c995" stroke-width="2.5" opacity="0.85" stroke-dasharray="8 6" class="flow-line" marker-end="url(#arr-green)" />
+<g transform="translate(1250.0, 1122.5)">
+<rect x="-103.75" y="-13" width="207.5" height="24" rx="6" ry="6" fill="#10131a" stroke="#81c995" stroke-width="1.2" filter="drop-shadow(0 2px 8px rgba(0,0,0,0.8))" />
+<text x="0" y="3.5" fill="#81c995" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="600" text-anchor="middle">16,000 Hz Mono PCM Stream</text>
+</g>
+<path d="M 1920 770 C 1970.0 770, 1970.0 770, 2020 770" fill="none" stroke="#c58af9" stroke-width="2.5" opacity="0.85" stroke-dasharray="8 6" class="flow-line" marker-end="url(#arr-purple)" />
+<g transform="translate(1970.0, 770.0)">
+<rect x="-197.5" y="-13" width="395.0" height="24" rx="6" ry="6" fill="#10131a" stroke="#c58af9" stroke-width="1.2" filter="drop-shadow(0 2px 8px rgba(0,0,0,0.8))" />
+<text x="0" y="3.5" fill="#c58af9" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="600" text-anchor="middle">BidiGenerateContent WebSocket (Full-Duplex wss://)</text>
+</g>
+<path d="M 2020 820 C 2070.0 820, 1870.0 820, 1920 820" fill="none" stroke="#c58af9" stroke-width="2.5" opacity="0.85" stroke-dasharray="8 6" class="flow-line" marker-end="url(#arr-purple)" />
+<g transform="translate(1970.0, 820.0)">
+<rect x="-118.75" y="-13" width="237.5" height="24" rx="6" ry="6" fill="#10131a" stroke="#c58af9" stroke-width="1.2" filter="drop-shadow(0 2px 8px rgba(0,0,0,0.8))" />
+<text x="0" y="3.5" fill="#c58af9" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="600" text-anchor="middle">24,000 Hz Charon Audio Chunks</text>
+</g>
+<path d="M 1610 940 L 1610 1020" fill="none" stroke="#c58af9" stroke-width="2.5" opacity="0.85" stroke-dasharray="8 6" class="flow-line" marker-end="url(#arr-purple)" />
+<g transform="translate(1610.0, 980.0)">
+<rect x="-107.5" y="-13" width="215.0" height="24" rx="6" ry="6" fill="#10131a" stroke="#c58af9" stroke-width="1.2" filter="drop-shadow(0 2px 8px rgba(0,0,0,0.8))" />
+<text x="0" y="3.5" fill="#c58af9" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="600" text-anchor="middle">Continuous dialogue stream</text>
+</g>
+<path d="M 1610 1320 L 1610 1400" fill="none" stroke="#c58af9" stroke-width="2.5" opacity="0.85" stroke-dasharray="8 6" class="flow-line" marker-end="url(#arr-purple)" />
+<g transform="translate(1610.0, 1360.0)">
+<rect x="-88.75" y="-13" width="177.5" height="24" rx="6" ry="6" fill="#10131a" stroke="#c58af9" stroke-width="1.2" filter="drop-shadow(0 2px 8px rgba(0,0,0,0.8))" />
+<text x="0" y="3.5" fill="#c58af9" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="600" text-anchor="middle">toolCall event parsed</text>
+</g>
+<path d="M 1610 1720 L 1610 1800" fill="none" stroke="#fdd663" stroke-width="2.5" opacity="0.85" stroke-dasharray="8 6" class="flow-line" marker-end="url(#arr-yellow)" />
+<g transform="translate(1610.0, 1760.0)">
+<rect x="-115.0" y="-13" width="230.0" height="24" rx="6" ry="6" fill="#10131a" stroke="#fdd663" stroke-width="1.2" filter="drop-shadow(0 2px 8px rgba(0,0,0,0.8))" />
+<text x="0" y="3.5" fill="#fdd663" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="600" text-anchor="middle">Session state &amp; timer events</text>
+</g>
+<path d="M 1300 1170 C 1350.0 1170, 1150.0 1805, 1200 1805" fill="none" stroke="#c58af9" stroke-width="2.5" opacity="0.85" stroke-dasharray="8 6" class="flow-line" marker-end="url(#arr-purple)" />
+<g transform="translate(1250.0, 1487.5)">
+<rect x="-107.5" y="-13" width="215.0" height="24" rx="6" ry="6" fill="#10131a" stroke="#c58af9" stroke-width="1.2" filter="drop-shadow(0 2px 8px rgba(0,0,0,0.8))" />
+<text x="0" y="3.5" fill="#c58af9" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="600" text-anchor="middle">24kHz Charon Audio Payload</text>
+</g>
+<path d="M 940 1930 L 940 2010" fill="none" stroke="#81c995" stroke-width="2.5" opacity="0.85" stroke-dasharray="8 6" class="flow-line" marker-end="url(#arr-green)" />
+<g transform="translate(940.0, 1970.0)">
+<rect x="-96.25" y="-13" width="192.5" height="24" rx="6" ry="6" fill="#10131a" stroke="#81c995" stroke-width="1.2" filter="drop-shadow(0 2px 8px rgba(0,0,0,0.8))" />
+<text x="0" y="3.5" fill="#81c995" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="600" text-anchor="middle">48,000 Hz Upsampled PCM</text>
+</g>
+<path d="M 680 2145 C 730.0 2145, 530.0 1820, 580 1820" fill="none" stroke="#81c995" stroke-width="2.5" opacity="0.85" stroke-dasharray="8 6" class="flow-line" marker-end="url(#arr-green)" />
+<g transform="translate(630.0, 1982.5)">
+<rect x="-103.75" y="-13" width="207.5" height="24" rx="6" ry="6" fill="#10131a" stroke="#81c995" stroke-width="1.2" filter="drop-shadow(0 2px 8px rgba(0,0,0,0.8))" />
+<text x="0" y="3.5" fill="#81c995" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="600" text-anchor="middle">Strict 10ms (960B) Frames</text>
+</g>
+<path d="M 350 1590 L 350 1690" fill="none" stroke="#8ab4f8" stroke-width="2.5" opacity="0.85" stroke-dasharray="8 6" class="flow-line" marker-end="url(#arr-blue)" />
+<g transform="translate(350.0, 1640.0)">
+<rect x="-88.75" y="-13" width="177.5" height="24" rx="6" ry="6" fill="#10131a" stroke="#8ab4f8" stroke-width="1.2" filter="drop-shadow(0 2px 8px rgba(0,0,0,0.8))" />
+<text x="0" y="3.5" fill="#8ab4f8" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="600" text-anchor="middle">Butler voice playback</text>
+</g>
+<path d="M 1920 1480 C 2720.0 1480, 2720.0 740, 3520 740" fill="none" stroke="#f28b82" stroke-width="2.5" opacity="0.85" stroke-dasharray="8 6" class="flow-line" marker-end="url(#arr-red)" />
+<g transform="translate(2720.0, 1110.0)">
+<rect x="-126.25" y="-13" width="252.5" height="24" rx="6" ry="6" fill="#10131a" stroke="#f28b82" stroke-width="1.2" filter="drop-shadow(0 2px 8px rgba(0,0,0,0.8))" />
+<text x="0" y="3.5" fill="#f28b82" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="600" text-anchor="middle">save_gmail_draft(subject, body)</text>
+</g>
+<path d="M 3520 800 C 4320.0 800, 1120.0 1520, 1920 1520" fill="none" stroke="#f28b82" stroke-width="2.5" opacity="0.85" stroke-dasharray="8 6" class="flow-line" marker-end="url(#arr-red)" />
+<g transform="translate(2720.0, 1160.0)">
+<rect x="-130.0" y="-13" width="260.0" height="24" rx="6" ry="6" fill="#10131a" stroke="#f28b82" stroke-width="1.2" filter="drop-shadow(0 2px 8px rgba(0,0,0,0.8))" />
+<text x="0" y="3.5" fill="#f28b82" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="600" text-anchor="middle">Tool Result: success=True (18ms)</text>
+</g>
+<path d="M 1920 1560 C 2720.0 1560, 2720.0 1100, 3520 1100" fill="none" stroke="#c58af9" stroke-width="2.5" opacity="0.85" stroke-dasharray="8 6" class="flow-line" marker-end="url(#arr-purple)" />
+<g transform="translate(2720.0, 1330.0)">
+<rect x="-107.5" y="-13" width="215.0" height="24" rx="6" ry="6" fill="#10131a" stroke="#c58af9" stroke-width="1.2" filter="drop-shadow(0 2px 8px rgba(0,0,0,0.8))" />
+<text x="0" y="3.5" fill="#c58af9" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="600" text-anchor="middle">search_vault / log_promise</text>
+</g>
+<path d="M 3520 1160 C 4320.0 1160, 1120.0 1600, 1920 1600" fill="none" stroke="#c58af9" stroke-width="2.5" opacity="0.85" stroke-dasharray="8 6" class="flow-line" marker-end="url(#arr-purple)" />
+<g transform="translate(2720.0, 1380.0)">
+<rect x="-122.5" y="-13" width="245.0" height="24" rx="6" ry="6" fill="#10131a" stroke="#c58af9" stroke-width="1.2" filter="drop-shadow(0 2px 8px rgba(0,0,0,0.8))" />
+<text x="0" y="3.5" fill="#c58af9" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="600" text-anchor="middle">Vault Context &amp; Markdown Notes</text>
+</g>
+<path d="M 1920 1640 C 2720.0 1640, 2720.0 1460, 3520 1460" fill="none" stroke="#8ab4f8" stroke-width="2.5" opacity="0.85" stroke-dasharray="8 6" class="flow-line" marker-end="url(#arr-blue)" />
+<g transform="translate(2720.0, 1550.0)">
+<rect x="-107.5" y="-13" width="215.0" height="24" rx="6" ry="6" fill="#10131a" stroke="#8ab4f8" stroke-width="1.2" filter="drop-shadow(0 2px 8px rgba(0,0,0,0.8))" />
+<text x="0" y="3.5" fill="#8ab4f8" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="600" text-anchor="middle">get_damascus_weather(OSDI)</text>
+</g>
+<path d="M 3520 1520 C 4320.0 1520, 1120.0 1680, 1920 1680" fill="none" stroke="#8ab4f8" stroke-width="2.5" opacity="0.85" stroke-dasharray="8 6" class="flow-line" marker-end="url(#arr-blue)" />
+<g transform="translate(2720.0, 1600.0)">
+<rect x="-103.75" y="-13" width="207.5" height="24" rx="6" ry="6" fill="#10131a" stroke="#8ab4f8" stroke-width="1.2" filter="drop-shadow(0 2px 8px rgba(0,0,0,0.8))" />
+<text x="0" y="3.5" fill="#8ab4f8" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="600" text-anchor="middle">Runway CAVOK &amp; METAR Data</text>
+</g>
+<path d="M 1920 1720 C 2720.0 1720, 2720.0 1820, 3520 1820" fill="none" stroke="#81c995" stroke-width="2.5" opacity="0.85" stroke-dasharray="8 6" class="flow-line" marker-end="url(#arr-green)" />
+<g transform="translate(2720.0, 1770.0)">
+<rect x="-96.25" y="-13" width="192.5" height="24" rx="6" ry="6" fill="#10131a" stroke="#81c995" stroke-width="1.2" filter="drop-shadow(0 2px 8px rgba(0,0,0,0.8))" />
+<text x="0" y="3.5" fill="#81c995" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="600" text-anchor="middle">generate_shift_roster()</text>
+</g>
+<path d="M 1920 1760 C 2720.0 1760, 2720.0 2180, 3520 2180" fill="none" stroke="#fdd663" stroke-width="2.5" opacity="0.85" stroke-dasharray="8 6" class="flow-line" marker-end="url(#arr-yellow)" />
+<g transform="translate(2720.0, 1970.0)">
+<rect x="-96.25" y="-13" width="192.5" height="24" rx="6" ry="6" fill="#10131a" stroke="#fdd663" stroke-width="1.2" filter="drop-shadow(0 2px 8px rgba(0,0,0,0.8))" />
+<text x="0" y="3.5" fill="#fdd663" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="600" text-anchor="middle">run_portal_automation()</text>
+</g>
+<path d="M 1300 1600 C 1350.0 1600, 1150.0 2490, 1200 2490" fill="none" stroke="#fdd663" stroke-width="2.5" opacity="0.85" stroke-dasharray="8 6" class="flow-line" marker-end="url(#arr-yellow)" />
+<g transform="translate(1250.0, 2045.0)">
+<rect x="-88.75" y="-13" width="177.5" height="24" rx="6" ry="6" fill="#10131a" stroke="#fdd663" stroke-width="1.2" filter="drop-shadow(0 2px 8px rgba(0,0,0,0.8))" />
+<text x="0" y="3.5" fill="#fdd663" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="600" text-anchor="middle">Tool Call: end_call()</text>
+</g>
+<path d="M 680 2490 C 730.0 2490, 530.0 1500, 580 1500" fill="none" stroke="#fdd663" stroke-width="2.5" opacity="0.85" stroke-dasharray="8 6" class="flow-line" marker-end="url(#arr-yellow)" />
+<g transform="translate(630.0, 1995.0)">
+<rect x="-133.75" y="-13" width="267.5" height="24" rx="6" ry="6" fill="#10131a" stroke="#fdd663" stroke-width="1.2" filter="drop-shadow(0 2px 8px rgba(0,0,0,0.8))" />
+<text x="0" y="3.5" fill="#fdd663" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="600" text-anchor="middle">DiscardCallRequest (Clean Hangup)</text>
+</g>
+<path d="M 2740 770 C 3150.0 770, 1510.0 680, 1920 680" fill="none" stroke="#8ab4f8" stroke-width="2.5" opacity="0.85" stroke-dasharray="8 6" class="flow-line" marker-end="url(#arr-blue)" />
+<g transform="translate(2330.0, 725.0)">
+<rect x="-167.5" y="-13" width="335.0" height="24" rx="6" ry="6" fill="#10131a" stroke="#8ab4f8" stroke-width="1.2" filter="drop-shadow(0 2px 8px rgba(0,0,0,0.8))" />
+<text x="0" y="3.5" fill="#8ab4f8" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="600" text-anchor="middle">Fallback Inference Route (Sequential Mode)</text>
+</g>
+<path d="M 3080 940 L 3080 1020" fill="none" stroke="#8ab4f8" stroke-width="2.5" opacity="0.85" stroke-dasharray="8 6" class="flow-line" marker-end="url(#arr-blue)" />
+<g transform="translate(3080.0, 980.0)">
+<rect x="-126.25" y="-13" width="252.5" height="24" rx="6" ry="6" fill="#10131a" stroke="#8ab4f8" stroke-width="1.2" filter="drop-shadow(0 2px 8px rgba(0,0,0,0.8))" />
+<text x="0" y="3.5" fill="#8ab4f8" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="600" text-anchor="middle">Dynamic Remap: Gemini 3.8 Flash</text>
+</g>
+<path d="M 3080 1290 L 3080 1370" fill="none" stroke="#fdd663" stroke-width="2.5" opacity="0.85" stroke-dasharray="8 6" class="flow-line" marker-end="url(#arr-yellow)" />
+<g transform="translate(3080.0, 1330.0)">
+<rect x="-111.25" y="-13" width="222.5" height="24" rx="6" ry="6" fill="#10131a" stroke="#fdd663" stroke-width="1.2" filter="drop-shadow(0 2px 8px rgba(0,0,0,0.8))" />
+<text x="0" y="3.5" fill="#fdd663" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="600" text-anchor="middle">Circuit-Breaker: Claude 4.6</text>
+</g>
+<path d="M 3080 1640 L 3080 1720" fill="none" stroke="#f28b82" stroke-width="2.5" opacity="0.85" stroke-dasharray="8 6" class="flow-line" marker-end="url(#arr-red)" />
+<g transform="translate(3080.0, 1680.0)">
+<rect x="-107.5" y="-13" width="215.0" height="24" rx="6" ry="6" fill="#10131a" stroke="#f28b82" stroke-width="1.2" filter="drop-shadow(0 2px 8px rgba(0,0,0,0.8))" />
+<text x="0" y="3.5" fill="#f28b82" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="600" text-anchor="middle">Two-Step Verbal Gatekeeper</text>
+</g>
+<path d="M 3080 2000 L 3080 2080" fill="none" stroke="#81c995" stroke-width="2.5" opacity="0.85" stroke-dasharray="8 6" class="flow-line" marker-end="url(#arr-green)" />
+<g transform="translate(3080.0, 2040.0)">
+<rect x="-141.25" y="-13" width="282.5" height="24" rx="6" ry="6" fill="#10131a" stroke="#81c995" stroke-width="1.2" filter="drop-shadow(0 2px 8px rgba(0,0,0,0.8))" />
+<text x="0" y="3.5" fill="#81c995" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="600" text-anchor="middle">Preliminary Acoustic Filler (&lt;70ms)</text>
+</g>
+<path d="M 3880 2400 L 3880 2320" fill="none" stroke="#81c995" stroke-width="2.5" opacity="0.85" stroke-dasharray="8 6" class="flow-line" marker-end="url(#arr-green)" />
+<g transform="translate(3880.0, 2360.0)">
+<rect x="-141.25" y="-13" width="282.5" height="24" rx="6" ry="6" fill="#10131a" stroke="#81c995" stroke-width="1.2" filter="drop-shadow(0 2px 8px rgba(0,0,0,0.8))" />
+<text x="0" y="3.5" fill="#81c995" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="600" text-anchor="middle">Continuous Adversarial Verification</text>
+</g>
+</svg>
     </div>
   </div>
 
   <script>
-    // Initialize Mermaid with Dark Theme
-    mermaid.initialize({
-      startOnLoad: true,
-      theme: 'dark',
-      themeVariables: {
-        darkMode: true,
-        background: '#0d0f12',
-        primaryColor: '#1e2433',
-        primaryTextColor: '#ffffff',
-        primaryBorderColor: '#8ab4f8',
-        lineColor: '#8ab4f8',
-        secondaryColor: '#1e2433',
-        tertiaryColor: '#161a24'
-      },
-      flowchart: {
-        useMaxWidth: false,
-        htmlLabels: true,
-        curve: 'basis'
-      }
-    });
-
-    // Pan & Zoom Engine
     const viewport = document.getElementById('viewport');
     const container = document.getElementById('graph-container');
     const zoomText = document.getElementById('zoom-text');
-    const loading = document.getElementById('loading');
 
-    let scale = 0.85;
-    let pointX = 120;
-    let pointY = 80;
+    let scale = 0.35;
+    let pointX = 30;
+    let pointY = 30;
     let isPanning = false;
     let startX = 0;
     let startY = 0;
@@ -474,19 +960,8 @@ graph TD
       zoomText.textContent = `${Math.round(scale * 100)}%`;
     }
 
-    // Hide Loading screen when Mermaid finishes rendering
-    const checkRenderInterval = setInterval(() => {
-      const svg = container.querySelector('svg');
-      if (svg) {
-        clearInterval(checkRenderInterval);
-        loading.style.display = 'none';
-        fitToScreen();
-      }
-    }, 200);
-
-    // Mouse Pan Events
     viewport.addEventListener('mousedown', (e) => {
-      if (e.target.closest('.controls-hud') || e.target.closest('.top-hud')) return;
+      if (e.target.closest('.controls-hud')) return;
       isPanning = true;
       startX = e.clientX - pointX;
       startY = e.clientY - pointY;
@@ -505,7 +980,6 @@ graph TD
       viewport.classList.remove('dragging');
     });
 
-    // Mouse Wheel Zoom (10% to 1000%)
     viewport.addEventListener('wheel', (e) => {
       e.preventDefault();
       const zoomFactor = 1.15;
@@ -513,52 +987,42 @@ graph TD
       const mouseY = e.clientY;
 
       let newScale = e.deltaY < 0 ? scale * zoomFactor : scale / zoomFactor;
-      newScale = Math.min(Math.max(0.1, newScale), 10.0); // 10% to 1000% zoom!
+      newScale = Math.min(Math.max(0.08, newScale), 10.0);
 
       pointX = mouseX - (mouseX - pointX) * (newScale / scale);
       pointY = mouseY - (mouseY - pointY) * (newScale / scale);
       scale = newScale;
-
       updateTransform();
     }, { passive: false });
 
-    // Buttons
     document.getElementById('btn-zoom-in').addEventListener('click', () => {
       scale = Math.min(scale * 1.25, 10.0);
       updateTransform();
     });
-
     document.getElementById('btn-zoom-out').addEventListener('click', () => {
-      scale = Math.max(scale / 1.25, 0.1);
+      scale = Math.max(scale / 1.25, 0.08);
       updateTransform();
     });
-
     document.getElementById('btn-reset').addEventListener('click', () => {
-      scale = 1.0;
-      pointX = 100;
-      pointY = 80;
-      updateTransform();
+      fitToScreen();
     });
 
     function fitToScreen() {
-      const svg = container.querySelector('svg');
-      if (!svg) return;
-      const rect = svg.getBoundingClientRect();
       const vw = window.innerWidth;
       const vh = window.innerHeight;
-
-      const scaleX = (vw - 120) / rect.width;
-      const scaleY = (vh - 120) / rect.height;
-      scale = Math.min(Math.max(Math.min(scaleX, scaleY), 0.2), 1.2);
-
-      pointX = (vw - rect.width * scale) / 2;
-      pointY = (vh - rect.height * scale) / 2;
-      if (pointY < 60) pointY = 80;
-
+      const scaleX = (vw - 60) / 4400;
+      const scaleY = (vh - 60) / 3000;
+      scale = Math.min(Math.max(Math.min(scaleX, scaleY), 0.12), 1.0);
+      pointX = (vw - 4400 * scale) / 2;
+      pointY = (vh - 3000 * scale) / 2;
+      if (pointY < 20) pointY = 20;
       updateTransform();
     }
-
     document.getElementById('btn-fit').addEventListener('click', fitToScreen);
+
+    window.addEventListener('load', () => {
+      fitToScreen();
+    });
   </script>
 </body>
 </html>
