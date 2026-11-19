@@ -106,6 +106,143 @@ def _get_state_dir() -> Path:
     return p
 
 
+def get_last_call_state_path() -> Path:
+    return _get_state_dir() / "last_call_state.json"
+
+
+def save_last_call_state(
+    duration_seconds: int,
+    clean_hangup: bool,
+    direction: str = "incoming",
+    brain: Any = None,
+    peer_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Persists call termination telemetry to disk so subsequent calls have authentic situational memory."""
+    try:
+        end_time = time.time()
+        now_utc = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        last_user_utt = ""
+        last_ai_utt = ""
+        transcript_lines: List[str] = []
+        actions: List[str] = []
+        actions_detail: List[Dict[str, Any]] = []
+
+        if brain:
+            raw_transcripts = getattr(brain, "transcript_log", []) or []
+            transcript_lines = [str(x) for x in raw_transcripts]
+            for line in reversed(transcript_lines):
+                if line.startswith("**Omar:**") and not last_user_utt:
+                    last_user_utt = line.replace("**Omar:**", "").strip()
+                elif line.startswith("**Aethelgard:**") and not last_ai_utt:
+                    last_ai_utt = line.replace("**Aethelgard:**", "").strip()
+                if last_user_utt and last_ai_utt:
+                    break
+
+            for a in getattr(brain, "actions_log", []) or []:
+                tool = a.get("tool") or a.get("name")
+                if tool and tool not in ("end_call", "get_recent_telegram_messages"):
+                    actions.append(tool)
+                    actions_detail.append({
+                        "tool": tool,
+                        "summary": str(a.get("summary") or tool)[:120],
+                        "timestamp": a.get("timestamp", end_time),
+                    })
+
+        state = {
+            "end_time": end_time,
+            "timestamp_iso": now_utc,
+            "duration_seconds": duration_seconds,
+            "clean_hangup": clean_hangup,
+            "direction": direction,
+            "actions": actions,
+            "actions_detail": actions_detail,
+            "last_user_utterance": last_user_utt,
+            "last_ai_utterance": last_ai_utt,
+            "transcript_tail": transcript_lines[-8:],
+            "peer_id": peer_id,
+        }
+
+        p = get_last_call_state_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp_p = p.with_suffix(".tmp")
+        tmp_p.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+        tmp_p.replace(p)
+        return state
+    except Exception as exc:
+        logging.getLogger("telegram_caller").warning(f"Failed to save last_call_state: {exc}")
+        return {}
+
+
+def generate_fallback_greeting() -> str:
+    """Generates a dynamic, varied fallback greeting for TTS when Gemini Live is unavailable."""
+    damascus_tz = datetime.timezone(datetime.timedelta(hours=3))
+    now_damascus = datetime.datetime.now(damascus_tz)
+    hour = now_damascus.hour
+
+    last_state: Dict[str, Any] = {}
+    try:
+        p = get_last_call_state_path()
+        if p.exists():
+            last_state = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+
+    end_time = float(last_state.get("end_time") or 0.0)
+    elapsed_s = time.time() - end_time if end_time > 0 else 999999.0
+    clean_hangup = bool(last_state.get("clean_hangup", True))
+    duration_s = int(last_state.get("duration_seconds", 0))
+
+    if elapsed_s < 180 and not clean_hangup and duration_s > 3:
+        options = [
+            "Omar, did we get cut off, or did you hang up on me? Ready when you are.",
+            "Welcome back, Omar. Lost you for a second there. Where were we?",
+            "Ah, you're back, Sir. The line dropped right as we were speaking.",
+        ]
+        return random.choice(options)
+
+    if elapsed_s < 120 and clean_hangup:
+        options = [
+            "Back already, Sir? Forget something?",
+            "Ah, Omar! Second thought, or did I miss something?",
+            "Hello again, Sir. What came to mind?",
+        ]
+        return random.choice(options)
+
+    if 120 <= elapsed_s < 1800:
+        options = [
+            "Welcome back, Omar. How can I assist?",
+            "Good to have you back, Sir. What's next?",
+            "Aethelgard here, Omar. Ready when you are.",
+        ]
+        return random.choice(options)
+
+    if 5 <= hour < 12:
+        options = [
+            "Good morning, Omar. Ready whenever you are.",
+            "Morning, Sir. How may I be of service today?",
+            "Good morning, Omar. What are we tackling today?",
+        ]
+    elif 12 <= hour < 17:
+        options = [
+            "Good afternoon, Omar. At your service.",
+            "Afternoon, Sir. What are we tackling?",
+            "Good afternoon, Omar. How may I assist you?",
+        ]
+    elif 17 <= hour < 22:
+        options = [
+            "Good evening, Omar. How goes the day?",
+            "Evening, Sir. What can I look into for you?",
+            "Good evening, Omar. At your command.",
+        ]
+    else:
+        options = [
+            "Late hours, Sir. How can I assist you tonight?",
+            "Burning the midnight oil, Omar? What can I do for you?",
+            "Good evening, Sir. Working late tonight—how may I help?",
+        ]
+    return random.choice(options)
+
+
 def get_caller_config_path() -> Path:
     return _get_credentials_dir() / "telegram_caller.json"
 
@@ -2929,7 +3066,9 @@ class TelegramP2PCallManager:
                     asyncio.run_coroutine_threadsafe(bridge.start(), self.loop)
                 except Exception as b_err:
                     self._log_event(f"Failed to start GeminiLiveBridgeSession: {b_err}; falling back to Flash VAD")
-                    opening = ctx.get("opening_prompt") or "Hello Omar, Aethelgard online. Go ahead."
+                    opening = ctx.get("opening_prompt")
+                    if not opening:
+                        opening = generate_fallback_greeting()
                     asyncio.run_coroutine_threadsafe(self._speak_text(peer_id, opening), self.loop)
                     asyncio.run_coroutine_threadsafe(
                         asyncio.to_thread(ctx["brain"].warm_live_context, True),
@@ -3045,7 +3184,8 @@ class TelegramP2PCallManager:
                     caller_id,
                     input_call,
                     phone_call.id,
-                    opening_prompt="Aethelgard listening, Omar. Go ahead.",
+                    opening_prompt="",
+                    direction="incoming",
                 )
 
                 ntg_proto = self.ntg.get_protocol()
@@ -3130,6 +3270,7 @@ class TelegramP2PCallManager:
         input_call: Any,
         tg_call_id: int,
         opening_prompt: str = "",
+        direction: str = "incoming",
     ) -> Dict[str, Any]:
         ctx = {
             "peer_id": peer_id,
@@ -3147,6 +3288,7 @@ class TelegramP2PCallManager:
             "speech_start_logged": False,
             "tx_error_logged": False,
             "opening_prompt": opening_prompt,
+            "direction": direction,
             "started_mono": time.monotonic(),
             "turn_lock": asyncio.Lock(),
             "sender_task": None,
@@ -3214,6 +3356,7 @@ class TelegramP2PCallManager:
                     input_call,
                     call.id,
                     opening_prompt=opening_prompt or "Omar, Aethelgard on the line. Go ahead whenever you're ready.",
+                    direction="outgoing",
                 )
                 self._log_event(f"RequestCallRequest sent id={call.id} state={type(call).__name__}")
                 return {"success": True, "call_id": call.id, "target_user_id": uid, "state": type(call).__name__}
@@ -3448,6 +3591,25 @@ class TelegramP2PCallManager:
             ctx["brain"].flush_transcript_to_vault()
         except Exception:
             pass
+
+        # Persist call telemetry to state for dynamic context-aware greetings
+        try:
+            started_mono = float(ctx.get("started_mono") or time.monotonic())
+            duration = int(time.monotonic() - started_mono)
+            clean = bool(getattr(ctx.get("brain"), "end_call_requested", False))
+            direction = str(ctx.get("direction") or "incoming")
+            save_last_call_state(
+                duration_seconds=duration,
+                clean_hangup=clean,
+                direction=direction,
+                brain=ctx.get("brain"),
+                peer_id=peer_id,
+            )
+            self._log_event(
+                f"Saved last_call_state duration={duration}s clean={clean} dir={direction}"
+            )
+        except Exception as st_err:
+            self._log_event(f"Notice: last_call_state save error: {st_err}")
 
 
 # ==============================================================================

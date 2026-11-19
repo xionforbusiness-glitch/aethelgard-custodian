@@ -13,12 +13,14 @@ over full-duplex WebSockets with:
 
 import array
 import asyncio
+import datetime
 import io
 import json
 import logging
 import os
 import sys
 import time
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from google import genai
@@ -286,6 +288,110 @@ def get_live_tools() -> List[types.Tool]:
     ]
 
 
+def _get_last_call_state_path() -> Path:
+    override = os.environ.get("AETHELGARD_STATE_DIR")
+    if override:
+        p = Path(os.path.expanduser(override))
+    else:
+        home = os.environ.get("AETHELGARD_HOME")
+        base = Path(os.path.expanduser(home)) if home else (Path.home() / ".aethelgard")
+        p = base / "state"
+    p.mkdir(parents=True, exist_ok=True)
+    return p / "last_call_state.json"
+
+
+def generate_dynamic_live_greeting_prompt(call_ctx: Dict[str, Any], brain: Any = None) -> str:
+    """Generates a dynamic, context-aware instruction for Gemini Live to greet Omar naturally,
+    accounting for abrupt call drops, rapid redials, Damascus local time, and previous actions."""
+    # 1. Damascus local time (UTC+3)
+    damascus_tz = datetime.timezone(datetime.timedelta(hours=3))
+    now_damascus = datetime.datetime.now(damascus_tz)
+    hour = now_damascus.hour
+    time_str = now_damascus.strftime("%I:%M %p")
+    if 5 <= hour < 12:
+        period = "morning"
+    elif 12 <= hour < 17:
+        period = "afternoon"
+    elif 17 <= hour < 22:
+        period = "evening"
+    else:
+        period = "late night"
+
+    # 2. Read last call state
+    last_state: Dict[str, Any] = {}
+    try:
+        p = _get_last_call_state_path()
+        if p.exists():
+            last_state = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+
+    end_time = float(last_state.get("end_time") or 0.0)
+    elapsed_s = time.time() - end_time if end_time > 0 else 999999.0
+    clean_hangup = bool(last_state.get("clean_hangup", True))
+    duration_s = int(last_state.get("duration_seconds", 0))
+    last_user_utt = str(last_state.get("last_user_utterance") or "").strip()
+    actions = last_state.get("actions") or []
+    actions_str = ", ".join(actions) if actions else ""
+
+    # Case A: Abrupt drop / hung up in face within 3 minutes (180s)
+    if elapsed_s < 180 and not clean_hangup and duration_s > 3:
+        context_hint = f' Omar\'s last words before the cutoff: "{last_user_utt}".' if last_user_utt else ""
+        return (
+            f"(SYSTEM NOTIFICATION: Omar reconnected {int(elapsed_s)} seconds after the previous call was abruptly cut off or dropped mid-conversation.{context_hint} "
+            "Omar either hung up in your face or the Telegram VoIP line dropped. "
+            "Greet Omar immediately with quick British butler wit, warmth, and authentic personality. "
+            "Examples of natural greetings: "
+            "'Did the line give out, Omar, or did you hang up on me?' or "
+            "'Welcome back, Sir—we got cut off there. Where were we?' or "
+            "'Ah, you\\'re back! Lost you for a second there. Ready to continue.' "
+            "If Omar speaks Arabic: 'يا هلا عمر، انقطع الخط بينا ولا فصلت بوجهي؟ تفضل كمل معك.' "
+            "CRITICAL: Keep your greeting under 10 words. Absolutely NO robotic or canned phrases. Speak authentically like a real personal assistant.)"
+        )
+
+    # Case B: Rapid redial within 2 minutes (120s) after a clean farewell
+    if elapsed_s < 120 and clean_hangup:
+        return (
+            f"(SYSTEM NOTIFICATION: Omar just dialed right back {int(elapsed_s)} seconds after saying goodbye and concluding the last call. "
+            "Greet him with authentic butler charm, reacting naturally to the quick return. "
+            "Examples: "
+            "'Back already, Sir? Forget something?' or "
+            "'Ah, Omar! Second thought, or did I miss something?' or "
+            "'Hello again, Sir. What came to mind?' "
+            "If Omar speaks Arabic: 'أهلاً من جديد عمر، نسيت شي ولا تذكرت شغلة؟ تفضل معك.' "
+            "CRITICAL: Keep your greeting under 8 words. Be natural, spontaneous, zero robotic phrasing.)"
+        )
+
+    # Case C: Follow-up call within 30 minutes (120s to 1800s)
+    if 120 <= elapsed_s < 1800:
+        mins = max(1, int(elapsed_s // 60))
+        act_hint = f" Recent actions underway: {actions_str}." if actions_str else ""
+        return (
+            f"(SYSTEM NOTIFICATION: Omar is calling back {mins} minutes after your previous call.{act_hint} "
+            "Greet him warmly and naturally as his executive custodian. "
+            "Examples: "
+            "'Welcome back, Omar. How can I assist?' or "
+            "'Good to have you back, Sir. What\\'s next?' or "
+            "'Aethelgard here, Omar. Ready when you are.' "
+            "If Omar speaks Arabic: 'أهلاً بعودتك عمر، تفضل معك شو في جديد؟' "
+            "CRITICAL: Keep greeting under 8 words. Completely spontaneous, zero repetitive scripts.)"
+        )
+
+    # Case D: Fresh call (>30 minutes or first call)
+    return (
+        f"(SYSTEM NOTIFICATION: Omar just connected a live call. Damascus local time is {time_str} ({period}). "
+        "Greet Omar with a crisp, authentic, spontaneous British greeting tailored to this time of day. "
+        "VIBE & STYLE GUIDELINES: "
+        f"- Late night ({time_str}): 'Late hours, Sir. How can I assist you tonight?' or 'Burning the midnight oil, Omar? What can I do for you?' "
+        f"- Morning ({time_str}): 'Good morning, Omar. Ready whenever you are.' or 'Morning, Sir. How may I be of service today?' "
+        f"- Afternoon ({time_str}): 'Good afternoon, Omar. At your service.' or 'Afternoon, Sir. What are we tackling?' "
+        f"- Evening ({time_str}): 'Good evening, Omar. How goes the day?' or 'Evening, Sir. What can I look into for you?' "
+        "If Omar speaks Arabic: 'يسعد مساك عمر' / 'صباح الخير عمر' / 'أهلاً وسهلاً عمر، تفضل معك.' "
+        "STRICT PROHIBITION: NEVER use canned phrases like 'Aethelgard listening, Omar. Go ahead.' or 'Hello Omar, Aethelgard online and at your service.' "
+        "CRITICAL: Speak immediately in under 8 words. Punchy, authentic, conversational, and ready for action.)"
+    )
+
+
 class GeminiLiveBridgeSession:
     """
     Manages an active real-time bidirectional audio session between Telegram VoIP and Gemini 3.8 Live.
@@ -378,7 +484,8 @@ class GeminiLiveBridgeSession:
                 "5. When Omar says 'goodbye', 'end the call', 'hang up', or 'talk later', call `end_call` and say farewell. "
                 "6. If Omar mentions having sent or pasted notes, airline lists, documents, or texts in the chat ('I pasted them in the bot', 'check the chat', 'can you see them now?', 'I sent them'), IMMEDIATELY call `get_recent_telegram_messages` to read what he provided. "
                 "7. If Omar asks you to call him back later or in a few minutes ('call me in 5 minutes', 'call me back'), call `schedule_callback` or specify `callback_minutes` in `end_call`, and confirm the callback time before hanging up. "
-                "8. NATURAL CONVERSATIONAL STYLE & ZERO-ROBOTIC VARIETY: NEVER sound like a scripted IVR robot repeating canned lines like 'Right away, Sir. I have initiated...' or 'Consider it underway...'. When taking on a task, respond authentically, sharply, and spontaneously like a real trusted partner ('Got it, Sir, I\\'ll do that right now', 'I got you. Setting that in motion—what\\'s next?', 'Leave that with me, Omar. I\\'ll get those rolling while we talk', 'All over it. Go ahead, I\\'m listening'). If speaking Syrian Arabic: 'تكرم عينك، فوراً عم جهزلك ياهن، كمل معي شو في كمان؟' أو 'صار عندك، شغال عليهن هلق.' Heavy tasks run asynchronously in the background, so acknowledge the job in 1-2 punchy, natural words and keep the dialogue flowing smoothly with zero dead air!"
+                "8. NATURAL CONVERSATIONAL STYLE & ZERO-ROBOTIC VARIETY: NEVER sound like a scripted IVR robot repeating canned lines like 'Right away, Sir. I have initiated...' or 'Consider it underway...'. When taking on a task, respond authentically, sharply, and spontaneously like a real trusted partner ('Got it, Sir, I\\'ll do that right now', 'I got you. Setting that in motion—what\\'s next?', 'Leave that with me, Omar. I\\'ll get those rolling while we talk', 'All over it. Go ahead, I\\'m listening'). If speaking Syrian Arabic: 'تكرم عينك، فوراً عم جهزلك ياهن، كمل معي شو في كمان؟' أو 'صار عندك، شغال عليهن هلق.' Heavy tasks run asynchronously in the background, so acknowledge the job in 1-2 punchy, natural words and keep the dialogue flowing smoothly with zero dead air! "
+                "9. DYNAMIC GREETING & CALL STATE MEMORY: Every time a call connects, greet Omar with spontaneous, contextual variety. If the previous call was cut off abruptly or he hung up unexpectedly, acknowledge it naturally or ask with subtle wit if the line dropped or if he hung up on you. If he redials right after saying goodbye, acknowledge the quick return ('Back already, Sir?'). Always adapt to the local time in Damascus and current tasks. NEVER repeat identical canned greeting phrases like 'Aethelgard listening, Omar' or 'online and at your service'."
             )
             if recent_context_blob:
                 system_instruction += f"\n\nContext Snapshot at Call Connect:\n{recent_context_blob}"
@@ -409,9 +516,18 @@ class GeminiLiveBridgeSession:
             self._receive_task = asyncio.create_task(self._receive_loop())
             self._send_task = asyncio.create_task(self._send_audio_loop())
 
-            # Send opening greeting prompt to trigger immediate spoken greeting
-            opening = self.call_ctx.get("opening_prompt") or "Hello Omar, Aethelgard online and at your service."
-            await self.session.send_realtime_input(text=f"(Omar just connected the call. Greet him briefly: '{opening}')")
+            # Send dynamic, context-aware opening prompt to trigger immediate authentic spoken greeting
+            explicit_opening = str(self.call_ctx.get("opening_prompt") or "").strip()
+            if explicit_opening and "calling you back as promised" in explicit_opening:
+                opening_instruction = (
+                    f"(SYSTEM NOTIFICATION: Omar just answered your scheduled callback call. "
+                    f"Speak to him immediately and courteously: '{explicit_opening}')"
+                )
+            else:
+                opening_instruction = generate_dynamic_live_greeting_prompt(self.call_ctx, self.brain)
+
+            self.log(f"Dispatching dynamic opening prompt instruction: {opening_instruction[:120]}...")
+            await self.session.send_realtime_input(text=opening_instruction)
 
             return True
         except Exception as exc:
