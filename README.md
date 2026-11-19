@@ -1,6 +1,7 @@
 # 🏛️ Aethelgard: 24/7 Autonomous Vault Custodian & Real-Time Telephony Engine
 
 [![Google Antigravity Pro Plan](https://img.shields.io/badge/Brain-Google_Antigravity_Pro_Plan-4285F4?style=for-the-badge&logo=google)](https://deepmind.google)
+[![Live Voice](https://img.shields.io/badge/Live_Voice-Gemini_3.8_Live_(Native_Audio)-00C853?style=for-the-badge&logo=google)](https://deepmind.google)
 [![Model](https://img.shields.io/badge/Model-Gemini_3.8_Flash_High_(1M_Context)-34A853?style=for-the-badge)](https://deepmind.google)
 [![Fallback Model](https://img.shields.io/badge/Fallback-Claude_Sonnet_4.6_Thinking-D97706?style=for-the-badge)](https://anthropic.com)
 [![Telegram Engine](https://img.shields.io/badge/Voice_Telephony-Telegram_VoIP_(MTProto)-24A1DE?style=for-the-badge&logo=telegram)](https://t.me/aethelgard_vault_bot)
@@ -29,15 +30,17 @@
 
 ## ⚡ Core Innovations
 
-1. **Sub-70ms Conversational Latency (Zero Dead Air):**
+1. **Native Gemini 3.8 Live Full-Duplex Audio Engine:**
+   - Powered by Google Gemini 3.8 Live (`gemini-3.8-live`) on Vertex AI with the native `Charon` British butler voice preset. Operates directly over full-duplex WebRTC (NTgCalls) with dynamic RMS acoustic feedback gating ($>520\text{ RMS}$ threshold), sub-second conversational latency, true conversational barge-in, and millisecond autonomous tool execution (`save_gmail_draft`, `check_gmail`, `end_call`) directly inside Telegram voice calls.
+2. **Sub-70ms Conversational Latency (Zero Dead Air):**
    - By interleaving low-overhead Voice Activity Detection (450ms RMS threshold) with an instantaneous acoustic filler generator ("*Understood, looking into that right away...*"), Aethelgard completely eliminates awkward conversational dead air while the underlying frontier LLM streams complex reasoning tokens.
-2. **Native Full-Duplex VoIP Telephony:**
+3. **Native Full-Duplex VoIP Telephony:**
    - Runs directly on Telegram's native VoIP infrastructure via MTProto and PyTgCalls / NTgCalls, enabling crisp, natural phone conversations with ambient barge-in interruption handling.
-3. **Deterministic Verbal Gatekeeper:**
+4. **Deterministic Verbal Gatekeeper:**
    - Any high-impact action (dispatching flight updates, sending staged emails, writing promises, or altering infrastructure) requires an explicit two-step readback protocol. Relayed verbal approvals, vague consent, or social engineering attacks are rejected deterministically.
-4. **Resilient Local Gateway (`:20128`):**
+5. **Resilient Local Gateway (`:20128`):**
    - An in-process, circuit-broken proxy provides dynamic model remapping, automatic OAuth token refresh cycles (every 20 minutes), thought-leak filtering, and instant failover between Gemini 3.8 Flash, Claude Sonnet 4.6 Thinking, and local neural speech engines.
-5. **Bidirectional Obsidian Vault Persistence:**
+6. **Bidirectional Obsidian Vault Persistence:**
    - Continuously synchronizes markdown notes, attendance records, promise ledgers, and operational briefings with [`aethelgard-vault`](https://github.com/xionforbusiness-glitch/aethelgard-vault) via automated atomic 3-minute git merges (`git -X ours`).
 
 ---
@@ -95,36 +98,30 @@ flowchart TD
 
 ## 🎙️ Voice Telephony & Latency Pipeline
 
-In real-world voice interaction, delays exceeding 200ms degrade user experience. Aethelgard achieves human-level conversational fluidity by executing acoustic response streaming concurrently with deep neural inference:
+Aethelgard features two high-performance voice telephony architectures:
+1. **Primary: Native Gemini 3.8 Live Engine (`gemini-3.8-live` on Vertex AI)**  
+   - End-to-end full-duplex speech-to-speech with Google's native `Charon` British butler voice persona.
+   - Operates over bidirectional WebRTC using NTgCalls (48 kHz mono PCM, 10ms / 960-byte frame budget).
+   - In-process acoustic RMS feedback gate ($>520\text{ RMS}$) eliminates self-interruption from phone speaker bleed.
+   - Autonomous millisecond tool execution (`save_gmail_draft`, `check_gmail`, `end_call`) executed mid-call with spoken confirmation.
+2. **Fallback: Low-Latency Sequential Pipeline (STT $\rightarrow$ LLM $\rightarrow$ TTS)**  
+   - 450ms RMS VAD with instant acoustic filler generation (<70ms TTFV) backed by the `:20128` local gateway proxy.
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Omar as 👤 Omar (Caller)
-    participant Telephony as 📞 VoIP Telephony Worker
-    participant VAD as 🎙️ 450ms RMS VAD
-    participant Gateway as 🛡️ Gateway Proxy (:20128)
-    participant LLM as 🧠 Gemini 3.8 Flash High
-    participant TTS as 🔊 Neural Audio Synthesizer
+    actor Omar as 👤 Omar (Telegram Voice)
+    participant Bridge as 🎛️ NTgCalls VoIP Bridge (48kHz)
+    participant Gemini as 🧠 Gemini 3.8 Live (Charon Preset)
+    participant Tools as ⚡ Autonomous Tools (Gmail / Vault)
 
-    Omar->>Telephony: "Good morning Aethelgard. Give me Damascus weather and my shift schedule."
-    Telephony->>VAD: Stream 10ms raw PCM audio chunks
-    VAD-->>Telephony: Speech End Detected (450ms silence threshold)
-    
-    par Instant Acoustic Feedback (< 70ms)
-        Telephony->>TTS: Trigger preliminary acoustic filler
-        TTS-->>Telephony: Synthesized PCM filler audio
-        Telephony-->>Omar: "Good morning Omar, looking into that right away..."
-    and Frontier Cognitive Inference
-        Telephony->>Gateway: POST /v1/chat/completions (Lean pruned context <1,500 tokens)
-        Gateway->>LLM: Stream inference with thought-leak filter
-        LLM-->>Gateway: Yield verified operational response
-        Gateway-->>Telephony: Streaming complete
-    end
-
-    Telephony->>TTS: Stream operational response clauses in parallel
-    TTS-->>Telephony: 960-byte PCM audio frames
-    Telephony-->>Omar: "Damascus runway weather is CAVOK with gentle northerly winds. Your shift..."
+    Omar->>Bridge: Spoken command (e.g. "Draft me a test email...")
+    Bridge->>Gemini: Stream 16kHz PCM audio stream via WebSocket
+    Note over Gemini: Native Speech-to-Speech Understanding
+    Gemini->>Tools: Tool Call: save_gmail_draft(subject='test', body='test')
+    Tools-->>Gemini: Tool Result: {'success': True, 'platform': 'gmail'}
+    Gemini-->>Bridge: 24kHz Audio Stream (Charon Voice)
+    Bridge-->>Omar: 48kHz 10ms PCM Frames: "Consider it done, Sir. I have created that draft..."
 ```
 
 ---
