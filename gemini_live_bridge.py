@@ -483,7 +483,9 @@ class GeminiLiveBridgeSession:
         """Allows farewell audio to play on Omar's phone before hanging up."""
         await asyncio.sleep(delay)
         if self.hangup_cb and not self.is_closing:
-            await self.hangup_cb()
+            res = self.hangup_cb()
+            if asyncio.iscoroutine(res):
+                await res
 
     async def close(self) -> None:
         """Gracefully closes Gemini Live WebSocket session and cancels background tasks."""
