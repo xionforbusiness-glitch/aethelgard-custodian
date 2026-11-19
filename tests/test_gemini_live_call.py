@@ -99,18 +99,20 @@ async def run_simulated_call_test():
         hangup_cb=on_hangup,
     )
 
-    # Audio recorder task: collects all 48kHz audio frames from out_queue
+    # Audio recorder task: mirrors _audio_sender_loop with realistic 10ms pacing
     recorded_audio = bytearray()
     recording_active = True
 
     async def audio_recorder_worker():
         while recording_active or not out_queue.empty():
             try:
-                frame = await asyncio.wait_for(out_queue.get(), timeout=0.1)
+                frame = out_queue.get_nowait()
                 call_ctx["ai_speaking"] = True
                 recorded_audio.extend(frame)
-            except asyncio.TimeoutError:
+                await asyncio.sleep(0.010)
+            except asyncio.QueueEmpty:
                 call_ctx["ai_speaking"] = False
+                await asyncio.sleep(0.020)
             except Exception:
                 break
         call_ctx["ai_speaking"] = False
@@ -127,9 +129,11 @@ async def run_simulated_call_test():
 
     print("✅ Connected to Gemini 3.8 Live WebSocket successfully!")
 
-    # Wait 3.0s for opening greeting to be spoken and captured
-    print("⏳ Waiting for initial spoken greeting...")
-    await asyncio.sleep(3.5)
+    # Wait for opening greeting audio to drain completely
+    print("⏳ Waiting for initial spoken greeting to finish playing...")
+    while call_ctx["ai_speaking"] or not out_queue.empty():
+        await asyncio.sleep(0.2)
+    await asyncio.sleep(0.5)
 
     # 2. Synthesize speech for Turn 1: Omar asking to save a draft email about animals
     print("\n2. Synthesizing Turn 1: 'Aethelgard, please save a draft email about animals.'")
@@ -143,17 +147,16 @@ async def run_simulated_call_test():
         bridge.feed_incoming_frame_48k(frame)
         await asyncio.sleep(0.010)
 
-    # Send 1.2s silence to trigger turn complete
+    # Send 1.5s silence to trigger turn complete
     silence_frame = b"\x00" * 960
-    for _ in range(120):
+    for _ in range(150):
         bridge.feed_incoming_frame_48k(silence_frame)
         await asyncio.sleep(0.010)
 
     print("   Turn 1 speech streamed. Waiting for Aethelgard tool execution and verbal response...")
-    # Wait for response and tool execution
     t0 = time.monotonic()
     draft_detected = False
-    while time.monotonic() - t0 < 8.0:
+    while time.monotonic() - t0 < 10.0:
         if brain.actions_log and any(a.get("tool") == "save_gmail_draft" for a in brain.actions_log):
             draft_detected = True
             break
@@ -164,8 +167,11 @@ async def run_simulated_call_test():
     else:
         print("⚠️ Warning: save_gmail_draft not yet detected in actions_log.")
 
-    # Allow response audio to finish playing
-    await asyncio.sleep(3.5)
+    # Wait for response audio to finish playing
+    print("⏳ Waiting for Aethelgard's verbal draft confirmation to finish playing...")
+    while call_ctx["ai_speaking"] or not out_queue.empty():
+        await asyncio.sleep(0.2)
+    await asyncio.sleep(0.5)
 
     # 3. Synthesize speech for Turn 2: Omar saying "Thank you Aethelgard, please end the call."
     print("\n3. Synthesizing Turn 2: 'Thank you Aethelgard, that will be all. Please end the call.'")
@@ -178,13 +184,13 @@ async def run_simulated_call_test():
         bridge.feed_incoming_frame_48k(frame)
         await asyncio.sleep(0.010)
 
-    for _ in range(120):
+    for _ in range(150):
         bridge.feed_incoming_frame_48k(silence_frame)
         await asyncio.sleep(0.010)
 
     print("   Waiting for Aethelgard farewell and end_call hangup...")
     try:
-        await asyncio.wait_for(hangup_event.wait(), timeout=8.0)
+        await asyncio.wait_for(hangup_event.wait(), timeout=10.0)
         print("🎯 SUCCESS: end_call hangup triggered cleanly!")
     except asyncio.TimeoutError:
         print("⚠️ Hangup event timed out, closing bridge manually.")

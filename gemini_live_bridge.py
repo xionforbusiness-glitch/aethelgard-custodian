@@ -319,12 +319,15 @@ class GeminiLiveBridgeSession:
         """Pumps downsampled 16kHz audio from Telegram into Gemini Live WebSocket."""
         try:
             while self.is_connected and not self.is_closing:
-                # Batch up to 3 chunks (~60ms) if queued to avoid micro-socket thrashing
+                # Batch 30ms to 60ms (960 to 1920 bytes) to prevent socket flooding and ensure smooth VAD
                 chunk = await self._send_queue.get()
                 buf = bytearray(chunk)
-                while not self._send_queue.empty() and len(buf) < 1920:
+                while len(buf) < 960 and not self.is_closing:
                     try:
-                        buf.extend(self._send_queue.get_nowait())
+                        next_chunk = await asyncio.wait_for(self._send_queue.get(), timeout=0.035)
+                        buf.extend(next_chunk)
+                    except asyncio.TimeoutError:
+                        break
                     except Exception:
                         break
 
@@ -392,6 +395,9 @@ class GeminiLiveBridgeSession:
                     if sc.interrupted:
                         self.log("Cloud VAD: Interruption detected! Purging playback audio queue.")
                         self._purge_telegram_audio()
+
+                    if sc.turn_complete:
+                        self.log("Gemini model turn complete.")
 
                 # 4. Tool Calls
                 tc = resp.tool_call
