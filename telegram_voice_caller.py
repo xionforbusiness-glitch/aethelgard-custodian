@@ -1424,19 +1424,27 @@ class VoiceBrainSession:
                                 raw_email_bytes = msg_data[0][1]
                                 parsed_msg = email.message_from_bytes(raw_email_bytes)
 
-                                msg_to = parsed_msg.get("To", "")
-                                msg_subj = parsed_msg.get("Subject", "")
+                                msg_to = parsed_msg.get("To", "").strip()
+                                msg_subj = parsed_msg.get("Subject", "").strip()
                                 combined_check = f"{msg_to} {msg_subj}".lower()
 
                                 matches = False
-                                if recipient and recipient in msg_to.lower():
-                                    matches = True
+                                if recipient:
+                                    if recipient in msg_to.lower():
+                                        matches = True
                                 elif airline_or_company and airline_or_company in combined_check:
                                     matches = True
-                                elif query and query in combined_check:
+                                elif query and query in combined_check and ("@" in msg_to):
                                     matches = True
 
                                 if matches:
+                                    if not msg_to and recipient:
+                                        msg_to = recipient
+                                        parsed_msg["To"] = recipient
+
+                                    if not msg_to or "@" not in msg_to:
+                                        continue
+
                                     with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=25) as server:
                                         server.login(sender_email, app_pw)
                                         server.send_message(parsed_msg)
