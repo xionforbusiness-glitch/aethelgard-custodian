@@ -30,8 +30,8 @@ logger = logging.getLogger("gemini_live_bridge")
 TELEGRAM_SAMPLE_RATE = 48000
 GEMINI_INPUT_SAMPLE_RATE = 16000
 GEMINI_OUTPUT_SAMPLE_RATE = 24000
-FRAME_MS = 20
-TELEGRAM_FRAME_BYTES = (TELEGRAM_SAMPLE_RATE * 2 * FRAME_MS) // 1000  # 1920 bytes
+FRAME_MS = 10
+TELEGRAM_FRAME_BYTES = (TELEGRAM_SAMPLE_RATE * 2 * FRAME_MS) // 1000  # 960 bytes (NTgCalls strictly requires 10ms frames)
 
 
 def downsample_48k_to_16k(pcm_48k: bytes) -> bytes:
@@ -47,6 +47,21 @@ def downsample_48k_to_16k(pcm_48k: bytes) -> bytes:
     if sys.byteorder != "little":
         dst.byteswap()
     return dst.tobytes()
+
+
+def pcm16_rms(pcm_bytes: bytes) -> float:
+    """Computes Root Mean Square (energy) of raw 16-bit PCM bytes."""
+    if not pcm_bytes:
+        return 0.0
+    usable = len(pcm_bytes) - (len(pcm_bytes) % 2)
+    if usable <= 0:
+        return 0.0
+    s = array.array("h")
+    s.frombytes(pcm_bytes[:usable])
+    if sys.byteorder != "little":
+        s.byteswap()
+    sum_sq = sum(sample * sample for sample in s)
+    return (sum_sq / len(s)) ** 0.5
 
 
 def upsample_24k_to_48k(pcm_24k: bytes) -> bytes:
@@ -199,6 +214,7 @@ class GeminiLiveBridgeSession:
         self._audio_buffer_48k = bytearray()
         self._start_mono = time.monotonic()
         self._warned_14m = False
+        self._barge_streak_frames = 0
 
     def log(self, text: str) -> None:
         self.log_cb(f"[GeminiLive] {text}")
@@ -270,6 +286,27 @@ class GeminiLiveBridgeSession:
         """Called whenever a 48kHz audio frame arrives from Omar's Telegram microphone."""
         if not self.is_connected or self.is_closing:
             return
+
+        # Acoustic Echo Suppression:
+        # When Aethelgard is speaking out of Omar's phone speaker,
+        # the phone microphone unavoidably picks up the acoustic bleed (~100-350 RMS).
+        # We must suppress this speaker bleed while ai_speaking is True, otherwise Gemini Live's
+        # cloud VAD hears its own voice, falsely flags an interruption, cuts itself off mid-sentence,
+        # and gets trapped in an echo loop saying "I am listening, go ahead".
+        # We only permit audio during playback if the caller speaks loudly (> 520 RMS)
+        # for multiple consecutive frames (> 200ms) to indicate an intentional human barge-in.
+        ai_speaking = bool(self.call_ctx.get("ai_speaking", False))
+        if ai_speaking:
+            rms = pcm16_rms(pcm_48k)
+            if rms < 520.0:
+                self._barge_streak_frames = 0
+                return  # Drop speaker echo
+            self._barge_streak_frames += 1
+            if self._barge_streak_frames < 20:  # Require at least ~200ms sustained loud speech
+                return
+        else:
+            self._barge_streak_frames = 0
+
         # Downsample 48kHz -> 16kHz PCM
         pcm_16k = downsample_48k_to_16k(pcm_48k)
         if pcm_16k:
@@ -423,6 +460,8 @@ class GeminiLiveBridgeSession:
     def _purge_telegram_audio(self) -> None:
         """Purges any pending playback audio in Telegram's output queue for instant barge-in."""
         self._audio_buffer_48k.clear()
+        if self.call_ctx:
+            self.call_ctx["ai_speaking"] = False
         out_q: asyncio.Queue = self.call_ctx.get("out_queue")
         if out_q is not None:
             while not out_q.empty():

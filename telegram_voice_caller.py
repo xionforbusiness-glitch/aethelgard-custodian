@@ -2112,8 +2112,8 @@ class TelegramP2PCallManager:
                 for fr in frames or []:
                     raw = bytes(getattr(fr, "data", b""))
                     if raw:
-                        if not ctx.get("rx_logged"):
-                            ctx["rx_logged"] = True
+                        if not ctx.get("live_rx_logged"):
+                            ctx["live_rx_logged"] = True
                             self._log_event(f"Gemini Live RX active peer={peer_id} bytes={len(raw)}")
                         live_bridge.feed_incoming_frame_48k(raw)
                 return
