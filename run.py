@@ -9,6 +9,15 @@
 import os
 import re
 import sys
+
+# ── 0. New Relic APM Telemetry ─────────────────────────────────────────────────
+try:
+    import newrelic.agent
+    _nr_ini = os.path.join(os.path.dirname(os.path.abspath(__file__)), "newrelic.ini")
+    if os.path.exists(_nr_ini):
+        newrelic.agent.initialize(_nr_ini)
+except Exception:
+    pass
 import time
 import json
 import gzip
