@@ -3,1624 +3,562 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Aethelgard Master Topology & Evolutionary Blueprint</title>
+  <title>Aethelgard Master Topology Graph</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Google+Sans+Display:wght@500;700&family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet" />
 
+  <!-- Mermaid CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+
   <style>
-    /* ==========================================================================
-       GOOGLE DEEPIND / MATERIAL 3 DARK THEME DESIGN TOKENS
-       ========================================================================== */
     :root {
-      /* Backgrounds & Surfaces */
-      --g-bg-base: #0e1013;
-      --g-bg-canvas: #121418;
-      --g-surface-1: #1a1d24;
-      --g-surface-2: #222630;
-      --g-surface-3: #2a2f3c;
-      --g-surface-card: rgba(26, 29, 36, 0.85);
-      --g-surface-glass: rgba(22, 25, 32, 0.75);
-
-      /* Google Iconic Quad-Color Palette (Refined DeepMind Dark Tones) */
-      --g-blue: #4285F4;
-      --g-blue-light: #8ab4f8;
-      --g-blue-glow: rgba(66, 133, 244, 0.35);
-
-      --g-red: #EA4335;
-      --g-red-light: #f28b82;
-      --g-red-glow: rgba(234, 67, 53, 0.35);
-
-      --g-yellow: #FBBC05;
-      --g-yellow-light: #fdd663;
-      --g-yellow-glow: rgba(251, 188, 5, 0.35);
-
-      --g-green: #34A853;
-      --g-green-light: #81c995;
-      --g-green-glow: rgba(52, 168, 83, 0.35);
-
-      --g-purple: #A142F4;
-      --g-purple-light: #c58af9;
-      --g-purple-glow: rgba(161, 66, 244, 0.35);
-
-      --g-cyan: #00bcd4;
-      --g-cyan-light: #80deea;
-      --g-cyan-glow: rgba(0, 188, 212, 0.35);
-
-      /* Typography & Borders */
-      --g-text-primary: #f1f3f4;
-      --g-text-secondary: #bdc1c6;
-      --g-text-muted: #80868b;
-      --g-border: rgba(255, 255, 255, 0.08);
-      --g-border-hover: rgba(255, 255, 255, 0.22);
-
-      --font-display: 'Google Sans Display', 'Plus Jakarta Sans', system-ui, sans-serif;
-      --font-ui: 'Google Sans', 'Plus Jakarta Sans', system-ui, sans-serif;
-      --font-mono: 'JetBrains Mono', monospace;
+      --bg: #0d0f12;
+      --surface: #16181d;
+      --border: rgba(255, 255, 255, 0.12);
+      --text: #f0f2f5;
+      --text-muted: #9aa0a6;
+      --blue: #8ab4f8;
+      --green: #81c995;
     }
 
     * {
       box-sizing: border-box;
       margin: 0;
       padding: 0;
+      user-select: none;
     }
 
-    body {
-      background-color: var(--g-bg-base);
-      color: var(--g-text-primary);
-      font-family: var(--font-ui);
-      overflow-x: hidden;
-      min-height: 100vh;
-      -webkit-font-smoothing: antialiased;
-      line-height: 1.5;
+    body, html {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background-color: var(--bg);
+      font-family: 'Google Sans', system-ui, sans-serif;
+      color: var(--text);
     }
 
-    /* Ambient Blueprint Dot Grid */
-    .blueprint-bg {
-      position: fixed;
+    /* Subtle Blueprint Dot Grid */
+    .grid-bg {
+      position: absolute;
       inset: 0;
       background-image: 
-        radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.04) 1px, transparent 0),
-        linear-gradient(to right, rgba(255, 255, 255, 0.015) 1px, transparent 1px),
-        linear-gradient(to bottom, rgba(255, 255, 255, 0.015) 1px, transparent 1px);
-      background-size: 32px 32px, 128px 128px, 128px 128px;
+        radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.05) 1px, transparent 0),
+        linear-gradient(to right, rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+      background-size: 24px 24px, 120px 120px, 120px 120px;
       pointer-events: none;
       z-index: 0;
     }
 
-    /* Main Container */
-    .app-container {
-      position: relative;
+    /* Viewport & Pan-Zoom Canvas */
+    #viewport {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+      cursor: grab;
       z-index: 1;
-      display: flex;
-      flex-direction: column;
-      min-height: 100vh;
     }
 
-    /* Header Nav Bar */
-    header {
-      position: sticky;
-      top: 0;
-      z-index: 100;
-      background: rgba(14, 16, 19, 0.88);
-      backdrop-filter: blur(20px);
-      border-bottom: 1px solid var(--g-border);
-      padding: 14px 32px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
+    #viewport.dragging {
+      cursor: grabbing;
     }
 
-    .brand-group {
-      display: flex;
-      align-items: center;
-      gap: 16px;
+    #graph-container {
+      position: absolute;
+      transform-origin: 0 0;
+      padding: 100px;
+      transition: transform 0.05s ease-out;
     }
 
-    .brand-logo {
-      width: 44px;
-      height: 44px;
+    /* Floating Top HUD Bar */
+    .top-hud {
+      position: fixed;
+      top: 16px;
+      left: 20px;
+      z-index: 10;
+      background: rgba(22, 24, 29, 0.88);
+      backdrop-filter: blur(16px);
+      border: 1px solid var(--border);
       border-radius: 12px;
-      background: linear-gradient(135deg, #1e2538 0%, #151821 100%);
-      border: 1px solid rgba(255, 255, 255, 0.12);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      box-shadow: 0 0 20px var(--g-blue-glow);
-    }
-
-    .brand-logo .google-dots {
-      display: grid;
-      grid-template-columns: repeat(2, 8px);
-      gap: 4px;
-    }
-
-    .brand-logo .dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-    }
-
-    .dot-blue { background: var(--g-blue); }
-    .dot-red { background: var(--g-red); }
-    .dot-yellow { background: var(--g-yellow); }
-    .dot-green { background: var(--g-green); }
-
-    .brand-title h1 {
-      font-family: var(--font-display);
-      font-size: 20px;
-      font-weight: 700;
-      letter-spacing: -0.02em;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-
-    .brand-title .version-tag {
-      font-family: var(--font-mono);
-      font-size: 11px;
-      font-weight: 600;
-      background: rgba(66, 133, 244, 0.15);
-      color: var(--g-blue-light);
-      border: 1px solid rgba(66, 133, 244, 0.3);
-      padding: 2px 8px;
-      border-radius: 20px;
-    }
-
-    .brand-subtitle {
-      font-size: 12px;
-      color: var(--g-text-muted);
-      letter-spacing: 0.02em;
-    }
-
-    .header-actions {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-    }
-
-    .live-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      background: rgba(52, 168, 83, 0.12);
-      border: 1px solid rgba(52, 168, 83, 0.3);
-      padding: 6px 14px;
-      border-radius: 20px;
-      font-family: var(--font-mono);
-      font-size: 12px;
-      font-weight: 600;
-      color: var(--g-green-light);
-    }
-
-    .pulsing-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: var(--g-green);
-      box-shadow: 0 0 10px var(--g-green);
-      animation: pulse 1.8s infinite;
-    }
-
-    @keyframes pulse {
-      0% { transform: scale(0.9); opacity: 0.8; }
-      50% { transform: scale(1.3); opacity: 1; filter: drop-shadow(0 0 6px var(--g-green)); }
-      100% { transform: scale(0.9); opacity: 0.8; }
-    }
-
-    .btn {
-      background: var(--g-surface-2);
-      border: 1px solid var(--g-border);
-      color: var(--g-text-primary);
       padding: 8px 16px;
-      border-radius: 8px;
-      font-family: var(--font-ui);
-      font-size: 13px;
-      font-weight: 500;
-      cursor: pointer;
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      transition: all 0.2s ease;
-    }
-
-    .btn:hover {
-      background: var(--g-surface-3);
-      border-color: var(--g-border-hover);
-      transform: translateY(-1px);
-    }
-
-    .btn-primary {
-      background: var(--g-blue);
-      color: #fff;
-      border-color: transparent;
-      box-shadow: 0 0 14px var(--g-blue-glow);
-    }
-
-    .btn-primary:hover {
-      background: #3b78e7;
-    }
-
-    /* Content Area */
-    .content-area {
-      padding: 32px;
-      max-width: 1720px;
-      margin: 0 auto;
-      width: 100%;
-      display: flex;
-      flex-direction: column;
-      gap: 48px;
-    }
-
-    /* Hero Banner */
-    .hero-banner {
-      background: linear-gradient(135deg, rgba(26, 31, 46, 0.7) 0%, rgba(18, 20, 26, 0.9) 100%);
-      border: 1px solid var(--g-border);
-      border-radius: 20px;
-      padding: 36px 40px;
-      position: relative;
-      overflow: hidden;
-      box-shadow: 0 12px 36px rgba(0, 0, 0, 0.4);
-    }
-
-    .hero-banner::before {
-      content: '';
-      position: absolute;
-      top: -100px;
-      right: -100px;
-      width: 350px;
-      height: 350px;
-      border-radius: 50%;
-      background: radial-gradient(circle, var(--g-blue-glow) 0%, transparent 70%);
-      pointer-events: none;
-    }
-
-    .hero-banner::after {
-      content: '';
-      position: absolute;
-      bottom: -80px;
-      left: 20%;
-      width: 250px;
-      height: 250px;
-      border-radius: 50%;
-      background: radial-gradient(circle, var(--g-purple-glow) 0%, transparent 70%);
-      pointer-events: none;
-    }
-
-    .hero-content {
-      position: relative;
-      z-index: 2;
-      max-width: 1050px;
-    }
-
-    .hero-tagline {
-      font-family: var(--font-mono);
-      font-size: 13px;
-      color: var(--g-yellow-light);
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      margin-bottom: 12px;
       display: flex;
       align-items: center;
-      gap: 8px;
-    }
-
-    .hero-title {
-      font-family: var(--font-display);
-      font-size: 38px;
-      font-weight: 700;
-      letter-spacing: -0.03em;
-      line-height: 1.2;
-      margin-bottom: 16px;
-      background: linear-gradient(135deg, #ffffff 40%, #c5d8fb 100%);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-    }
-
-    .hero-description {
-      font-size: 16px;
-      color: var(--g-text-secondary);
-      line-height: 1.6;
-      margin-bottom: 24px;
-    }
-
-    .spec-pills {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 12px;
-    }
-
-    .spec-pill {
-      background: rgba(255, 255, 255, 0.05);
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      padding: 6px 14px;
-      border-radius: 8px;
-      font-family: var(--font-mono);
-      font-size: 12px;
-      color: var(--g-text-secondary);
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-
-    .spec-pill .pill-dot {
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-    }
-
-    /* Section Styling */
-    .blueprint-section {
-      display: flex;
-      flex-direction: column;
-      gap: 24px;
-    }
-
-    .section-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      border-bottom: 1px solid var(--g-border);
-      padding-bottom: 14px;
-    }
-
-    .section-title-group {
-      display: flex;
-      align-items: center;
-      gap: 14px;
-    }
-
-    .section-number {
-      font-family: var(--font-mono);
-      font-size: 13px;
-      font-weight: 700;
-      color: var(--g-blue-light);
-      background: rgba(66, 133, 244, 0.1);
-      border: 1px solid rgba(66, 133, 244, 0.25);
-      width: 32px;
-      height: 32px;
-      border-radius: 8px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-
-    .section-title {
-      font-family: var(--font-display);
-      font-size: 24px;
-      font-weight: 700;
-      letter-spacing: -0.02em;
-    }
-
-    .section-subtitle {
-      font-size: 14px;
-      color: var(--g-text-muted);
-    }
-
-    /* ==========================================================================
-       SECTION 1: THE 5-ERA EVOLUTION JOURNEY (CHRONOLOGICAL TIMELINE)
-       ========================================================================== */
-    .timeline-container {
-      display: grid;
-      grid-template-columns: repeat(5, 1fr);
       gap: 16px;
-      position: relative;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
     }
 
-    .timeline-card {
-      background: var(--g-surface-card);
-      border: 1px solid var(--g-border);
-      border-radius: 16px;
-      padding: 24px 20px;
-      display: flex;
-      flex-direction: column;
-      position: relative;
-      transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-      overflow: hidden;
-    }
-
-    .timeline-card:hover {
-      transform: translateY(-4px);
-      border-color: var(--g-border-hover);
-      box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35);
-    }
-
-    .timeline-card::before {
-      content: '';
-      position: absolute;
-      top: 0;
-      left: 0;
-      right: 0;
-      height: 3px;
-    }
-
-    .era-1::before { background: #9aa0a6; }
-    .era-2::before { background: var(--g-blue); }
-    .era-3::before { background: var(--g-yellow); }
-    .era-4::before { background: var(--g-red); }
-    .era-5::before { background: linear-gradient(90deg, var(--g-green), var(--g-blue), var(--g-purple)); }
-
-    .era-badge {
+    .brand-title {
+      font-size: 15px;
+      font-weight: 700;
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      margin-bottom: 14px;
+      gap: 8px;
     }
 
-    .era-id {
-      font-family: var(--font-mono);
-      font-size: 11px;
-      font-weight: 700;
-      color: var(--g-text-muted);
-      letter-spacing: 0.05em;
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 8px var(--green);
     }
 
-    .era-dates {
-      font-family: var(--font-mono);
+    .badge {
+      font-family: 'JetBrains Mono', monospace;
       font-size: 11px;
-      color: var(--g-text-muted);
-      background: rgba(255, 255, 255, 0.04);
+      background: rgba(138, 180, 248, 0.12);
+      border: 1px solid rgba(138, 180, 248, 0.3);
+      color: var(--blue);
       padding: 2px 8px;
-      border-radius: 4px;
+      border-radius: 6px;
     }
 
-    .era-title {
-      font-family: var(--font-display);
-      font-size: 17px;
-      font-weight: 700;
-      margin-bottom: 8px;
-      color: #fff;
-    }
-
-    .era-host {
-      font-family: var(--font-mono);
-      font-size: 12px;
-      color: var(--g-blue-light);
-      margin-bottom: 12px;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-
-    .era-desc {
-      font-size: 13px;
-      color: var(--g-text-secondary);
-      line-height: 1.5;
-      margin-bottom: 16px;
-      flex-grow: 1;
-    }
-
-    .era-specs {
-      border-top: 1px solid var(--g-border);
-      padding-top: 14px;
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      font-family: var(--font-mono);
-      font-size: 11px;
-    }
-
-    .era-spec-row {
-      display: flex;
-      justify-content: space-between;
-      color: var(--g-text-muted);
-    }
-
-    .era-spec-val {
-      color: var(--g-text-primary);
-      font-weight: 600;
-    }
-
-    .era-limitation {
-      margin-top: 12px;
-      padding: 8px 10px;
-      background: rgba(234, 67, 53, 0.08);
-      border-left: 3px solid var(--g-red);
-      border-radius: 0 6px 6px 0;
-      font-size: 11px;
-      color: var(--g-red-light);
-      line-height: 1.4;
-    }
-
-    .era-triumph {
-      margin-top: 12px;
-      padding: 8px 10px;
-      background: rgba(52, 168, 83, 0.08);
-      border-left: 3px solid var(--g-green);
-      border-radius: 0 6px 6px 0;
-      font-size: 11px;
-      color: var(--g-green-light);
-      line-height: 1.4;
-    }
-
-    /* ==========================================================================
-       SECTION 2: MASTER SYSTEM ARCHITECTURE (EXPLODED INTERACTIVE SCHEMATIC)
-       ========================================================================== */
-    .schematic-canvas {
-      background: radial-gradient(circle at 50% 30%, #151821 0%, #0d0f13 100%);
-      border: 1px solid var(--g-border);
-      border-radius: 24px;
-      padding: 40px;
-      position: relative;
-      overflow: hidden;
-      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
-    }
-
-    /* Master Architecture Grid Layout */
-    .master-arch-grid {
-      display: grid;
-      grid-template-columns: 280px 1fr 340px;
-      gap: 28px;
-      position: relative;
-      z-index: 2;
-    }
-
-    /* Column 1: Ingress & Client Endpoints */
-    .arch-col {
-      display: flex;
-      flex-direction: column;
-      gap: 24px;
-    }
-
-    .arch-card {
-      background: var(--g-surface-card);
-      border: 1px solid var(--g-border);
-      border-radius: 16px;
-      padding: 22px;
-      position: relative;
-      transition: all 0.25s ease;
-      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
-    }
-
-    .arch-card:hover {
-      border-color: rgba(255, 255, 255, 0.2);
-      transform: translateY(-2px);
-    }
-
-    .card-glow-blue { border-top: 3px solid var(--g-blue); }
-    .card-glow-purple { border-top: 3px solid var(--g-purple); }
-    .card-glow-green { border-top: 3px solid var(--g-green); }
-    .card-glow-yellow { border-top: 3px solid var(--g-yellow); }
-    .card-glow-red { border-top: 3px solid var(--g-red); }
-
-    .card-header {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      margin-bottom: 12px;
-    }
-
-    .card-icon {
-      width: 36px;
-      height: 36px;
-      border-radius: 10px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 18px;
-    }
-
-    .icon-blue { background: rgba(66, 133, 244, 0.15); color: var(--g-blue-light); }
-    .icon-purple { background: rgba(161, 66, 244, 0.15); color: var(--g-purple-light); }
-    .icon-green { background: rgba(52, 168, 83, 0.15); color: var(--g-green-light); }
-    .icon-yellow { background: rgba(251, 188, 5, 0.15); color: var(--g-yellow-light); }
-    .icon-red { background: rgba(234, 67, 53, 0.15); color: var(--g-red-light); }
-
-    .card-title {
-      font-family: var(--font-display);
-      font-size: 16px;
-      font-weight: 700;
-      color: #fff;
-    }
-
-    .card-subtitle {
-      font-family: var(--font-mono);
-      font-size: 11px;
-      color: var(--g-text-muted);
-    }
-
-    .card-body {
-      font-size: 13px;
-      color: var(--g-text-secondary);
-      line-height: 1.5;
-    }
-
-    .feature-list {
-      list-style: none;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      margin-top: 12px;
-    }
-
-    .feature-item {
-      display: flex;
-      align-items: flex-start;
-      gap: 8px;
-      font-size: 12px;
-    }
-
-    .feature-bullet {
-      width: 5px;
-      height: 5px;
-      border-radius: 50%;
-      margin-top: 6px;
-      flex-shrink: 0;
-    }
-
-    .bullet-blue { background: var(--g-blue-light); }
-    .bullet-green { background: var(--g-green-light); }
-    .bullet-yellow { background: var(--g-yellow-light); }
-    .bullet-red { background: var(--g-red-light); }
-
-    /* Center Stage: Full Duplex Core Engine */
-    .center-stage {
-      display: flex;
-      flex-direction: column;
-      gap: 20px;
-    }
-
-    .live-core-pod {
-      background: linear-gradient(180deg, rgba(30, 36, 51, 0.9) 0%, rgba(20, 24, 34, 0.95) 100%);
-      border: 1px solid rgba(161, 66, 244, 0.3);
-      border-radius: 20px;
-      padding: 28px;
-      position: relative;
-      box-shadow: 0 0 40px rgba(161, 66, 244, 0.12);
-    }
-
-    .live-pod-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 20px;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-      padding-bottom: 14px;
-    }
-
-    .live-pod-title {
-      font-family: var(--font-display);
-      font-size: 20px;
-      font-weight: 700;
-      color: #fff;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
-
-    .live-badge-purple {
-      background: rgba(161, 66, 244, 0.15);
-      border: 1px solid rgba(161, 66, 244, 0.35);
-      color: var(--g-purple-light);
-      padding: 3px 10px;
+    /* Floating Navigation Controls (Bottom Right) */
+    .controls-hud {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      z-index: 10;
+      background: rgba(22, 24, 29, 0.9);
+      backdrop-filter: blur(16px);
+      border: 1px solid var(--border);
       border-radius: 12px;
-      font-family: var(--font-mono);
-      font-size: 11px;
-    }
-
-    /* Subsystem Flow Visualization */
-    .subsystem-flow {
-      display: grid;
-      grid-template-columns: 1fr auto 1fr;
-      gap: 16px;
-      align-items: center;
-      background: rgba(0, 0, 0, 0.25);
-      border: 1px solid rgba(255, 255, 255, 0.05);
-      border-radius: 14px;
-      padding: 16px;
-      margin-bottom: 16px;
-    }
-
-    .flow-node {
+      padding: 6px;
       display: flex;
-      flex-direction: column;
+      align-items: center;
       gap: 4px;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
     }
 
-    .node-label {
-      font-family: var(--font-mono);
-      font-size: 11px;
-      color: var(--g-text-muted);
-      text-transform: uppercase;
-    }
-
-    .node-val {
-      font-family: var(--font-ui);
-      font-size: 14px;
-      font-weight: 600;
-      color: #fff;
-    }
-
-    .flow-arrow {
-      color: var(--g-text-muted);
-      font-size: 18px;
-    }
-
-    /* Animated Circuit SVG */
-    .circuit-svg-container {
-      width: 100%;
-      height: 120px;
-      margin: 12px 0;
-    }
-
-    /* Column 3: Grounded Integrations */
-    .tools-grid {
-      display: grid;
-      grid-template-columns: 1fr;
-      gap: 14px;
-    }
-
-    .tool-item {
-      background: var(--g-surface-card);
-      border: 1px solid var(--g-border);
-      border-radius: 12px;
-      padding: 14px 16px;
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      transition: all 0.2s ease;
-    }
-
-    .tool-item:hover {
-      background: var(--g-surface-2);
-      border-color: var(--g-border-hover);
-    }
-
-    .tool-icon {
-      width: 32px;
-      height: 32px;
+    .hud-btn {
+      background: transparent;
+      border: none;
+      color: var(--text);
+      width: 38px;
+      height: 38px;
       border-radius: 8px;
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 16px;
-      flex-shrink: 0;
+      cursor: pointer;
+      transition: all 0.15s ease;
     }
 
-    .tool-info {
-      flex-grow: 1;
+    .hud-btn:hover {
+      background: rgba(255, 255, 255, 0.1);
     }
 
-    .tool-name {
-      font-size: 13px;
-      font-weight: 600;
-      color: #fff;
+    .zoom-level {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      padding: 0 10px;
+      color: var(--text-muted);
+      min-width: 60px;
+      text-align: center;
     }
 
-    .tool-detail {
-      font-family: var(--font-mono);
+    /* Helper Hint */
+    .hint-hud {
+      position: fixed;
+      bottom: 24px;
+      left: 24px;
+      z-index: 10;
+      background: rgba(22, 24, 29, 0.85);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 6px 12px;
+      font-family: 'JetBrains Mono', monospace;
       font-size: 11px;
-      color: var(--g-text-muted);
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 6px;
     }
 
-    .tool-latency {
-      font-family: var(--font-mono);
-      font-size: 11px;
-      font-weight: 600;
-      color: var(--g-green-light);
-      background: rgba(52, 168, 83, 0.1);
-      padding: 2px 6px;
-      border-radius: 4px;
-    }
-
-    /* ==========================================================================
-       SECTION 3: THE BATTLE OF BUGS & FORENSIC BREAKTHROUGHS
-       ========================================================================== */
-    .bugs-grid {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 20px;
-    }
-
-    .bug-card {
-      background: var(--g-surface-card);
-      border: 1px solid var(--g-border);
-      border-radius: 16px;
-      padding: 22px;
+    /* Loading Spinner */
+    #loading {
+      position: absolute;
+      inset: 0;
       display: flex;
       flex-direction: column;
-      gap: 12px;
-      transition: all 0.25s ease;
-    }
-
-    .bug-card:hover {
-      border-color: var(--g-border-hover);
-      transform: translateY(-2px);
-    }
-
-    .bug-header {
-      display: flex;
-      justify-content: space-between;
       align-items: center;
-    }
-
-    .bug-tag {
-      font-family: var(--font-mono);
-      font-size: 11px;
-      font-weight: 700;
-      padding: 2px 8px;
-      border-radius: 4px;
-    }
-
-    .tag-fixed {
-      background: rgba(52, 168, 83, 0.15);
-      color: var(--g-green-light);
-      border: 1px solid rgba(52, 168, 83, 0.3);
-    }
-
-    .bug-title {
-      font-family: var(--font-display);
-      font-size: 16px;
-      font-weight: 700;
-      color: #fff;
-    }
-
-    .bug-symptom {
-      background: rgba(234, 67, 53, 0.08);
-      border-left: 3px solid var(--g-red);
-      padding: 8px 10px;
-      border-radius: 0 6px 6px 0;
-      font-size: 12px;
-      color: var(--g-red-light);
-    }
-
-    .bug-rootcause {
-      font-size: 12px;
-      color: var(--g-text-secondary);
-      line-height: 1.5;
-    }
-
-    .bug-solution {
-      background: rgba(52, 168, 83, 0.08);
-      border-left: 3px solid var(--g-green);
-      padding: 8px 10px;
-      border-radius: 0 6px 6px 0;
-      font-size: 12px;
-      color: var(--g-green-light);
-      font-family: var(--font-mono);
-    }
-
-    /* Footer */
-    footer {
-      border-top: 1px solid var(--g-border);
-      padding: 24px 32px;
-      background: rgba(14, 16, 19, 0.95);
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      color: var(--g-text-muted);
-      font-size: 13px;
-    }
-
-    .footer-left {
-      display: flex;
-      align-items: center;
+      justify-content: center;
+      background: var(--bg);
+      z-index: 100;
       gap: 16px;
+      font-size: 14px;
+      color: var(--text-muted);
     }
 
-    .footer-right {
-      font-family: var(--font-mono);
-      font-size: 12px;
+    .spinner {
+      width: 40px;
+      height: 40px;
+      border: 3px solid rgba(255, 255, 255, 0.1);
+      border-top-color: var(--blue);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
     }
 
-    /* Print & High-Res Export Media Query */
-    @media print {
-      body {
-        background: #0e1013 !important;
-        color: #f1f3f4 !important;
-        -webkit-print-color-adjust: exact !important;
-        print-color-adjust: exact !important;
-      }
-      header, .header-actions, .btn {
-        display: none !important;
-      }
-      .content-area {
-        padding: 0 !important;
-        max-width: 100% !important;
-      }
-      .schematic-canvas, .hero-banner, .timeline-card, .bug-card {
-        page-break-inside: avoid;
-        box-shadow: none !important;
-      }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    /* Custom Mermaid SVG Overrides */
+    .node rect, .node circle, .node polygon {
+      stroke-width: 2px !important;
+    }
+
+    .cluster rect {
+      stroke-width: 1.5px !important;
+      fill-opacity: 0.25 !important;
+    }
+
+    .edgeLabel {
+      background-color: #12141a !important;
+      color: #e8eaed !important;
+      font-family: 'JetBrains Mono', monospace !important;
+      font-size: 11px !important;
+      padding: 3px 6px !important;
+      border-radius: 4px !important;
+      border: 1px solid rgba(255, 255, 255, 0.1) !important;
+    }
+
+    .node .label {
+      font-family: 'Google Sans', system-ui, sans-serif !important;
+      color: #fff !important;
     }
   </style>
 </head>
 <body>
 
-  <div class="blueprint-bg"></div>
+  <div class="grid-bg"></div>
 
-  <div class="app-container">
-    <!-- Navigation Header -->
-    <header>
-      <div class="brand-group">
-        <div class="brand-logo">
-          <div class="google-dots">
-            <div class="dot dot-blue"></div>
-            <div class="dot dot-red"></div>
-            <div class="dot dot-yellow"></div>
-            <div class="dot dot-green"></div>
-          </div>
-        </div>
-        <div class="brand-title">
-          <h1>Aethelgard <span class="version-tag">V4.0 FRONTIER</span></h1>
-          <div class="brand-subtitle">Master Topology & System Evolution Blueprint</div>
-        </div>
-      </div>
-
-      <div class="header-actions">
-        <div class="live-badge">
-          <div class="pulsing-dot"></div>
-          AZURE 24/7 PRODUCTION ACTIVE
-        </div>
-        <button class="btn" onclick="window.print()">
-          <span class="material-symbols-outlined" style="font-size: 16px;">print</span>
-          Print / Save PDF
-        </button>
-        <button class="btn btn-primary" onclick="alert('Aethelgard Production Telemetry: 77/77 tests passing. VM: 68.210.150.57. Status: 100% Operational.')">
-          <span class="material-symbols-outlined" style="font-size: 16px;">terminal</span>
-          System Status
-        </button>
-      </div>
-    </header>
-
-    <!-- Main Content Blueprint -->
-    <main class="content-area">
-
-      <!-- Hero Banner -->
-      <section class="hero-banner">
-        <div class="hero-content">
-          <div class="hero-tagline">
-            <span class="material-symbols-outlined" style="font-size: 16px;">verified_user</span>
-            Sovereign 24/7 Cognitive Custodian & Live VoIP Telephony Engine
-          </div>
-          <h2 class="hero-title">From Local Terminal to Cloud-Native Frontier AI</h2>
-          <p class="hero-description">
-            Aethelgard represents the complete realization of a private, continuous personal cognitive assistant for Omar Elnemr. 
-            Engineered to overcome severe hardware ceilings, memory limits, and acoustic feedback loops, Aethelgard now operates 
-            live on Microsoft Azure with full-duplex WebRTC telephony, Google DeepMind’s native Gemini 3.8 Live speech model, 
-            instant millisecond tool dispatch, and automated bidirectional Obsidian second-brain synchronization.
-          </p>
-          <div class="spec-pills">
-            <div class="spec-pill">
-              <div class="pill-dot" style="background: var(--g-blue);"></div>
-              Azure VM: Standard D4s v3 (16 GB RAM / 4 vCPUs)
-            </div>
-            <div class="spec-pill">
-              <div class="pill-dot" style="background: var(--g-purple);"></div>
-              Speech Brain: Gemini 3.8 Live (Voice: Charon)
-            </div>
-            <div class="spec-pill">
-              <div class="pill-dot" style="background: var(--g-green);"></div>
-              Tool Execution: &lt; 50ms Local IMAP Dispatch
-            </div>
-            <div class="spec-pill">
-              <div class="pill-dot" style="background: var(--g-yellow);"></div>
-              Second Brain: Obsidian Vault 2-Way Git Auto-Merge
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- ====================================================================
-           SECTION 1: THE 5-ERA EVOLUTIONARY JOURNEY
-           ==================================================================== -->
-      <section class="blueprint-section">
-        <div class="section-header">
-          <div class="section-title-group">
-            <div class="section-number">01</div>
-            <div>
-              <h3 class="section-title">The 5-Era Evolutionary Journey</h3>
-              <div class="section-subtitle">Chronological progression of hosting environments, architecture rewrites, and compute breakthroughs</div>
-            </div>
-          </div>
-        </div>
-
-        <div class="timeline-container">
-          <!-- Era 1: Local Hermes Agent -->
-          <div class="timeline-card era-1">
-            <div class="era-badge">
-              <span class="era-id">ERA 01</span>
-              <span class="era-dates">Genesis</span>
-            </div>
-            <h4 class="era-title">Local Hermes Prototype</h4>
-            <div class="era-host">
-              <span class="material-symbols-outlined" style="font-size: 14px;">terminal</span>
-              Local Terminal Sandbox
-            </div>
-            <p class="era-desc">
-              Began as an experimental agent using Hermes CLI tools and local SQLite memory. Capable of basic text tasks and manual command execution.
-            </p>
-            <div class="era-specs">
-              <div class="era-spec-row">
-                <span>Interface</span>
-                <span class="era-spec-val">CLI Terminal</span>
-              </div>
-              <div class="era-spec-row">
-                <span>Latency</span>
-                <span class="era-spec-val">&gt; 3,500ms</span>
-              </div>
-              <div class="era-spec-row">
-                <span>Memory</span>
-                <span class="era-spec-val">Ephemeral / Local</span>
-              </div>
-            </div>
-            <div class="era-limitation">
-              <strong>Limitation:</strong> Bound to a running shell session. Disconnected whenever the terminal closed.
-            </div>
-          </div>
-
-          <!-- Era 2: Local Windows Workstation -->
-          <div class="timeline-card era-2">
-            <div class="era-badge">
-              <span class="era-id">ERA 02</span>
-              <span class="era-dates">Local Daemon</span>
-            </div>
-            <h4 class="era-title">Workstation Daemon</h4>
-            <div class="era-host">
-              <span class="material-symbols-outlined" style="font-size: 14px;">desktop_windows</span>
-              Windows Host PC (`run.py`)
-            </div>
-            <p class="era-desc">
-              Integrated Telegram Bot API and initial local voice synthesis (Piper & Edge-TTS). Enabled voice notes and initial task staging.
-            </p>
-            <div class="era-specs">
-              <div class="era-spec-row">
-                <span>Audio</span>
-                <span class="era-spec-val">Sequential VAD</span>
-              </div>
-              <div class="era-spec-row">
-                <span>Gateway</span>
-                <span class="era-spec-val">Early Local Proxy</span>
-              </div>
-              <div class="era-spec-row">
-                <span>Uptime</span>
-                <span class="era-spec-val">PC Awake Only</span>
-              </div>
-            </div>
-            <div class="era-limitation">
-              <strong>Limitation:</strong> Tied to Omar’s personal computer. Shutting down the PC severed all custodian duties.
-            </div>
-          </div>
-
-          <!-- Era 3: Kaggle Cloud Runner -->
-          <div class="timeline-card era-3">
-            <div class="era-badge">
-              <span class="era-id">ERA 03</span>
-              <span class="era-dates">Cloud Compute</span>
-            </div>
-            <h4 class="era-title">Kaggle Hybrid Runner</h4>
-            <div class="era-host">
-              <span class="material-symbols-outlined" style="font-size: 14px;">cloud</span>
-              Kaggle Notebook Server
-            </div>
-            <p class="era-desc">
-              Explored headless cloud hosting via Kaggle Python environments with GPU acceleration, remote git pulls, and script execution.
-            </p>
-            <div class="era-specs">
-              <div class="era-spec-row">
-                <span>Compute</span>
-                <span class="era-spec-val">2x vCPU / P100</span>
-              </div>
-              <div class="era-spec-row">
-                <span>Sync</span>
-                <span class="era-spec-val">Git Webhook</span>
-              </div>
-              <div class="era-spec-row">
-                <span>Session Cap</span>
-                <span class="era-spec-val">12hr Timeout</span>
-              </div>
-            </div>
-            <div class="era-limitation">
-              <strong>Limitation:</strong> Strict 12-hour session expirations and lack of static incoming ports killed 24/7 reliability.
-            </div>
-          </div>
-
-          <!-- Era 4: Google Cloud Platform (GCP) -->
-          <div class="timeline-card era-4">
-            <div class="era-badge">
-              <span class="era-id">ERA 04</span>
-              <span class="era-dates">Always-Free Tier</span>
-            </div>
-            <h4 class="era-title">GCP e2-micro Ceiling</h4>
-            <div class="era-host">
-              <span class="material-symbols-outlined" style="font-size: 14px;">dns</span>
-              GCP Always Free (1 GB RAM)
-            </div>
-            <p class="era-desc">
-              Achieved first true 24/7 cloud deployment under systemd. Handled Telegram VoIP and Obsidian sync, but severely constrained by hardware.
-            </p>
-            <div class="era-specs">
-              <div class="era-spec-row">
-                <span>RAM</span>
-                <span class="era-spec-val">1.0 GB Total</span>
-              </div>
-              <div class="era-spec-row">
-                <span>CPU</span>
-                <span class="era-spec-val">2 Shared vCPUs</span>
-              </div>
-              <div class="era-spec-row">
-                <span>Crash Rate</span>
-                <span class="era-spec-val">OOM on High Load</span>
-              </div>
-            </div>
-            <div class="era-limitation">
-              <strong>Limitation:</strong> 1GB RAM caused severe swap thrashing. Live voice streaming and Playwright exceeded memory capacity.
-            </div>
-          </div>
-
-          <!-- Era 5: Microsoft Azure Production -->
-          <div class="timeline-card era-5">
-            <div class="era-badge">
-              <span class="era-id" style="color: var(--g-green-light);">ERA 05</span>
-              <span class="era-dates" style="background: rgba(52, 168, 83, 0.15); color: var(--g-green-light);">Frontier Live</span>
-            </div>
-            <h4 class="era-title">Azure Enterprise Frontier</h4>
-            <div class="era-host" style="color: var(--g-green-light);">
-              <span class="material-symbols-outlined" style="font-size: 14px;">rocket_launch</span>
-              Azure D4s v3 (`68.210.150.57`)
-            </div>
-            <p class="era-desc">
-              The ultimate production home. 16 GB RAM, 4 vCPUs, native Gemini 3.8 Live full-duplex speech, dynamic RMS echo gating, and sub-second tool execution.
-            </p>
-            <div class="era-specs">
-              <div class="era-spec-row">
-                <span>RAM</span>
-                <span class="era-spec-val" style="color: var(--g-green-light);">16.0 GB DDR4</span>
-              </div>
-              <div class="era-spec-row">
-                <span>Model</span>
-                <span class="era-spec-val">Gemini 3.8 Live</span>
-              </div>
-              <div class="era-spec-row">
-                <span>Telephony</span>
-                <span class="era-spec-val">Full-Duplex WebRTC</span>
-              </div>
-            </div>
-            <div class="era-triumph">
-              <strong>Triumph:</strong> 100% stable 24/7 daemon. Millisecond tool execution without dead air, cut-offs, or memory limits.
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- ====================================================================
-           SECTION 2: MASTER SYSTEM TOPOLOGY & DATA BUS SCHEMATIC
-           ==================================================================== -->
-      <section class="blueprint-section">
-        <div class="section-header">
-          <div class="section-title-group">
-            <div class="section-number">02</div>
-            <div>
-              <h3 class="section-title">Master System Architecture & Data Topology</h3>
-              <div class="section-subtitle">Exploded component schematic: Ingress, Dual-Engine Cognitive Core, Zero-Trust Armor, and Grounded Operations</div>
-            </div>
-          </div>
-        </div>
-
-        <div class="schematic-canvas">
-          <div class="master-arch-grid">
-            
-            <!-- COLUMN 1: INGRESS & TELEPHONY BUS -->
-            <div class="arch-col">
-              <div class="arch-card card-glow-blue">
-                <div class="card-header">
-                  <div class="card-icon icon-blue">
-                    <span class="material-symbols-outlined">phone_in_talk</span>
-                  </div>
-                  <div>
-                    <div class="card-title">Telegram Voice Ingress</div>
-                    <div class="card-subtitle">MTProto / PyTgCalls VoIP</div>
-                  </div>
-                </div>
-                <div class="card-body">
-                  Direct phone-to-bot voice calling via `@aethelgard_vault_bot`. Captures uncompressed human audio directly over Telegram WebRTC.
-                  <ul class="feature-list">
-                    <li class="feature-item">
-                      <div class="feature-bullet bullet-blue"></div>
-                      <span>48,000 Hz 16-bit Mono S16LE PCM</span>
-                    </li>
-                    <li class="feature-item">
-                      <div class="feature-bullet bullet-blue"></div>
-                      <span>Strict 10ms frame pacing (960 Bytes)</span>
-                    </li>
-                    <li class="feature-item">
-                      <div class="feature-bullet bullet-blue"></div>
-                      <span>Sub-15ms jitter buffer management</span>
-                    </li>
-                  </ul>
-                </div>
-              </div>
-
-              <div class="arch-card card-glow-red">
-                <div class="card-header">
-                  <div class="card-icon icon-red">
-                    <span class="material-symbols-outlined">noise_aware</span>
-                  </div>
-                  <div>
-                    <div class="card-title">Dynamic RMS Echo Gate</div>
-                    <div class="card-subtitle">Acoustic Feedback Shield</div>
-                  </div>
-                </div>
-                <div class="card-body">
-                  Eliminates self-interruption loops caused by phone speaker bleed into the microphone during high-volume playback.
-                  <ul class="feature-list">
-                    <li class="feature-item">
-                      <div class="feature-bullet bullet-red"></div>
-                      <span>Drops mic bleed &lt; 520 RMS while AI speaks</span>
-                    </li>
-                    <li class="feature-item">
-                      <div class="feature-bullet bullet-red"></div>
-                      <span>True human barge-in detection (&gt;200ms hold)</span>
-                    </li>
-                    <li class="feature-item">
-                      <div class="feature-bullet bullet-red"></div>
-                      <span>Instant output buffer purge on interruption</span>
-                    </li>
-                  </ul>
-                </div>
-              </div>
-
-              <div class="arch-card card-glow-yellow">
-                <div class="card-header">
-                  <div class="card-icon icon-yellow">
-                    <span class="material-symbols-outlined">security</span>
-                  </div>
-                  <div>
-                    <div class="card-title">Zero-Trust Gatekeeper</div>
-                    <div class="card-subtitle">Deterministic Action Armor</div>
-                  </div>
-                </div>
-                <div class="card-body">
-                  Deterministic verbal confirmation protocol protecting outbound dispatches and critical infrastructure changes.
-                  <ul class="feature-list">
-                    <li class="feature-item">
-                      <div class="feature-bullet bullet-yellow"></div>
-                      <span>Two-step readback (Recipient + Subject + Body)</span>
-                    </li>
-                    <li class="feature-item">
-                      <div class="feature-bullet bullet-yellow"></div>
-                      <span>Vague consent / prompt injection lockouts</span>
-                    </li>
-                  </ul>
-                </div>
-              </div>
-            </div>
-
-            <!-- COLUMN 2: CENTER STAGE - COGNITIVE BRAIN ENGINES -->
-            <div class="center-stage">
-              <!-- Primary: Gemini 3.8 Live Pod -->
-              <div class="live-core-pod">
-                <div class="live-pod-header">
-                  <div class="live-pod-title">
-                    <span class="material-symbols-outlined" style="color: var(--g-purple-light); font-size: 26px;">neurology</span>
-                    Primary Speech Brain: Gemini 3.8 Live
-                  </div>
-                  <div class="live-badge-purple">NATIVE AUDIO STREAM</div>
-                </div>
-
-                <div class="subsystem-flow">
-                  <div class="flow-node">
-                    <span class="node-label">Ingress Stream</span>
-                    <span class="node-val">16kHz PCM</span>
-                  </div>
-                  <div class="flow-arrow material-symbols-outlined">trending_flat</div>
-                  <div class="flow-node" style="text-align: right;">
-                    <span class="node-label">Charon Voice</span>
-                    <span class="node-val">24kHz Audio</span>
-                  </div>
-                </div>
-
-                <p style="font-size: 13px; color: var(--g-text-secondary); line-height: 1.6; margin-bottom: 16px;">
-                  Operates over a bidirectional WebSocket directly to Google Cloud Vertex AI (<code style="color: var(--g-purple-light); font-family: var(--font-mono);">us-central1</code>). 
-                  Uses native speech-to-speech comprehension with Google’s refined British butler <strong style="color: #fff;">Charon</strong> voice preset, 
-                  completely replacing slow sequential TTS with instant fluid response.
-                </p>
-
-                <!-- Interactive SVG Telemetry Visualization -->
-                <svg class="circuit-svg-container" viewBox="0 0 500 80">
-                  <defs>
-                    <linearGradient id="waveGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-                      <stop offset="0%" stop-color="#4285F4" />
-                      <stop offset="50%" stop-color="#A142F4" />
-                      <stop offset="100%" stop-color="#34A853" />
-                    </linearGradient>
-                  </defs>
-                  <!-- Background grid line -->
-                  <line x1="10" y1="40" x2="490" y2="40" stroke="rgba(255,255,255,0.08)" stroke-width="2" stroke-dasharray="4 4" />
-                  <!-- Live Audio Waveform -->
-                  <path d="M 10 40 Q 60 10, 110 40 T 210 40 T 310 40 T 410 40 T 490 40" fill="none" stroke="url(#waveGrad)" stroke-width="3" stroke-linecap="round">
-                    <animate attributeName="d" 
-                      values="M 10 40 Q 60 10, 110 40 T 210 40 T 310 40 T 410 40 T 490 40;
-                              M 10 40 Q 60 65, 110 40 T 210 40 T 310 40 T 410 40 T 490 40;
-                              M 10 40 Q 60 10, 110 40 T 210 40 T 310 40 T 410 40 T 490 40" 
-                      dur="3s" repeatCount="indefinite" />
-                  </path>
-                  <!-- Telemetry nodes -->
-                  <circle cx="110" cy="40" r="5" fill="#4285F4" />
-                  <circle cx="210" cy="40" r="5" fill="#A142F4" />
-                  <circle cx="310" cy="40" r="5" fill="#34A853" />
-                  <circle cx="410" cy="40" r="5" fill="#FBBC05" />
-                </svg>
-
-                <div style="display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 11px; color: var(--g-text-muted);">
-                  <span>WebRTC RTP 48k</span>
-                  <span>Resample 16k</span>
-                  <span>BidiGenerateContent</span>
-                  <span>Output 24k -> 48k</span>
-                </div>
-              </div>
-
-              <!-- Secondary / Fallback: Zero-Lockout Gateway :20128 -->
-              <div class="arch-card card-glow-blue">
-                <div class="card-header">
-                  <div class="card-icon icon-blue">
-                    <span class="material-symbols-outlined">router</span>
-                  </div>
-                  <div>
-                    <div class="card-title">Zero-Lockout Gateway Proxy (:20128)</div>
-                    <div class="card-subtitle">In-Process Dynamic Multi-Model Router</div>
-                  </div>
-                </div>
-                <div class="card-body">
-                  Provides high-availability inference routing with automated 20-minute Google OAuth token renewals, 
-                  thought-leak sanitization, and seamless circuit-broken failover between:
-                  <div style="display: flex; gap: 10px; margin-top: 10px;">
-                    <div style="flex: 1; background: rgba(0,0,0,0.25); padding: 8px 12px; border-radius: 8px; font-family: var(--font-mono); font-size: 11px;">
-                      <strong style="color: var(--g-blue-light);">Primary Reasoning:</strong><br>
-                      Gemini 3.8 Flash High (1M Context)
-                    </div>
-                    <div style="flex: 1; background: rgba(0,0,0,0.25); padding: 8px 12px; border-radius: 8px; font-family: var(--font-mono); font-size: 11px;">
-                      <strong style="color: var(--g-yellow-light);">Secondary Thinking:</strong><br>
-                      Claude Sonnet 4.6 Thinking
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <!-- COLUMN 3: GROUNDED OPERATIONAL TOOLS & SECOND BRAIN -->
-            <div class="arch-col">
-              <div class="arch-card card-glow-green">
-                <div class="card-header">
-                  <div class="card-icon icon-green">
-                    <span class="material-symbols-outlined">bolt</span>
-                  </div>
-                  <div>
-                    <div class="card-title">Operational Tool Suite</div>
-                    <div class="card-subtitle">Millisecond Execution Engine</div>
-                  </div>
-                </div>
-                <div class="card-body">
-                  Direct tool calling dispatched mid-call with immediate verbal confirmation:
-                </div>
-                
-                <div class="tools-grid" style="margin-top: 12px;">
-                  <!-- Tool: Gmail -->
-                  <div class="tool-item">
-                    <div class="tool-icon" style="background: rgba(234, 67, 53, 0.15); color: var(--g-red-light);">
-                      <span class="material-symbols-outlined">mail</span>
-                    </div>
-                    <div class="tool-info">
-                      <div class="tool-name">Gmail IMAP Suite</div>
-                      <div class="tool-detail">`save_gmail_draft`, search, read</div>
-                    </div>
-                    <div class="tool-latency">18ms</div>
-                  </div>
-
-                  <!-- Tool: Obsidian Vault -->
-                  <div class="tool-item">
-                    <div class="tool-icon" style="background: rgba(161, 66, 244, 0.15); color: var(--g-purple-light);">
-                      <span class="material-symbols-outlined">edit_note</span>
-                    </div>
-                    <div class="tool-info">
-                      <div class="tool-name">Obsidian Vault Sync</div>
-                      <div class="tool-detail">3-min atomic git auto-merge</div>
-                    </div>
-                    <div class="tool-latency">Git -X</div>
-                  </div>
-
-                  <!-- Tool: Airport Radar -->
-                  <div class="tool-item">
-                    <div class="tool-icon" style="background: rgba(66, 133, 244, 0.15); color: var(--g-blue-light);">
-                      <span class="material-symbols-outlined">flight</span>
-                    </div>
-                    <div class="tool-info">
-                      <div class="tool-name">Damascus Radar METAR</div>
-                      <div class="tool-detail">Live OSDI/DAM runway alerts</div>
-                    </div>
-                    <div class="tool-latency">Realtime</div>
-                  </div>
-
-                  <!-- Tool: Attendance Engine -->
-                  <div class="tool-item">
-                    <div class="tool-icon" style="background: rgba(52, 168, 83, 0.15); color: var(--g-green-light);">
-                      <span class="material-symbols-outlined">calendar_today</span>
-                    </div>
-                    <div class="tool-info">
-                      <div class="tool-name">Shift & Attendance</div>
-                      <div class="tool-detail">Automated standardized Excel</div>
-                    </div>
-                    <div class="tool-latency">XLSX</div>
-                  </div>
-
-                  <!-- Tool: Autonomous Hangup -->
-                  <div class="tool-item">
-                    <div class="tool-icon" style="background: rgba(251, 188, 5, 0.15); color: var(--g-yellow-light);">
-                      <span class="material-symbols-outlined">call_end</span>
-                    </div>
-                    <div class="tool-info">
-                      <div class="tool-name">Call Session Drain</div>
-                      <div class="tool-detail">Farewell drain & auto-hangup</div>
-                    </div>
-                    <div class="tool-latency">Clean</div>
-                  </div>
-                </div>
-              </div>
-
-              <!-- Swarm Verification Badge Card -->
-              <div class="arch-card" style="border-top: 3px solid var(--g-green);">
-                <div class="card-header">
-                  <div class="card-icon icon-green">
-                    <span class="material-symbols-outlined">verified</span>
-                  </div>
-                  <div>
-                    <div class="card-title">Red-Team Swarm Verified</div>
-                    <div class="card-subtitle">77/77 Tests Passing (100%)</div>
-                  </div>
-                </div>
-                <div class="card-body" style="font-size: 12px;">
-                  Tested against multi-agent adversarial chaos swarms (<strong>@ALEX</strong>, <strong>@REBEL</strong>, <strong>@SCRIBE</strong>) 
-                  simulating prompt injections, latency spikes, and social engineering attacks.
-                </div>
-              </div>
-            </div>
-
-          </div>
-        </div>
-      </section>
-
-      <!-- ====================================================================
-           SECTION 3: THE BATTLE OF BUGS & ARCHITECTURAL BREAKTHROUGHS
-           ==================================================================== -->
-      <section class="blueprint-section">
-        <div class="section-header">
-          <div class="section-title-group">
-            <div class="section-number">03</div>
-            <div>
-              <h3 class="section-title">The Battle of Bugs & Technical Triumphs</h3>
-              <div class="section-subtitle">Real problems diagnosed, engineered solutions, and lessons learned across the journey</div>
-            </div>
-          </div>
-        </div>
-
-        <div class="bugs-grid">
-          <!-- Bug 1: 10ms Frame Mismatch -->
-          <div class="bug-card">
-            <div class="bug-header">
-              <span class="bug-tag tag-fixed">RESOLVED</span>
-              <span style="font-family: var(--font-mono); font-size: 11px; color: var(--g-text-muted);">NTgCalls WebRTC</span>
-            </div>
-            <div class="bug-title">1. The 10ms Frame Sizing Mismatch</div>
-            <div class="bug-symptom">
-              <strong>Symptom:</strong> Spoken audio played back at 2x chipmunk speed with stuttering and dropped packets.
-            </div>
-            <div class="bug-rootcause">
-              <strong>Root Cause:</strong> The voice bridge defaulted to 20ms audio chunks (1920 bytes), whereas NTgCalls’ internal C++ WebRTC transport strictly expects 10ms frames (960 bytes at 48kHz mono).
-            </div>
-            <div class="bug-solution">
-              <strong>Fix:</strong> Hardened `FRAME_MS = 10` and `TELEGRAM_FRAME_BYTES = 960`. Synchronized linear resampler pacing to 10ms intervals.
-            </div>
-          </div>
-
-          <!-- Bug 2: Self-Interruption Echo Loop -->
-          <div class="bug-card">
-            <div class="bug-header">
-              <span class="bug-tag tag-fixed">RESOLVED</span>
-              <span style="font-family: var(--font-mono); font-size: 11px; color: var(--g-text-muted);">Acoustic Feedback</span>
-            </div>
-            <div class="bug-title">2. Acoustic Echo & Barge-in Loop</div>
-            <div class="bug-symptom">
-              <strong>Symptom:</strong> Aethelgard cut himself off mid-sentence and reverted to: *"I'm listening, go ahead."*
-            </div>
-            <div class="bug-rootcause">
-              <strong>Root Cause:</strong> Sound from the phone speaker leaked into the microphone (~200 RMS). Gemini Live’s Cloud VAD heard its own voice, interpreted it as user interruption, and purged the speech queue.
-            </div>
-            <div class="bug-solution">
-              <strong>Fix:</strong> Implemented dynamic RMS gating in `feed_incoming_frame_48k`. When `ai_speaking` is active, mic audio &lt; 520 RMS is dropped. User barge-in requires &gt;200ms of loud voice.
-            </div>
-          </div>
-
-          <!-- Bug 3: SDK session.receive() Expiry -->
-          <div class="bug-card">
-            <div class="bug-header">
-              <span class="bug-tag tag-fixed">RESOLVED</span>
-              <span style="font-family: var(--font-mono); font-size: 11px; color: var(--g-text-muted);">google-genai SDK</span>
-            </div>
-            <div class="bug-title">3. Single-Turn Generator Expiry</div>
-            <div class="bug-symptom">
-              <strong>Symptom:</strong> After the opening greeting, Aethelgard went completely deaf and ignored subsequent spoken orders.
-            </div>
-            <div class="bug-rootcause">
-              <strong>Root Cause:</strong> In the `google-genai` SDK, `session.receive()` is an async generator scoped to a single turn. When `turn_complete` was reached, the generator terminated and the receiver worker died.
-            </div>
-            <div class="bug-solution">
-              <strong>Fix:</strong> Wrapped `session.receive()` in a persistent `while self.is_connected and not self.is_closing:` loop, continuously reopening the generator for every dialogue turn.
-            </div>
-          </div>
-
-          <!-- Bug 4: 1GB GCP OOM Thrashing -->
-          <div class="bug-card">
-            <div class="bug-header">
-              <span class="bug-tag tag-fixed">RESOLVED</span>
-              <span style="font-family: var(--font-mono); font-size: 11px; color: var(--g-text-muted);">Cloud Infrastructure</span>
-            </div>
-            <div class="bug-title">4. 1GB GCP Memory Thrashing</div>
-            <div class="bug-symptom">
-              <strong>Symptom:</strong> Sudden SSH disconnects, system freezes, and systemd OOM-killer terminating the daemon.
-            </div>
-            <div class="bug-rootcause">
-              <strong>Root Cause:</strong> Google Cloud Always Free Tier `e2-micro` instances provide only 1.0 GB of RAM. Running Chrome Playwright, Telegram WebRTC, and Python simultaneously saturated swap memory.
-            </div>
-            <div class="bug-solution">
-              <strong>Fix:</strong> Provisioned high-performance Azure VM (Standard D4s v3 with 16 GB RAM and 4 vCPUs). Zero swap dependency and 100% stable headroom.
-            </div>
-          </div>
-
-          <!-- Bug 5: Synchronous Hangup Exception -->
-          <div class="bug-card">
-            <div class="bug-header">
-              <span class="bug-tag tag-fixed">RESOLVED</span>
-              <span style="font-family: var(--font-mono); font-size: 11px; color: var(--g-text-muted);">Async Telephony</span>
-            </div>
-            <div class="bug-title">5. Hangup Callback Exception</div>
-            <div class="bug-symptom">
-              <strong>Symptom:</strong> Saying *"End the call"* triggered a `TypeError: NoneType cannot be used in await` and left the call hanging open.
-            </div>
-            <div class="bug-rootcause">
-              <strong>Root Cause:</strong> `self.hangup_cb()` was invoked with `await` in `_hangup_after_delay`, but the registered callback was a synchronous function returning `None`.
-            </div>
-            <div class="bug-solution">
-              <strong>Fix:</strong> Added runtime introspection (`if asyncio.iscoroutine(res): await res`). Added 3.0s audio buffer drain before sending `DiscardCallRequest`.
-            </div>
-          </div>
-
-          <!-- Bug 6: Dead Air Elimination -->
-          <div class="bug-card">
-            <div class="bug-header">
-              <span class="bug-tag tag-fixed">RESOLVED</span>
-              <span style="font-family: var(--font-mono); font-size: 11px; color: var(--g-text-muted);">Conversational UX</span>
-            </div>
-            <div class="bug-title">6. Zero Dead Air Interleaving</div>
-            <div class="bug-symptom">
-              <strong>Symptom:</strong> 1,500ms to 3,000ms of awkward silence while complex LLM reasoning and tools executed.
-            </div>
-            <div class="bug-rootcause">
-              <strong>Root Cause:</strong> Traditional sequential pipelines wait for full model token generation and synthesis before playing any sound.
-            </div>
-            <div class="bug-solution">
-              <strong>Fix:</strong> Dual innovation: Preliminary acoustic fillers (&lt;70ms TTFV) for fallback mode, and Native Gemini 3.8 Live bidirectional streaming (~280ms) for primary voice mode.
-            </div>
-          </div>
-        </div>
-      </section>
-
-    </main>
-
-    <!-- Footer -->
-    <footer>
-      <div class="footer-left">
-        <span style="color: #fff; font-weight: 600;">Project Aethelgard</span>
-        <span>•</span>
-        <span>Dedicated to Omar Elnemr</span>
-        <span>•</span>
-        <span>Certified Production Architecture V4.0</span>
-      </div>
-      <div class="footer-right">
-        Azure Cloud • Vertex AI us-central1 • NTgCalls WebRTC • Obsidian Sync
-      </div>
-    </footer>
+  <!-- Loading Screen -->
+  <div id="loading">
+    <div class="spinner"></div>
+    <div>Synthesizing Master Architecture Topology Graph...</div>
   </div>
 
+  <!-- Top Floating Header -->
+  <div class="top-hud">
+    <div class="status-dot"></div>
+    <div class="brand-title">Aethelgard System Architecture & Topology</div>
+    <span class="badge">V4.0 FRONTIER</span>
+    <span style="font-size: 12px; color: var(--text-muted);">Azure VM: 68.210.150.57</span>
+  </div>
+
+  <!-- Bottom Floating Hint -->
+  <div class="hint-hud">
+    <span class="material-symbols-outlined" style="font-size: 14px;">mouse</span>
+    Scroll to Zoom (10% - 1000%) • Drag to Pan Canvas
+  </div>
+
+  <!-- Floating Zoom Controls -->
+  <div class="controls-hud">
+    <button class="hud-btn" id="btn-zoom-out" title="Zoom Out">
+      <span class="material-symbols-outlined">remove</span>
+    </button>
+    <div class="zoom-level" id="zoom-text">100%</div>
+    <button class="hud-btn" id="btn-zoom-in" title="Zoom In">
+      <span class="material-symbols-outlined">add</span>
+    </button>
+    <div style="width: 1px; height: 20px; background: var(--border); margin: 0 4px;"></div>
+    <button class="hud-btn" id="btn-fit" title="Fit to Screen">
+      <span class="material-symbols-outlined">fit_screen</span>
+    </button>
+    <button class="hud-btn" id="btn-reset" title="Reset Zoom">
+      <span class="material-symbols-outlined">restart_alt</span>
+    </button>
+  </div>
+
+  <!-- Interactive Pan-Zoom Viewport -->
+  <div id="viewport">
+    <div id="graph-container">
+      <div class="mermaid" id="mermaid-code">
+graph TD
+    %% =========================================================================
+    %% SUBGRAPH 1: 5-ERA INFRASTRUCTURE & COMPUTE EVOLUTION
+    %% =========================================================================
+    subgraph EVOLUTION ["📜 5-Era Evolution Journey: From Local Hermes to Azure"]
+        direction LR
+        ERA1["<b>Era 1: Local Hermes Prototype</b><br/>• Local Terminal Sandbox<br/>• Ephemeral SQLite Memory<br/>• Latency: >3,500ms"]
+        ERA2["<b>Era 2: Windows Workstation</b><br/>• Local run.py Daemon<br/>• Telegram Bot API + Piper/Edge TTS<br/>• Bound to PC Awake Time"]
+        ERA3["<b>Era 3: Kaggle Cloud Runner</b><br/>• Headless Cloud Notebooks<br/>• Dual T4 / P100 GPUs<br/>• 12-Hour Session Limit"]
+        ERA4["<b>Era 4: Google Cloud Platform</b><br/>• Always Free e2-micro VM<br/>• 1.0 GB RAM Hardware Ceiling<br/>• Swap Thrashing & OOM Kills"]
+        ERA5["<b>Era 5: Microsoft Azure Cloud</b><br/>• Standard D4s v3 (16GB RAM / 4 vCPUs)<br/>• systemd 24/7 Production Daemon<br/>• Gemini 3.8 Live Full-Duplex WebRTC"]
+
+        ERA1 -->|"Terminal closes / Need background uptime"| ERA2
+        ERA2 -->|"Local PC tied down / Need cloud autonomy"| ERA3
+        ERA3 -->|"12h timeout & dynamic IP / Need fixed host"| ERA4
+        ERA4 -->|"1GB RAM OOM thrashing / Need 16GB RAM"| ERA5
+    end
+
+    %% =========================================================================
+    %% SUBGRAPH 2: CLIENT & TELEPHONY INGRESS
+    %% =========================================================================
+    subgraph CLIENT ["📱 Client Layer (Omar's Phone / Workstation)"]
+        OMAR["👤 Omar Elnemr<br/>(Telegram User ID: 1021125594)"]
+        MIC["🎤 Phone / PC Microphone<br/>(48kHz Audio Capture)"]
+        SPEAKER["🔊 Phone / PC Speaker<br/>(Audio Playback)"]
+        TG_APP["📱 Telegram Client App<br/>(VoIP Call Engine)"]
+
+        OMAR -->|"Speaks voice command"| MIC
+        MIC -->|"Acoustic input"| TG_APP
+        TG_APP -->|"Acoustic output"| SPEAKER
+        SPEAKER -.->|"Acoustic bleed echo (~200 RMS)"| MIC
+    end
+
+    %% =========================================================================
+    %% SUBGRAPH 3: AZURE CLOUD VM (68.210.150.57)
+    %% =========================================================================
+    subgraph AZURE_VM ["☁️ Azure Production VM (68.210.150.57 | Standard D4s v3 | 16GB RAM)"]
+        
+        subgraph TELEPHONY_ENGINE ["📞 WebRTC Telephony Pipeline (NTgCalls)"]
+            TG_BRIDGE["🎛️ NTgCalls WebRTC Core<br/>(MTProto Voice Protocol)"]
+            FRAME_PACER["⏱️ 10ms Frame Pacer<br/>(Strictly 960 Bytes @ 48kHz Mono s16le)"]
+            ECHO_GATE["🛡️ Dynamic RMS Echo Gate<br/>(Discards audio < 520 RMS when AI speaks)"]
+            RESAMPLE_DOWN["📉 Linear Downsampler<br/>(48,000 Hz ➔ 16,000 Hz Mono PCM)"]
+            RESAMPLE_UP["📈 Linear Upsampler<br/>(24,000 Hz ➔ 48,000 Hz Mono PCM)"]
+            HANGUP_CTRL["🛑 Call Session Controller<br/>(3s Farewell Drain + DiscardCallRequest)"]
+        end
+
+        subgraph LIVE_BRIDGE ["⚡ Real-Time Live Gateway (gemini_live_bridge.py)"]
+            WS_CLIENT["🔌 BidiGenerateContent WebSocket<br/>(Full-Duplex wss:// stream)"]
+            RECEIVER_LOOP["🔄 Persistent Multi-Turn Receiver Loop<br/>(while is_connected: generator wrapper)"]
+            TOOL_ROUTER["🎛️ Async Tool Router<br/>(Dispatches toolCall & collects toolResponse)"]
+        end
+
+        subgraph GATEWAY_PROXY ["🛡️ Resilient Local Gateway Proxy (:20128)"]
+            PROXY["In-Process Proxy (:20128)<br/>• OAuth Token Auto-Renewal (20 min)<br/>• Thought-Leak Sanitizer<br/>• Circuit-Breaker Failover"]
+            FALLBACK_LLM["🧠 Secondary Fallback Brain<br/>• Gemini 3.8 Flash High (1M Context)<br/>• Claude Sonnet 4.6 Thinking"]
+        end
+
+        subgraph SECURITY_ARMOR ["🚨 Zero-Trust Security Armor"]
+            GATEKEEPER["Two-Step Verbal Gatekeeper<br/>• Step 1: Stage Outbound Action<br/>• Step 2: Strict Readback Protocol<br/>• Rejects Vague / Injected Approvals"]
+        end
+
+        subgraph GROUNDED_TOOLS ["⚡ Omnichannel Operational Subsystems"]
+            GMAIL["📬 Gmail IMAP / SMTP Suite<br/>• save_gmail_draft (18ms)<br/>• Search & Read Emails"]
+            VAULT["📓 Obsidian Knowledge Vault<br/>• 2-Way Git Auto-Merge (-X ours)<br/>• 3-Minute Background Sync"]
+            METAR["✈️ Damascus Radar METAR<br/>• Live Runway Weather (OSDI/DAM)<br/>• Realtime Wind & Visibility"]
+            ATTENDANCE["📋 Shift & Attendance Engine<br/>• Automated Excel Generator<br/>• Standardized Monthly Delivery"]
+            PLAYWRIGHT["🌐 Autonomous Web Portals<br/>• Playwright Headless Automations<br/>• Checkpoint Screenshot Alerts"]
+        end
+
+        subgraph SWARM_QA ["🐝 Red-Team Chaos Swarms"]
+            SWARM_TESTER["MiroFish Swarm Tester<br/>(77/77 Passing Regression Tests)"]
+            SWARM_AGENTS["@ALEX (Ops Lead)<br/>@REBEL (Hacker Injector)<br/>@SCRIBE (Vault Custodian)"]
+            SWARM_TESTER --- SWARM_AGENTS
+        end
+    end
+
+    %% =========================================================================
+    %% SUBGRAPH 4: GOOGLE CLOUD VERTEX AI
+    %% =========================================================================
+    subgraph GOOGLE_CLOUD ["🌐 Google Cloud Vertex AI (us-central1)"]
+        GEMINI_38_LIVE["🧠 Google Gemini 3.8 Live<br/>(gemini-3.8-live / Native Audio)"]
+        CHARON_VOICE["🎙️ Native Voice Model<br/>('Charon' British Butler Timbre)"]
+        CLOUD_VAD["☁️ Google Cloud Acoustic VAD<br/>(Dynamic Pause & Boundary Detection)"]
+        
+        GEMINI_38_LIVE --- CHARON_VOICE
+        GEMINI_38_LIVE --- CLOUD_VAD
+    end
+
+    %% =========================================================================
+    %% CONNECTING ARROWS & DATA FLOWS
+    %% =========================================================================
+
+    %% Ingress & Audio Processing
+    TG_APP <==|"RTP UDP Audio Stream (48kHz Mono)"|==> TG_BRIDGE
+    TG_BRIDGE -->|"Incoming 48kHz Frames"| ECHO_GATE
+    ECHO_GATE -->|"Gated Speech Audio (>520 RMS)"| RESAMPLE_DOWN
+    ECHO_GATE -.->|"Drop Speaker Bleed (<520 RMS)"| TG_BRIDGE
+    RESAMPLE_DOWN -->|"16,000 Hz PCM Audio Stream"| WS_CLIENT
+
+    %% WebSocket to Google Gemini Live
+    WS_CLIENT <==|"Full-Duplex Secure WebSocket (wss://)"|==> GEMINI_38_LIVE
+    GEMINI_38_LIVE -->|"24,000 Hz Audio Chunks (Charon)"| WS_CLIENT
+    WS_CLIENT -->|"Streamed Audio Payload"| RECEIVER_LOOP
+    RECEIVER_LOOP -->|"Continuous Dialogue Frames"| RESAMPLE_UP
+    RESAMPLE_UP -->|"48,000 Hz PCM Frames"| FRAME_PACER
+    FRAME_PACER -->|"Strict 10ms (960B) Frames"| TG_BRIDGE
+
+    %% Tool Calling Loop
+    GEMINI_38_LIVE -->|"Tool Call: save_gmail_draft"| TOOL_ROUTER
+    TOOL_ROUTER -->|"IMAP APPEND to [Gmail]/Drafts"| GMAIL
+    GMAIL -->|"Draft Created UID (18ms)"| TOOL_ROUTER
+    TOOL_ROUTER -->|"Tool Result: success=True"| WS_CLIENT
+    WS_CLIENT -->|"Spoken Confirmation: 'Consider it done, Sir...'"| GEMINI_38_LIVE
+
+    %% Call Termination Flow
+    GEMINI_38_LIVE -->|"Tool Call: end_call"| HANGUP_CTRL
+    HANGUP_CTRL -->|"Drain Farewell Audio (3s)"| FRAME_PACER
+    HANGUP_CTRL -->|"DiscardCallRequest"| TG_BRIDGE
+    TG_BRIDGE -->|"Hang Up Call"| TG_APP
+
+    %% Grounding & Vault Tools
+    TOOL_ROUTER <-->|"Sync Notes & Memories"| VAULT
+    TOOL_ROUTER <-->|"Fetch Airport Runway Weather"| METAR
+    TOOL_ROUTER <-->|"Generate Monthly Roster"| ATTENDANCE
+    TOOL_ROUTER <-->|"Portal Automation"| PLAYWRIGHT
+
+    %% Gatekeeper Security
+    TOOL_ROUTER -->|"Outbound Action Request"| GATEKEEPER
+    GATEKEEPER -->|"Require Explicit Spoken Confirmation"| WS_CLIENT
+
+    %% Gateway Fallback
+    PROXY <-->|"Model Fallback & Token Refresh"| FALLBACK_LLM
+
+    %% Evolution Link
+    ERA5 ===>|"Hosts Production System"| AZURE_VM
+
+    %% =========================================================================
+    %% STYLES & THEMING (Deep Dark Charcoal & Crisp Accents)
+    %% =========================================================================
+    classDef clientStyle fill:#1a1e28,stroke:#8ab4f8,stroke-width:2px,color:#f1f3f4;
+    classDef vmStyle fill:#141720,stroke:#81c995,stroke-width:2px,color:#f1f3f4;
+    classDef googleStyle fill:#241830,stroke:#c58af9,stroke-width:2.5px,color:#f1f3f4;
+    classDef toolStyle fill:#1c1d22,stroke:#fdd663,stroke-width:2px,color:#f1f3f4;
+    classDef securityStyle fill:#2b1619,stroke:#f28b82,stroke-width:2px,color:#f1f3f4;
+    classDef evoStyle fill:#161922,stroke:#5f6368,stroke-width:1.5px,color:#f1f3f4;
+
+    class OMAR,MIC,SPEAKER,TG_APP clientStyle;
+    class TG_BRIDGE,FRAME_PACER,ECHO_GATE,RESAMPLE_DOWN,RESAMPLE_UP,HANGUP_CTRL,WS_CLIENT,RECEIVER_LOOP,TOOL_ROUTER vmStyle;
+    class GEMINI_38_LIVE,CHARON_VOICE,CLOUD_VAD googleStyle;
+    class GMAIL,VAULT,METAR,ATTENDANCE,PLAYWRIGHT toolStyle;
+    class GATEKEEPER securityStyle;
+    class ERA1,ERA2,ERA3,ERA4,ERA5 evoStyle;
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Initialize Mermaid with Dark Theme
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: 'dark',
+      themeVariables: {
+        darkMode: true,
+        background: '#0d0f12',
+        primaryColor: '#1e2433',
+        primaryTextColor: '#ffffff',
+        primaryBorderColor: '#8ab4f8',
+        lineColor: '#8ab4f8',
+        secondaryColor: '#1e2433',
+        tertiaryColor: '#161a24'
+      },
+      flowchart: {
+        useMaxWidth: false,
+        htmlLabels: true,
+        curve: 'basis'
+      }
+    });
+
+    // Pan & Zoom Engine
+    const viewport = document.getElementById('viewport');
+    const container = document.getElementById('graph-container');
+    const zoomText = document.getElementById('zoom-text');
+    const loading = document.getElementById('loading');
+
+    let scale = 0.85;
+    let pointX = 120;
+    let pointY = 80;
+    let isPanning = false;
+    let startX = 0;
+    let startY = 0;
+
+    function updateTransform() {
+      container.style.transform = `translate(${pointX}px, ${pointY}px) scale(${scale})`;
+      zoomText.textContent = `${Math.round(scale * 100)}%`;
+    }
+
+    // Hide Loading screen when Mermaid finishes rendering
+    const checkRenderInterval = setInterval(() => {
+      const svg = container.querySelector('svg');
+      if (svg) {
+        clearInterval(checkRenderInterval);
+        loading.style.display = 'none';
+        fitToScreen();
+      }
+    }, 200);
+
+    // Mouse Pan Events
+    viewport.addEventListener('mousedown', (e) => {
+      if (e.target.closest('.controls-hud') || e.target.closest('.top-hud')) return;
+      isPanning = true;
+      startX = e.clientX - pointX;
+      startY = e.clientY - pointY;
+      viewport.classList.add('dragging');
+    });
+
+    window.addEventListener('mousemove', (e) => {
+      if (!isPanning) return;
+      pointX = e.clientX - startX;
+      pointY = e.clientY - startY;
+      updateTransform();
+    });
+
+    window.addEventListener('mouseup', () => {
+      isPanning = false;
+      viewport.classList.remove('dragging');
+    });
+
+    // Mouse Wheel Zoom (10% to 1000%)
+    viewport.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const zoomFactor = 1.15;
+      const mouseX = e.clientX;
+      const mouseY = e.clientY;
+
+      let newScale = e.deltaY < 0 ? scale * zoomFactor : scale / zoomFactor;
+      newScale = Math.min(Math.max(0.1, newScale), 10.0); // 10% to 1000% zoom!
+
+      pointX = mouseX - (mouseX - pointX) * (newScale / scale);
+      pointY = mouseY - (mouseY - pointY) * (newScale / scale);
+      scale = newScale;
+
+      updateTransform();
+    }, { passive: false });
+
+    // Buttons
+    document.getElementById('btn-zoom-in').addEventListener('click', () => {
+      scale = Math.min(scale * 1.25, 10.0);
+      updateTransform();
+    });
+
+    document.getElementById('btn-zoom-out').addEventListener('click', () => {
+      scale = Math.max(scale / 1.25, 0.1);
+      updateTransform();
+    });
+
+    document.getElementById('btn-reset').addEventListener('click', () => {
+      scale = 1.0;
+      pointX = 100;
+      pointY = 80;
+      updateTransform();
+    });
+
+    function fitToScreen() {
+      const svg = container.querySelector('svg');
+      if (!svg) return;
+      const rect = svg.getBoundingClientRect();
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+
+      const scaleX = (vw - 120) / rect.width;
+      const scaleY = (vh - 120) / rect.height;
+      scale = Math.min(Math.max(Math.min(scaleX, scaleY), 0.2), 1.2);
+
+      pointX = (vw - rect.width * scale) / 2;
+      pointY = (vh - rect.height * scale) / 2;
+      if (pointY < 60) pointY = 80;
+
+      updateTransform();
+    }
+
+    document.getElementById('btn-fit').addEventListener('click', fitToScreen);
+  </script>
 </body>
 </html>
