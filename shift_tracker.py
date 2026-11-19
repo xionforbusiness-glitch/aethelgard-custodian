@@ -442,6 +442,20 @@ def update_shift_schedule(
         except Exception as vex:
             print(f"⚠ Could not update vault roster: {vex}", flush=True)
 
+    # 2.5 Update MongoDB Cloud Vault
+    try:
+        from mongo_vault import log_shift_record
+        log_shift_record(
+            date_str=date_str,
+            weekday=weekday_str,
+            login=log_in,
+            logout=log_out,
+            status=status_final,
+            notes=note_text
+        )
+    except Exception as mex:
+        print(f"⚠ Could not sync shift to MongoDB: {mex}", flush=True)
+
     # 3. Circadian recommendation
     sleep_rec = "23:00 → 07:00"
     if not is_off:

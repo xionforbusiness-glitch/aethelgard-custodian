@@ -167,6 +167,22 @@ def save_last_call_state(
         tmp_p = p.with_suffix(".tmp")
         tmp_p.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
         tmp_p.replace(p)
+
+        # Sync voice call record to MongoDB Cloud Vault
+        try:
+            from mongo_vault import log_voice_call
+            summary = f"Voice call ({direction}, {duration_seconds}s). Last topic: {last_user_utt[:100]}"
+            full_t = "\n".join(transcript_lines)
+            log_voice_call(
+                call_id=f"call_{int(end_time)}",
+                summary=summary,
+                transcript=full_t,
+                duration_sec=float(duration_seconds),
+                meta=state
+            )
+        except Exception as mex:
+            logging.getLogger("telegram_caller").debug(f"Could not sync voice call to MongoDB: {mex}")
+
         return state
     except Exception as exc:
         logging.getLogger("telegram_caller").warning(f"Failed to save last_call_state: {exc}")
