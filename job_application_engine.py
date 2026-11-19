@@ -52,7 +52,7 @@ OMAR_IDENTITY: Dict[str, Any] = {
     "core_highlights": {
         "aviation": [
             "Airport Passenger & Ground Operations Agent at SERAVIA (Damascus International Airport DAM/OSDI, Aug 2026 – Nov 2026) handling Etihad Airways (EY), Turkish Airlines (TK), flydubai (FZ), Air Arabia (G9), and Syrian Airlines (RB / active individual DCS operator account).",
-            "Awarded 5 official Etihad Airways L&D certificates including Amadeus Altéa Customer Management (CM) 32 Hrs with 91% score, Introduction to Ground Services (16 Hrs), INSPIRE Airport Service Delivery (16 Hrs), Airport Disruption Management Workshop, and AUG Edition 2026-GSU-34.",
+            "Awarded 6 official aviation & airline L&D certificates: Aviation Orientation Course (27-Aug-2026), Amadeus Altéa Customer Management (CM) 32 Hrs with 91% score, Introduction to Ground Services (16 Hrs), INSPIRE Airport Service Delivery (16 Hrs), Airport Disruption Management Workshop, and AUG Edition 2026-GSU-34.",
             "Experienced across check-in, boarding gates, baggage/ramp coordination, irregular operations (IROPS), travel agency GDS ticketing (Hope Road, El Synable, Nour Aldeen), and regulatory compliance.",
         ],
         "tech": [
