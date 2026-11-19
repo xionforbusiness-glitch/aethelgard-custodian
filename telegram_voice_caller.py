@@ -2105,6 +2105,19 @@ class TelegramP2PCallManager:
                 return
             if mode == ntgcalls.StreamMode.CAPTURE:
                 return
+
+            # Native Gemini 3.8 Live bidirectional audio pipeline
+            live_bridge = ctx.get("live_bridge")
+            if live_bridge is not None and live_bridge.is_connected:
+                for fr in frames or []:
+                    raw = bytes(getattr(fr, "data", b""))
+                    if raw:
+                        if not ctx.get("rx_logged"):
+                            ctx["rx_logged"] = True
+                            self._log_event(f"Gemini Live RX active peer={peer_id} bytes={len(raw)}")
+                        live_bridge.feed_incoming_frame_48k(raw)
+                return
+
             vad: AudioTurnDetector = ctx["vad"]
             try:
                 for fr in frames or []:
@@ -2150,12 +2163,27 @@ class TelegramP2PCallManager:
                 return
             if state == ntgcalls.ConnectionState.CONNECTED and not ctx.get("greeted"):
                 ctx["greeted"] = True
-                opening = ctx.get("opening_prompt") or "Hello Omar, Aethelgard online. Go ahead."
-                asyncio.run_coroutine_threadsafe(self._speak_text(peer_id, opening), self.loop)
-                asyncio.run_coroutine_threadsafe(
-                    asyncio.to_thread(ctx["brain"].warm_live_context, True),
-                    self.loop,
-                )
+                self._log_event(f"WebRTC CONNECTED peer={peer_id}; starting Gemini 3.8 Live bridge session")
+                try:
+                    import gemini_live_bridge
+                    bridge = gemini_live_bridge.GeminiLiveBridgeSession(
+                        peer_id=peer_id,
+                        call_ctx=ctx,
+                        brain=ctx["brain"],
+                        log_cb=self._log_event,
+                        hangup_cb=lambda: self.hangup_call(peer_id),
+                        notify_cb=lambda err: self._notify_user_telegram(peer_id, err),
+                    )
+                    ctx["live_bridge"] = bridge
+                    asyncio.run_coroutine_threadsafe(bridge.start(), self.loop)
+                except Exception as b_err:
+                    self._log_event(f"Failed to start GeminiLiveBridgeSession: {b_err}; falling back to Flash VAD")
+                    opening = ctx.get("opening_prompt") or "Hello Omar, Aethelgard online. Go ahead."
+                    asyncio.run_coroutine_threadsafe(self._speak_text(peer_id, opening), self.loop)
+                    asyncio.run_coroutine_threadsafe(
+                        asyncio.to_thread(ctx["brain"].warm_live_context, True),
+                        self.loop,
+                    )
             elif state in (ntgcalls.ConnectionState.CLOSED, ntgcalls.ConnectionState.FAILED, ntgcalls.ConnectionState.TIMEOUT):
                 asyncio.run_coroutine_threadsafe(self._cleanup_call(peer_id), self.loop)
 
@@ -2358,6 +2386,7 @@ class TelegramP2PCallManager:
             "tg_call_id": tg_call_id,
             "vad": AudioTurnDetector(),
             "brain": VoiceBrainSession(),
+            "live_bridge": None,
             "out_queue": asyncio.Queue(),
             "generation": 0,
             "ai_speaking": False,
@@ -2491,6 +2520,15 @@ class TelegramP2PCallManager:
                 self._log_event(f"DiscardCallRequest notice peer={peer_id}: {type(exc).__name__}: {exc}")
         await self._cleanup_call(peer_id)
         return True
+
+    async def _notify_user_telegram(self, peer_id: int, message: str) -> None:
+        try:
+            if self.client:
+                entity = await self._resolve_target_entity(self.client, peer_id)
+                await self.client.send_message(entity, message)
+                self._log_event(f"Sent Telegram notification to peer={peer_id}: {message[:60]}")
+        except Exception as exc:
+            self._log_event(f"Failed to send Telegram notification to peer={peer_id}: {exc}")
 
     async def _play_earcon(self, peer_id: int, kind: str = "checking", is_ar: bool = False) -> None:
         """Queues pre-cached 10ms British JARVIS PCM earcon frames for instant (<50ms) audio acknowledgment."""
@@ -2632,6 +2670,12 @@ class TelegramP2PCallManager:
         task = ctx.get("sender_task")
         if task:
             task.cancel()
+        live_bridge = ctx.get("live_bridge")
+        if live_bridge is not None:
+            try:
+                await live_bridge.close()
+            except Exception:
+                pass
         if self.ntg:
             try:
                 await self.ntg.stop(peer_id)
