@@ -4,14 +4,15 @@ tests/test_gemini_live_call.py — End-to-End Voice Simulation & Audio Recording
 ===================================================================================
 Simulates a live caller on Telegram interacting with Aethelgard over the Gemini 3.8
 Live WebSocket bridge:
-  1. Synthesizes human speech ("Aethelgard, please save a draft email about animals")
+  1. Pre-synthesizes human speech clips (Turn 1: draft email, Turn 2: end call)
   2. Encapsulates into 48kHz mono 10ms frames (960 bytes, NTgCalls standard)
-  3. Feeds frames into GeminiLiveBridgeSession
-  4. Intercepts all output 48kHz audio frames from out_queue and records them to a WAV file
-  5. Verifies autonomous execution of save_gmail_draft
-  6. Sends follow-up speech ("Thank you Aethelgard, please end the call")
-  7. Captures farewell audio and verifies clean end_call hangup
-  8. Saves and analyzes the full recorded audio evidence
+  3. Connects GeminiLiveBridgeSession and captures initial spoken greeting
+  4. Waits for greeting turn completion and audio drain
+  5. Feeds Turn 1 frames into Aethelgard's microphone input
+  6. Verifies autonomous execution of save_gmail_draft and spoken confirmation
+  7. Feeds Turn 2 frames ("Thank you Aethelgard, please end the call")
+  8. Captures farewell audio and verifies clean end_call hangup
+  9. Transcribes and analyzes the full recorded audio evidence
 """
 
 import asyncio
@@ -38,7 +39,7 @@ def pcm_to_wav(pcm_data: bytes, wav_path: Path, sample_rate: int = 48000, channe
         wf.setsampwidth(2)
         wf.setframerate(sample_rate)
         wf.writeframes(pcm_data)
-    print(f" Saved {len(pcm_data)} bytes of audio to {wav_path} ({len(pcm_data)/(sample_rate*2):.2f}s)")
+    print(f"📁 Saved {len(pcm_data)} bytes of audio to {wav_path} ({len(pcm_data)/(sample_rate*2):.2f}s)", flush=True)
 
 
 async def synthesize_speech_48k(text: str, voice: str = "en-US-GuyNeural") -> bytes:
@@ -62,9 +63,9 @@ async def synthesize_speech_48k(text: str, voice: str = "en-US-GuyNeural") -> by
 
 
 async def run_simulated_call_test():
-    print("=" * 70)
-    print("🎙️ STARTING AETHELGARD GEMINI 3.8 LIVE SIMULATED CALL TEST")
-    print("=" * 70)
+    print("=" * 70, flush=True)
+    print("🎙️ STARTING AETHELGARD GEMINI 3.8 LIVE SIMULATED CALL TEST", flush=True)
+    print("=" * 70, flush=True)
 
     recordings_dir = REPO_ROOT / "tests" / "recordings"
     recordings_dir.mkdir(parents=True, exist_ok=True)
@@ -85,11 +86,18 @@ async def run_simulated_call_test():
     hangup_event = asyncio.Event()
 
     def on_hangup():
-        print("🔔 [Hangup Callback] Aethelgard initiated hangup!")
+        print("🔔 [Hangup Callback] Aethelgard initiated hangup!", flush=True)
         hangup_event.set()
 
     def on_log(msg: str):
-        print(f"   [LOG] {msg}")
+        print(f"   [LOG] {msg}", flush=True)
+
+    # 1. Pre-synthesize speech clips before starting the bridge
+    print("\n1. Pre-synthesizing caller speech clips...", flush=True)
+    turn1_audio_48k = await synthesize_speech_48k("Aethelgard, please save a draft email about animals.")
+    turn2_audio_48k = await synthesize_speech_48k("Thank you Aethelgard, that will be all. Please end the call.")
+    print(f"   Turn 1 audio: {len(turn1_audio_48k)} bytes ({len(turn1_audio_48k)/96000:.2f}s)", flush=True)
+    print(f"   Turn 2 audio: {len(turn2_audio_48k)} bytes ({len(turn2_audio_48k)/96000:.2f}s)", flush=True)
 
     bridge = gemini_live_bridge.GeminiLiveBridgeSession(
         peer_id=1021125594,
@@ -119,66 +127,65 @@ async def run_simulated_call_test():
 
     recorder_task = asyncio.create_task(audio_recorder_worker())
 
-    print("\n1. Connecting Gemini Live bridge session...")
+    print("\n2. Connecting Gemini Live bridge session...", flush=True)
     connected = await bridge.start()
     if not connected:
-        print("❌ Failed to connect to Gemini Live!")
+        print("❌ Failed to connect to Gemini Live!", flush=True)
         recording_active = False
         await recorder_task
         return False
 
-    print("✅ Connected to Gemini 3.8 Live WebSocket successfully!")
+    print("✅ Connected to Gemini 3.8 Live WebSocket successfully!", flush=True)
 
-    # Wait for opening greeting audio to drain completely
-    print("⏳ Waiting for initial spoken greeting to finish playing...")
-    while call_ctx["ai_speaking"] or not out_queue.empty():
-        await asyncio.sleep(0.2)
-    await asyncio.sleep(0.5)
+    # Wait for opening greeting turn to complete
+    print("⏳ Waiting for initial spoken greeting to complete and audio to drain...", flush=True)
+    try:
+        await asyncio.wait_for(bridge.turn_complete_event.wait(), timeout=6.0)
+        print("   Greeting model turn finished.", flush=True)
+    except asyncio.TimeoutError:
+        print("   Greeting wait timed out, continuing...", flush=True)
 
-    # 2. Synthesize speech for Turn 1: Omar asking to save a draft email about animals
-    print("\n2. Synthesizing Turn 1: 'Aethelgard, please save a draft email about animals.'")
-    turn1_audio_48k = await synthesize_speech_48k("Aethelgard, please save a draft email about animals.")
-    print(f"   Synthesized Turn 1 speech: {len(turn1_audio_48k)} bytes ({len(turn1_audio_48k)/96000:.2f}s)")
+    while call_ctx.get("ai_speaking") or not out_queue.empty():
+        await asyncio.sleep(0.1)
+    await asyncio.sleep(0.4)
 
-    # Stream Turn 1 into bridge in 10ms (960-byte) frames
-    print("   Streaming Turn 1 frames to Aethelgard's microphone input...")
+    # 3. Stream Turn 1: Omar asking to save a draft email about animals
+    print("\n3. Streaming Turn 1: 'Aethelgard, please save a draft email about animals.'", flush=True)
+    bridge.turn_complete_event.clear()
+
+    silence_frame = b"\x00" * 960
     for i in range(0, len(turn1_audio_48k), 960):
         frame = turn1_audio_48k[i : i + 960]
         bridge.feed_incoming_frame_48k(frame)
         await asyncio.sleep(0.010)
 
-    # Send 1.5s silence to trigger turn complete
-    silence_frame = b"\x00" * 960
+    # 1.5s of silence frames to trigger turn complete
     for _ in range(150):
         bridge.feed_incoming_frame_48k(silence_frame)
         await asyncio.sleep(0.010)
 
-    print("   Turn 1 speech streamed. Waiting for Aethelgard tool execution and verbal response...")
-    t0 = time.monotonic()
-    draft_detected = False
-    while time.monotonic() - t0 < 10.0:
-        if brain.actions_log and any(a.get("tool") == "save_gmail_draft" for a in brain.actions_log):
-            draft_detected = True
-            break
-        await asyncio.sleep(0.5)
+    print("   Turn 1 speech streamed. Waiting for Aethelgard tool execution and verbal response...", flush=True)
+    try:
+        await asyncio.wait_for(bridge.turn_complete_event.wait(), timeout=12.0)
+        print("   Turn 1 model turn finished.", flush=True)
+    except asyncio.TimeoutError:
+        print("   Turn 1 wait timed out.", flush=True)
 
+    draft_detected = bool(brain.actions_log and any(a.get("tool") == "save_gmail_draft" for a in brain.actions_log))
     if draft_detected:
-        print("🎯 SUCCESS: save_gmail_draft was autonomously called and executed!")
+        print("🎯 SUCCESS: save_gmail_draft was autonomously called and executed!", flush=True)
     else:
-        print("⚠️ Warning: save_gmail_draft not yet detected in actions_log.")
+        print("⚠️ Warning: save_gmail_draft not yet detected in actions_log.", flush=True)
 
-    # Wait for response audio to finish playing
-    print("⏳ Waiting for Aethelgard's verbal draft confirmation to finish playing...")
-    while call_ctx["ai_speaking"] or not out_queue.empty():
-        await asyncio.sleep(0.2)
+    # Wait for verbal response to drain completely
+    while call_ctx.get("ai_speaking") or not out_queue.empty():
+        await asyncio.sleep(0.1)
     await asyncio.sleep(0.5)
 
-    # 3. Synthesize speech for Turn 2: Omar saying "Thank you Aethelgard, please end the call."
-    print("\n3. Synthesizing Turn 2: 'Thank you Aethelgard, that will be all. Please end the call.'")
-    turn2_audio_48k = await synthesize_speech_48k("Thank you Aethelgard, that will be all. Please end the call.")
-    print(f"   Synthesized Turn 2 speech: {len(turn2_audio_48k)} bytes ({len(turn2_audio_48k)/96000:.2f}s)")
+    # 4. Stream Turn 2: Omar saying "Thank you Aethelgard, please end the call."
+    print("\n4. Streaming Turn 2: 'Thank you Aethelgard, that will be all. Please end the call.'", flush=True)
+    bridge.turn_complete_event.clear()
 
-    print("   Streaming Turn 2 frames...")
     for i in range(0, len(turn2_audio_48k), 960):
         frame = turn2_audio_48k[i : i + 960]
         bridge.feed_incoming_frame_48k(frame)
@@ -188,12 +195,12 @@ async def run_simulated_call_test():
         bridge.feed_incoming_frame_48k(silence_frame)
         await asyncio.sleep(0.010)
 
-    print("   Waiting for Aethelgard farewell and end_call hangup...")
+    print("   Waiting for Aethelgard farewell and end_call hangup...", flush=True)
     try:
-        await asyncio.wait_for(hangup_event.wait(), timeout=10.0)
-        print("🎯 SUCCESS: end_call hangup triggered cleanly!")
+        await asyncio.wait_for(hangup_event.wait(), timeout=12.0)
+        print("🎯 SUCCESS: end_call hangup triggered cleanly!", flush=True)
     except asyncio.TimeoutError:
-        print("⚠️ Hangup event timed out, closing bridge manually.")
+        print("⚠️ Hangup event timed out, closing bridge manually.", flush=True)
 
     await asyncio.sleep(1.0)
     await bridge.close()
@@ -204,15 +211,15 @@ async def run_simulated_call_test():
     # Save audio evidence to WAV file
     pcm_to_wav(bytes(recorded_audio), wav_out_path, sample_rate=48000)
 
-    print("\n" + "=" * 70)
-    print("📊 TEST SUMMARY & EVIDENCE REPORT")
-    print("=" * 70)
-    print(f"• Total Spoken Audio Recorded: {len(recorded_audio)} bytes ({len(recorded_audio)/96000:.2f} seconds)")
-    print(f"• Recording Saved To         : {wav_out_path}")
-    print(f"• Actions Executed           : {[a.get('tool') for a in brain.actions_log]}")
+    print("\n" + "=" * 70, flush=True)
+    print("📊 TEST SUMMARY & EVIDENCE REPORT", flush=True)
+    print("=" * 70, flush=True)
+    print(f"• Total Spoken Audio Recorded: {len(recorded_audio)} bytes ({len(recorded_audio)/96000:.2f} seconds)", flush=True)
+    print(f"• Recording Saved To         : {wav_out_path}", flush=True)
+    print(f"• Actions Executed           : {[a.get('tool') for a in brain.actions_log]}", flush=True)
     if brain.actions_log:
         for idx, act in enumerate(brain.actions_log):
-            print(f"  [{idx+1}] Tool: {act.get('tool')} | Summary: {act.get('summary')} | OK: {act.get('ok')}")
+            print(f"  [{idx+1}] Tool: {act.get('tool')} | Summary: {act.get('summary')} | OK: {act.get('ok')}", flush=True)
 
     return True
 

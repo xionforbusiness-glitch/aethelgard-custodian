@@ -215,6 +215,7 @@ class GeminiLiveBridgeSession:
         self._start_mono = time.monotonic()
         self._warned_14m = False
         self._barge_streak_frames = 0
+        self.turn_complete_event = asyncio.Event()
 
     def log(self, text: str) -> None:
         self.log_cb(f"[GeminiLive] {text}")
@@ -398,6 +399,7 @@ class GeminiLiveBridgeSession:
 
                     if sc.turn_complete:
                         self.log("Gemini model turn complete.")
+                        self.turn_complete_event.set()
 
                 # 4. Tool Calls
                 tc = resp.tool_call
