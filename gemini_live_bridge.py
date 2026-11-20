@@ -440,7 +440,8 @@ class GeminiLiveBridgeSession:
                 "12. LIVE WEB SEARCH & RECRUITER PITCHING: If Omar asks you to search the internet, look up airlines, or pitch to a recruiter, call `live_web_search(query=...)` or `pitch_recruiter(company=...)`. "
                 "13. SCHEDULE & SHIFT MODIFICATION: You possess FULL AUTHORITY to create, edit, modify, and adjust Omar's work schedule and calendar. NEVER say 'I'm unable to modify your work schedule directly'! When Omar asks to edit, adjust, or change his schedule for tomorrow or any date ('modify my schedule for tomorrow', 'can we edit it?', 'change tomorrow to 9 to 5', 'I'm off tomorrow'), IMMEDIATELY call `modify_shift_schedule(date='tomorrow', shift_times=..., status=...)`! Confirm courteously with the updated shift hours and sleep anchor. "
                 "14. GOOGLE CALENDAR & APPOINTMENT MANAGEMENT: If Omar asks to create, modify, or cancel a calendar event, appointment, or meeting ('add a meeting tomorrow at 10 AM', 'reschedule my appointment', 'cancel that event'), IMMEDIATELY call `manage_calendar_event(action='create' or 'modify' or 'delete', summary=..., start_time=..., date=...)`. It automatically synchronizes with his primary Google Calendar via RFC 5545 invite. "
-                "15. CREDENTIALS, PORTALS & DEVELOPER PERKS AUTONOMY: You have full executive authority and access to Omar's credentials and services (Gmail, Google Calendar, Telegram, Playwright headless browser engine for portal account signups). When tasked with signing up, creating portal accounts, or claiming developer perks (e.g. GitHub Student Developer Pack offers such as MongoDB Atlas $50 credits/certification, New Relic student tier, or airline career portals), IMMEDIATELY call `automate_portal_signup(service_name=..., target_url=..., notes=...)`! Acknowledge immediately in natural conversational style ('Got it, Sir, setting up that account right now in the background') and maintain conversation with zero dead air."
+                "15. CREDENTIALS, PORTALS & DEVELOPER PERKS AUTONOMY: You have full executive authority and access to Omar's credentials and services (Gmail, Google Calendar, Telegram, Playwright headless browser engine for portal account signups). When tasked with signing up, creating portal accounts, or claiming developer perks (e.g. GitHub Student Developer Pack offers such as MongoDB Atlas $50 credits/certification, New Relic student tier, or airline career portals), IMMEDIATELY call `automate_portal_signup(service_name=..., target_url=..., notes=...)`! Acknowledge immediately in natural conversational style ('Got it, Sir, setting up that account right now in the background') and maintain conversation with zero dead air.\n"
+                "16. OUTGOING MISSION CALLS (MOTHER, FRIENDS, CONTACTS): If Omar asks you to call someone ('call my mom and check on her', 'call @friend', 'call Fotnah', 'place a call to...'), IMMEDIATELY call `place_telegram_call(target=..., mission_objective=...)`! Acknowledge immediately in crisp British butler tone ('Right away, Sir. Calling her right now. I will conclude this line now and stream live updates to your chat.') and end the call gracefully so the outbound line can connect immediately."
             )
             if recent_context_blob:
                 system_instruction += f"\n\nContext Snapshot at Call Connect:\n{recent_context_blob}"
@@ -572,8 +573,9 @@ class GeminiLiveBridgeSession:
                         f"{self._silence_frames_count * 20}ms silence). Sent audio_stream_end."
                     )
 
-                    # Continuous Biometrics evaluation on full voiced utterance (even during lockdown to allow instant re-verification)
-                    if self.peer_profile.get("is_owner"):
+                    # Continuous Biometrics evaluation on full voiced utterance (strictly on INCOMING calls from Omar)
+                    direction = str(self.call_ctx.get("direction") or "incoming").lower()
+                    if self.peer_profile.get("is_owner") and direction == "incoming":
                         if not self._calibration_mode:
                             # Require at least 1.2s of voiced speech (38,400 bytes @ 16kHz) for stable embedding
                             if len(self._utterance_buf_16k) >= 38400:
@@ -614,6 +616,11 @@ class GeminiLiveBridgeSession:
     async def _async_evaluate_biometrics(self, audio_bytes: bytes) -> None:
         """Asynchronously computes acoustic embedding in thread pool with zero audio pipeline delay."""
         try:
+            direction = str(self.call_ctx.get("direction") or "incoming").lower()
+            if not self.peer_profile.get("is_owner") or direction == "outgoing":
+                self.log(f"[Biometrics] Evaluation bypassed: owner={self.peer_profile.get('is_owner')} direction={direction}")
+                return
+
             loop = self.loop or asyncio.get_running_loop()
             import voice_biometrics
             res = await loop.run_in_executor(None, voice_biometrics.verify_speaker, audio_bytes, "omar")
@@ -830,6 +837,8 @@ class GeminiLiveBridgeSession:
                                 self.transcript_log.append(f"**Aethelgard:** {txt}")
                                 if self.brain and hasattr(self.brain, "transcript_log"):
                                     self.brain.transcript_log.append(f"**Aethelgard:** {txt}")
+                                if not self.peer_profile.get("is_owner"):
+                                    asyncio.create_task(self._stream_turn_to_owner(f"🤖 **Aethelgard:** {txt}"))
 
                         if sc.input_transcription and sc.input_transcription.text:
                             u_txt = sc.input_transcription.text.strip()
@@ -840,6 +849,8 @@ class GeminiLiveBridgeSession:
                                 self.transcript_log.append(f"**{peer_label}:** {u_txt}")
                                 if self.brain and hasattr(self.brain, "transcript_log"):
                                     self.brain.transcript_log.append(f"**{peer_label}:** {u_txt}")
+                                if not self.peer_profile.get("is_owner"):
+                                    asyncio.create_task(self._stream_turn_to_owner(f"👤 **{peer_label}:** {u_txt}"))
 
                         # 3. Interruption / Barge-in (Omar spoke while Aethelgard was speaking)
                         if sc.interrupted:
@@ -1013,8 +1024,21 @@ class GeminiLiveBridgeSession:
             # Post-call debrief sent automatically to Omar's Telegram chat (@aethelgard_vault_bot)
             asyncio.create_task(self._send_post_call_debrief())
 
+    async def _stream_turn_to_owner(self, turn_text: str) -> None:
+        """Sends real-time live turn updates to Omar's Telegram bot while on a call with a third party."""
+        try:
+            from proactive_scheduler import send_telegram
+            peer_label = self.peer_profile.get("display_name") or self.peer_profile.get("name") or "Contact"
+            msg = f"📞 **[Live Call: {peer_label}]**\n{turn_text}"
+            send_telegram(msg, chat_id=1021125594)
+        except Exception as s_err:
+            self.log(f"Notice streaming turn to owner: {s_err}")
+
     async def _send_post_call_debrief(self) -> None:
         """Dispatches an executive debrief of the live call to Omar's Telegram chat."""
+        if self.call_ctx and self.call_ctx.get("recorder"):
+            self.log("Post-call debrief delegated to CallAudioRecorder.")
+            return
         try:
             duration_s = int(time.monotonic() - self._start_mono)
             mins = duration_s // 60

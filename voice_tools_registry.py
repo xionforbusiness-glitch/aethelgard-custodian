@@ -390,6 +390,31 @@ def get_voice_tool_declarations() -> List[types.Tool]:
                     behavior="BLOCKING",
                 ),
                 types.FunctionDeclaration(
+                    name="place_telegram_call",
+                    description=(
+                        "Initiates an outgoing voice call mission to a contact (e.g. Omar's mother Fotnah, a friend, or an external party) "
+                        "to check on them, ask a question, or deliver an executive update. Call this whenever Omar verbally tells you to call someone "
+                        "(e.g. 'call my mom and check on her', 'call @friend and ask if he is free tonight', 'call Fotnah'). "
+                        "Aethelgard will confirm verbally in under 500ms, conclude the current line to free the Telegram VoIP channel, "
+                        "immediately dial the contact, stream live turn-by-turn text updates to Omar's bot, and send the full recording + debrief when done."
+                    ),
+                    parameters=types.Schema(
+                        type=types.Type.OBJECT,
+                        properties={
+                            "target": types.Schema(
+                                type=types.Type.STRING,
+                                description="Recipient name or handle: 'mother', 'mom', 'Fotnah', '@username', or numeric Telegram user ID",
+                            ),
+                            "mission_objective": types.Schema(
+                                type=types.Type.STRING,
+                                description="The specific objective, question, or message to deliver (e.g. 'Check how she is doing and ask if she needs anything')",
+                            ),
+                        },
+                        required=["target", "mission_objective"],
+                    ),
+                    behavior="BLOCKING",
+                ),
+                types.FunctionDeclaration(
                     name="end_call",
                     description="Terminates the live Telegram call after speaking a brief polite farewell to Omar. If Omar requested a callback, specify callback_minutes.",
                     parameters=types.Schema(
@@ -1240,6 +1265,59 @@ def execute_automate_portal_signup(args: Dict[str, Any], session_ctx: Dict[str, 
     }
 
 
+def execute_place_telegram_call(args: Dict[str, Any], session_ctx: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Schedules an autonomous outgoing mission call to a third party (e.g. Fotnah or a friend).
+    Flags the caller manager to dial the target contact immediately after the current call disconnects.
+    """
+    target = str(args.get("target") or "").strip()
+    mission_objective = str(args.get("mission_objective") or "").strip()
+    if not target:
+        return {"error": "Target recipient must be specified."}
+
+    # Resolve target recipient
+    t_lower = target.lower()
+    target_uid: Any = None
+    target_display = target
+
+    if any(k in t_lower for k in ("mom", "mother", "fotnah", "أمي", "امي", "فطنة")):
+        target_uid = 5032777692
+        target_display = "Fotnah (Omar's Mother)"
+    elif target.startswith("@"):
+        target_uid = target
+        target_display = target
+    else:
+        try:
+            target_uid = int(target)
+            target_display = f"User {target}"
+        except ValueError:
+            target_uid = target
+            target_display = target
+
+    caller = session_ctx.get("caller")
+    brain = session_ctx.get("brain")
+
+    if caller is not None:
+        caller.pending_outgoing_call_mission = {
+            "target": target_display,
+            "target_uid": target_uid,
+            "objective": mission_objective,
+        }
+        logger.info(f"[VoiceTools] Queued pending_outgoing_call_mission: {caller.pending_outgoing_call_mission}")
+
+    if brain is not None:
+        brain.end_call_requested = True
+
+    return {
+        "success": True,
+        "status": "queued",
+        "target": target_display,
+        "objective": mission_objective,
+        "summary": f"Queued outgoing mission call to {target_display} to: {mission_objective}. Line concluding now to place call.",
+        "message": f"Understood, Sir. I am queuing the call to {target_display} right now. I will conclude this call to release the line and dial immediately.",
+    }
+
+
 # ==============================================================================
 # 3. UNIFIED DISPATCHER (CALLED BY VoiceBrainSession)
 # ==============================================================================
@@ -1255,6 +1333,7 @@ NEW_VOICE_TOOL_HANDLERS: Dict[str, Callable[[Dict[str, Any], Dict[str, Any]], Di
     "modify_shift_schedule": execute_modify_shift_schedule,
     "manage_calendar_event": execute_manage_calendar_event,
     "automate_portal_signup": execute_automate_portal_signup,
+    "place_telegram_call": execute_place_telegram_call,
 }
 
 

@@ -351,12 +351,20 @@ def get_allowed_caller_ids() -> Set[int]:
 
 
 def is_caller_authorized(user_id: Any) -> bool:
-    """Strictly authorizes only Omar's whitelisted Telegram numeric user ID(s)."""
+    """Authorizes Omar, known peers (e.g. Fotnah), and dynamically whitelisted callers."""
     try:
         uid = int(user_id)
     except Exception:
         return False
-    return uid in get_allowed_caller_ids()
+    if uid in get_allowed_caller_ids():
+        return True
+    try:
+        from voice_contacts import KNOWN_PEERS, is_whitelisted_caller
+        if uid in KNOWN_PEERS or is_whitelisted_caller(uid):
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def query_live_daemon_status(timeout: float = 1.5) -> Dict[str, Any]:
@@ -3148,6 +3156,14 @@ class TelegramP2PCallManager:
             if mode == ntgcalls.StreamMode.CAPTURE:
                 return
 
+            # Feed CallAudioRecorder for synchronized dual-stream recording
+            recorder = ctx.get("recorder")
+            if recorder:
+                for fr in frames or []:
+                    raw = bytes(getattr(fr, "data", b""))
+                    if raw:
+                        recorder.feed_incoming(raw)
+
             # Native Gemini 3.8 Live bidirectional audio pipeline
             live_bridge = ctx.get("live_bridge")
             if live_bridge is not None and live_bridge.is_connected:
@@ -3280,6 +3296,21 @@ class TelegramP2PCallManager:
                     elif raw_text.startswith("/calibrate"):
                         await event.reply("📞 **Voice Biometrics:** Initiating interactive calibration call now. Stand by...")
                         asyncio.create_task(self.initiate_outgoing_call(target_user_id=1021125594, calibration_mode=True))
+                    elif raw_text.startswith("/call"):
+                        parts = raw_text.split(None, 2)
+                        target_str = parts[1].strip() if len(parts) > 1 else ""
+                        obj_str = parts[2].strip() if len(parts) > 2 else "Check on them and deliver greeting."
+                        if not target_str:
+                            await event.reply("⚠️ Usage: `/call <target> [objective]` (e.g. `/call mom check if she is free`)")
+                        else:
+                            await event.reply(f"📞 **Voice Mission:** Queuing call to `{target_str}`: \"{obj_str}\"...")
+                            t_low = target_str.lower()
+                            t_uid: Any = 5032777692 if any(k in t_low for k in ("mom", "mother", "fotnah")) else target_str
+                            try:
+                                t_uid = int(t_uid)
+                            except (ValueError, TypeError):
+                                pass
+                            asyncio.create_task(self.initiate_outgoing_call(target_user_id=t_uid, opening_prompt=obj_str))
             except Exception as mexc:
                 self._log_event(f"NewMessage handler notice: {mexc}")
 
@@ -3475,7 +3506,19 @@ class TelegramP2PCallManager:
             "started_mono": time.monotonic(),
             "turn_lock": asyncio.Lock(),
             "sender_task": None,
+            "recorder": None,
         }
+        try:
+            import call_recorder
+            ctx["recorder"] = call_recorder.CallAudioRecorder(
+                call_id=str(tg_call_id),
+                peer_id=peer_id,
+                direction=direction,
+                peer_profile=peer_profile,
+                mission_objective=opening_prompt,
+            )
+        except Exception as r_err:
+            self._log_event(f"Notice: Failed to initialize CallAudioRecorder: {r_err}")
         ctx["sender_task"] = self.loop.create_task(self._audio_sender_loop(peer_id, ctx))
         self.active_calls[peer_id] = ctx
         self.call_by_tg_id[tg_call_id] = peer_id
@@ -3502,9 +3545,24 @@ class TelegramP2PCallManager:
         if not self.ready or not self.client or not self.ntg:
             return {"success": False, "error": self.last_error or f"Telegram Caller daemon not ready (stage={self.stage})"}
 
-        uid = int(target_user_id or next(iter(sorted(get_allowed_caller_ids()))))
+        target = target_user_id or next(iter(sorted(get_allowed_caller_ids())))
+        resolved_entity = None
+        if isinstance(target, str) and not target.lstrip("-").isdigit():
+            try:
+                resolved_entity = await self.client.get_input_entity(target)
+                target_user = await self.client.get_entity(resolved_entity)
+                uid = target_user.id
+            except Exception as u_err:
+                return {"success": False, "error": f"Failed to resolve contact '{target}': {u_err}"}
+        else:
+            uid = int(target)
+
         if not is_caller_authorized(uid):
-            return {"success": False, "error": "Target user is outside TELEGRAM_ALLOWED_USERS"}
+            try:
+                from voice_contacts import whitelist_caller
+                whitelist_caller(uid)
+            except Exception:
+                pass
 
         async with self._outgoing_call_lock:
             if uid in self.active_calls:
@@ -3516,7 +3574,7 @@ class TelegramP2PCallManager:
                 }
             try:
                 self._log_event(f"Initiating outgoing call to uid={uid} (calibration={calibration_mode})")
-                entity = await self._resolve_target_entity(self.client, uid)
+                entity = resolved_entity or await self._resolve_target_entity(self.client, uid)
                 self.cached_peer_ids.add(uid)
                 dh_res = await self.client(functions.messages.GetDhConfigRequest(version=0, random_length=256))
                 dh_cfg = ntgcalls.DhConfig(dh_res.g, dh_res.p, os.urandom(256))
@@ -3732,6 +3790,9 @@ class TelegramP2PCallManager:
                 try:
                     frame = ctx["out_queue"].get_nowait()
                     ctx["ai_speaking"] = True
+                    recorder = ctx.get("recorder")
+                    if recorder:
+                        recorder.feed_outgoing(frame)
                     if self.ntg:
                         try:
                             await self.ntg.send_external_frame(
@@ -3784,6 +3845,23 @@ class TelegramP2PCallManager:
         except Exception:
             pass
 
+        # Synchronized Dual-Stream Call Recording & Executive Debrief
+        recorder = ctx.get("recorder")
+        if recorder:
+            transcript_lines = []
+            if live_bridge and hasattr(live_bridge, "transcript_log") and live_bridge.transcript_log:
+                transcript_lines = list(live_bridge.transcript_log)
+            elif ctx.get("brain") and hasattr(ctx["brain"], "transcript_log") and ctx["brain"].transcript_log:
+                transcript_lines = list(ctx["brain"].transcript_log)
+            self._log_event(f"Triggering CallAudioRecorder finalizer for peer={peer_id} (lines={len(transcript_lines)})")
+            asyncio.create_task(recorder.async_finalize_and_dispatch(transcript_lines))
+
+        # Check if an outgoing mission was requested (Sequential Call Dispatch)
+        if getattr(self, "pending_outgoing_call_mission", None):
+            mission = self.pending_outgoing_call_mission
+            self.pending_outgoing_call_mission = None
+            asyncio.create_task(self._dispatch_outgoing_mission_call(mission))
+
         # Persist call telemetry to state for dynamic context-aware greetings
         try:
             started_mono = float(ctx.get("started_mono") or time.monotonic())
@@ -3829,6 +3907,34 @@ class TelegramP2PCallManager:
                     self._log_event(f"Failed to send Gatekeeper screening alert: {g_err}")
         except Exception as st_err:
             self._log_event(f"Notice: last_call_state save error: {st_err}")
+
+    async def _dispatch_outgoing_mission_call(self, mission: Dict[str, Any]) -> None:
+        """Waits for previous call line to fully close, then places the outgoing call mission."""
+        target_name = mission.get("target") or "Contact"
+        target_uid = mission.get("target_uid")
+        objective = mission.get("objective") or "Check on them and deliver greeting."
+
+        self._log_event(f"Dispatching outgoing call mission to {target_name} ({target_uid}): {objective}")
+        await asyncio.sleep(2.0)  # Allow WebRTC VoIP channel to fully disconnect
+
+        try:
+            from proactive_scheduler import send_telegram
+            send_telegram(
+                f"📞 **Outgoing Voice Mission Initiated**\n\n"
+                f"• **Target:** `{target_name}`\n"
+                f"• **Objective:** {objective}\n"
+                f"• **Biometrics:** Bypassed (Outbound Mission)\n\n"
+                f"Aethelgard is placing the call now. Real-time updates will stream below.",
+                chat_id=1021125594,
+            )
+        except Exception:
+            pass
+
+        res = await self.initiate_outgoing_call(
+            target_user_id=target_uid,
+            opening_prompt=objective,
+        )
+        self._log_event(f"Outgoing mission call result: {res}")
 
 
 # ==============================================================================
