@@ -210,6 +210,27 @@ def verify_speaker(
             "security_challenge_needed": False,
         }
 
+    # Guard against evaluating silence or low-energy ambient room noise (< 320 RMS)
+    samples = np.frombuffer(pcm_bytes, dtype=np.int16)
+    if len(samples) == 0:
+        return {
+            "evaluated": False,
+            "reason": "Empty audio buffer",
+            "is_verified": True,
+            "similarity": 1.0,
+            "security_challenge_needed": False,
+        }
+    rms = float(np.sqrt(np.mean(samples.astype(np.float32) ** 2)))
+    if rms < 320.0:
+        logger.debug(f"[Biometrics] Audio rejected as ambient room noise / silence: RMS={rms:.1f} < 320")
+        return {
+            "evaluated": False,
+            "reason": f"Audio is silence or ambient room noise (RMS {rms:.1f} < 320); waiting for voiced speech",
+            "is_verified": True,
+            "similarity": 1.0,
+            "security_challenge_needed": False,
+        }
+
     emb = compute_embedding(pcm_bytes, sample_rate=sample_rate)
     if emb is None:
         return {

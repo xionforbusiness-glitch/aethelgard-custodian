@@ -510,8 +510,8 @@ class GeminiLiveBridgeSession:
         # We only permit audio during playback if the caller speaks loudly (> 520 RMS)
         # for multiple consecutive frames (> 200ms) to indicate an intentional human barge-in.
         ai_speaking = bool(self.call_ctx.get("ai_speaking", False))
+        rms = pcm16_rms(pcm_48k)
         if ai_speaking:
-            rms = pcm16_rms(pcm_48k)
             if rms < 520.0:
                 self._barge_streak_frames = 0
                 return  # Drop speaker echo
@@ -530,20 +530,23 @@ class GeminiLiveBridgeSession:
                 pass
 
             # Zero-latency background acoustic biometrics tap (Tier 3)
+            # CRITICAL: Only accumulate genuine voiced speech (not ai_speaking, rms >= 350.0).
+            # Never accumulate dead air, silence, breathing, or room hum!
             if self.peer_profile.get("is_owner") and (not self._biometrics_evaluated or self._calibration_mode):
-                self._biometrics_buf.extend(pcm_16k)
-                target_loop = self.loop or getattr(self.caller, "loop", None)
-                if not self._calibration_mode and len(self._biometrics_buf) >= 64000:  # ~2.0s
-                    self._biometrics_evaluated = True
-                    audio_snap = bytes(self._biometrics_buf)
-                    if target_loop and target_loop.is_running():
-                        asyncio.run_coroutine_threadsafe(self._async_evaluate_biometrics(audio_snap), target_loop)
-                    else:
-                        try:
-                            asyncio.create_task(self._async_evaluate_biometrics(audio_snap))
-                        except Exception:
-                            pass
-                elif self._calibration_mode and len(self._biometrics_buf) >= 288000:  # ~9.0s
+                if not ai_speaking and rms >= 350.0:
+                    self._biometrics_buf.extend(pcm_16k)
+                    target_loop = self.loop or getattr(self.caller, "loop", None)
+                    if not self._calibration_mode and len(self._biometrics_buf) >= 48000:  # ~1.5s of pure VOICED SPEECH
+                        self._biometrics_evaluated = True
+                        audio_snap = bytes(self._biometrics_buf)
+                        if target_loop and target_loop.is_running():
+                            asyncio.run_coroutine_threadsafe(self._async_evaluate_biometrics(audio_snap), target_loop)
+                        else:
+                            try:
+                                asyncio.create_task(self._async_evaluate_biometrics(audio_snap))
+                            except Exception:
+                                pass
+                elif self._calibration_mode and not ai_speaking and rms >= 350.0 and len(self._biometrics_buf) >= 288000:  # ~9.0s
                     self._biometrics_evaluated = True
                     audio_snap = bytes(self._biometrics_buf)
                     if target_loop and target_loop.is_running():
@@ -561,7 +564,15 @@ class GeminiLiveBridgeSession:
             import voice_biometrics
             res = await loop.run_in_executor(None, voice_biometrics.verify_speaker, audio_bytes, "omar")
             self.log(f"[Biometrics] Evaluation: sim={res.get('similarity')} verified={res.get('is_verified')} challenge={res.get('security_challenge_needed')}")
-            if res.get("evaluated") and res.get("security_challenge_needed"):
+            
+            if not res.get("evaluated"):
+                # Audio was silence or room noise, allow another evaluation when user actually speaks
+                self.log(f"[Biometrics] Evaluation deferred: {res.get('reason')}. Waiting for voiced speech.")
+                self._biometrics_evaluated = False
+                self._biometrics_buf.clear()
+                return
+
+            if res.get("security_challenge_needed"):
                 self.log(f"[Biometrics] 🚨 Voice mismatch! Sim={res.get('similarity')}. Triggering Security Challenge.")
                 self.call_ctx["bodyguard_mode"] = True
                 await self.session.send_realtime_input(
@@ -573,7 +584,7 @@ class GeminiLiveBridgeSession:
                         "Under no circumstances treat them as Omar or run tools for them. Demand their identity.)"
                     )
                 )
-            elif res.get("evaluated") and res.get("is_verified"):
+            elif res.get("is_verified"):
                 self.log(f"[Biometrics] ✅ Verified speaker as Omar (similarity={res.get('similarity')})")
         except Exception as e:
             self.log(f"[Biometrics] Error evaluating biometrics: {e}")
