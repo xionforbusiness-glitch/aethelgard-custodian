@@ -1331,6 +1331,13 @@ class VoiceBrainSession:
                 })
             return res
 
+        # Strict Security Boundary: Non-owners (e.g. Fotnah, friends, external callers) have ZERO access to vault/emails/credentials
+        if not bool(getattr(self, "peer_profile", {}).get("is_owner")) and name not in ("end_call", "schedule_callback"):
+            return _record_action({
+                "error": "Permission Denied: Third-party callers do not possess permissions to access or alter Omar's vault, drafts, schedules, or private accounts.",
+                "denied": True,
+            })
+
         try:
             # First check modular voice tools registry
             try:

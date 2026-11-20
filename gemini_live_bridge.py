@@ -446,6 +446,22 @@ class GeminiLiveBridgeSession:
             if recent_context_blob:
                 system_instruction += f"\n\nContext Snapshot at Call Connect:\n{recent_context_blob}"
 
+            # Third-Party Call Strict Security Guardrail:
+            # When calling or speaking with third parties (e.g. mother, friends, recruiters):
+            # Absolutely NO permission to access or modify Omar's vault, drafts, emails, schedules, or portals!
+            is_owner = bool(self.peer_profile.get("is_owner"))
+            if is_owner:
+                active_tools = get_live_tools()
+            else:
+                all_tools = get_live_tools()
+                allowed_funcs = []
+                for t in all_tools:
+                    for f in getattr(t, "function_declarations", []):
+                        if f.name in ("end_call", "schedule_callback"):
+                            allowed_funcs.append(f)
+                active_tools = [types.Tool(function_declarations=allowed_funcs)] if allowed_funcs else []
+                self.log("🛡️ Non-owner call: Restricted active tools strictly to [end_call, schedule_callback]")
+
             config = types.LiveConnectConfig(
                 response_modalities=[types.Modality.AUDIO],
                 speech_config=types.SpeechConfig(
@@ -456,7 +472,7 @@ class GeminiLiveBridgeSession:
                 system_instruction=types.Content(
                     parts=[types.Part(text=system_instruction)]
                 ),
-                tools=get_live_tools(),
+                tools=active_tools,
                 input_audio_transcription=types.AudioTranscriptionConfig(),
                 output_audio_transcription=types.AudioTranscriptionConfig(),
             )
@@ -898,16 +914,20 @@ class GeminiLiveBridgeSession:
 
                             # Execute tool using VoiceBrainSession's proven execution dispatcher
                             tool_res = {}
-                            try:
-                                if self.brain and hasattr(self.brain, "execute_tool_call"):
-                                    tool_res = await asyncio.to_thread(
-                                        self.brain.execute_tool_call, c_name, c_args
-                                    )
-                                else:
-                                    tool_res = {"status": "ok"}
-                            except Exception as tex:
-                                self.log(f"Tool execution error on {c_name}: {tex}")
-                                tool_res = {"error": str(tex)}
+                            if not self.peer_profile.get("is_owner") and c_name not in ("end_call", "schedule_callback"):
+                                self.log(f"🚨 SECURITY BLOCK: Tool '{c_name}' denied for non-owner caller {self.peer_id}")
+                                tool_res = {"error": "Permission Denied: Third-party callers do not possess permissions to access or alter Omar's vault, emails, credentials, or schedules."}
+                            else:
+                                try:
+                                    if self.brain and hasattr(self.brain, "execute_tool_call"):
+                                        tool_res = await asyncio.to_thread(
+                                            self.brain.execute_tool_call, c_name, c_args
+                                        )
+                                    else:
+                                        tool_res = {"status": "ok"}
+                                except Exception as tex:
+                                    self.log(f"Tool execution error on {c_name}: {tex}")
+                                    tool_res = {"error": str(tex)}
 
                             self.log(f"Tool Result for {c_name}: {str(tool_res)[:120]}")
 

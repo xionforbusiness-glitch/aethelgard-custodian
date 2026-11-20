@@ -279,3 +279,24 @@ def whitelist_caller(user_id: int, name: str = "", relationship: str = "Authoriz
     except Exception as e:
         logger.error(f"Failed to whitelist caller: {e}")
         return False
+
+
+def is_whitelisted_caller(user_id: Any) -> bool:
+    """Checks if a user ID is in KNOWN_PEERS, state whitelist, or MongoDB caller_profiles."""
+    try:
+        uid = int(user_id)
+        if uid in KNOWN_PEERS:
+            return True
+        # Check MongoDB Atlas
+        try:
+            import mongo_vault
+            db = mongo_vault.get_db()
+            if db is not None:
+                doc = db.caller_profiles.find_one({"user_id": uid})
+                if doc and doc.get("whitelisted"):
+                    return True
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return False
