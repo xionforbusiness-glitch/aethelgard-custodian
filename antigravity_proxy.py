@@ -1326,8 +1326,9 @@ class AntigravityGatewayHandler(BaseHTTPRequestHandler):
         requested_model = body.get("model") or "antigravity/gemini-3.8-flash-low"
         is_stream = bool(body.get("stream", False))
 
-        # Primary: Official Google Vertex AI OpenAI-compatible endpoint (full context, zero harness blocks)
-        if VERTEX_PROJECT:
+        # Primary: Official Google Vertex AI OpenAI-compatible endpoint (opt-in only to conserve GCP credits)
+        enable_vertex_text = os.environ.get("ENABLE_VERTEX_TEXT", "false").lower() in ("true", "1", "yes")
+        if VERTEX_PROJECT and enable_vertex_text:
             try:
                 if _proxy_to_vertex_openai(self, body, requested_model, is_stream):
                     return

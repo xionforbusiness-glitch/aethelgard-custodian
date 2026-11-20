@@ -334,19 +334,36 @@ class GeminiLiveBridgeSession:
         self.log_cb(f"[GeminiLive] {text}")
 
     async def start(self) -> bool:
-        """Connects to Gemini 3.8 Live via Vertex AI with cached GCP OAuth credentials."""
+        """Connects to Gemini Live via Google AI Studio API key (Zero-Cost Free Tier) or Vertex AI."""
         try:
             self.loop = asyncio.get_running_loop()
-            import antigravity_proxy as ap
-            token = ap.get_valid_access_token()
-            project = ap.VERTEX_PROJECT
-            if not token or not project:
-                self.log("ERROR: Missing Google OAuth token or GCP project")
-                return False
 
-            from google.oauth2.credentials import Credentials
-            creds = Credentials(token)
-            self.client = genai.Client(vertexai=True, project=project, location="us-central1", credentials=creds)
+            api_key = (
+                os.environ.get("GEMINI_API_KEY")
+                or os.environ.get("GOOGLE_API_KEY")
+                or ""
+            ).strip()
+            live_model = os.environ.get("GEMINI_LIVE_MODEL", "").strip()
+            project = None
+
+            using_ai_studio = bool(api_key)
+            if using_ai_studio:
+                self.log("Initializing Gemini Live client via Google AI Studio API key (Zero-Cost Free Tier)...")
+                self.client = genai.Client(api_key=api_key)
+                models_to_try = [live_model] if live_model else ["gemini-2.0-flash-exp", "gemini-3.8-live"]
+            else:
+                self.log("Initializing Gemini Live client via Vertex AI OAuth credentials...")
+                import antigravity_proxy as ap
+                token = ap.get_valid_access_token()
+                project = ap.VERTEX_PROJECT
+                if not token or not project:
+                    self.log("ERROR: Missing Google OAuth token or GCP project")
+                    return False
+
+                from google.oauth2.credentials import Credentials
+                creds = Credentials(token)
+                self.client = genai.Client(vertexai=True, project=project, location="us-central1", credentials=creds)
+                models_to_try = [live_model] if live_model else ["gemini-3.8-live", "gemini-2.0-flash-exp"]
 
             # Warm shared context from Telegram bot & Obsidian vault
             recent_context_blob = ""
@@ -433,12 +450,24 @@ class GeminiLiveBridgeSession:
                 output_audio_transcription=types.AudioTranscriptionConfig(),
             )
 
-            self.log(f"Connecting to gemini-3.8-live on Vertex AI (project={project})...")
-            # Connect session via async context manager protocol
-            self._live_cm = self.client.aio.live.connect(model="gemini-3.8-live", config=config)
-            self.session = await self._live_cm.__aenter__()
-            self.is_connected = True
-            self.log("Connected to Gemini 3.8 Live WebSocket successfully!")
+            connected = False
+            last_conn_err = None
+            for m in models_to_try:
+                try:
+                    target_endpoint = "Google AI Studio" if using_ai_studio else f"Vertex AI (project={project})"
+                    self.log(f"Connecting to {m} on {target_endpoint}...")
+                    self._live_cm = self.client.aio.live.connect(model=m, config=config)
+                    self.session = await self._live_cm.__aenter__()
+                    self.is_connected = True
+                    self.log(f"Connected to {m} on {target_endpoint} successfully!")
+                    connected = True
+                    break
+                except Exception as conn_err:
+                    last_conn_err = conn_err
+                    self.log(f"Connection attempt to {m} failed: {conn_err}")
+
+            if not connected:
+                raise RuntimeError(f"Failed to connect to any Gemini Live model {models_to_try}: {last_conn_err}")
 
             # Spawn receiver and sender background loops
             self._receive_task = asyncio.create_task(self._receive_loop())
