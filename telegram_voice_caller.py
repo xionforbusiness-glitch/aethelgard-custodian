@@ -3529,7 +3529,7 @@ class TelegramP2PCallManager:
         """Queues pre-cached 10ms British JARVIS PCM earcon frames for instant (<50ms) audio acknowledgment."""
         import voice_engine
         ctx = self.active_calls.get(peer_id)
-        if not ctx or ctx.get("ai_speaking"):
+        if not ctx:
             return
         frames = voice_engine.get_cached_earcon_frames(
             kind,
@@ -3545,7 +3545,10 @@ class TelegramP2PCallManager:
         for frame in frames:
             if ctx.get("generation") != gen_at_start or peer_id not in self.active_calls:
                 break
-            ctx["out_queue"].put_nowait(frame)
+            try:
+                ctx["out_queue"].put_nowait(frame)
+            except Exception:
+                break
 
     async def _handle_utterance(self, peer_id: int, pcm_16k: bytes) -> None:
         ctx = self.active_calls.get(peer_id)

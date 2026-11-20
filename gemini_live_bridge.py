@@ -481,6 +481,32 @@ class GeminiLiveBridgeSession:
                             c_args = call.args or {}
                             self.log(f"Tool Call received: {c_name} args={c_args}")
 
+                            # Instant zero-latency (<50ms) acoustic earcon to kill dead air while tool runs!
+                            if c_name != "end_call" and self.caller and hasattr(self.caller, "_play_earcon"):
+                                earcon_kind = "checking"
+                                c_lower = c_name.lower()
+                                if any(k in c_lower for k in ("search", "find", "google", "web")):
+                                    earcon_kind = "searching"
+                                elif any(k in c_lower for k in ("portal", "login", "signup", "auth")):
+                                    earcon_kind = "portal"
+                                elif any(k in c_lower for k in ("email", "draft", "mail", "application")):
+                                    earcon_kind = "drafting"
+                                elif any(k in c_lower for k in ("mission", "wargame", "task")):
+                                    earcon_kind = "mission"
+
+                                # Detect if user spoke Arabic
+                                is_ar = False
+                                if self.transcript_log:
+                                    last_u_lines = [str(x) for x in self.transcript_log if "**Omar:**" in str(x)]
+                                    if last_u_lines:
+                                        last_u = last_u_lines[-1].replace("**Omar:**", "")
+                                        is_ar = any("\u0600" <= ch <= "\u06ff" for ch in last_u)
+
+                                try:
+                                    asyncio.create_task(self.caller._play_earcon(self.peer_id, kind=earcon_kind, is_ar=is_ar))
+                                except Exception as e_err:
+                                    self.log(f"Notice playing tool earcon: {e_err}")
+
                             # Execute tool using VoiceBrainSession's proven execution dispatcher
                             tool_res = {}
                             try:
