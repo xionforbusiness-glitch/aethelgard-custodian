@@ -550,38 +550,64 @@ class GeminiLiveBridgeSession:
                 except Exception:
                     break
 
+    def _flush_telegram_audio(self) -> None:
+        """Flushes any remaining residual audio bytes into the Telegram queue (padding with silence if needed)."""
+        if not self._audio_buffer_48k:
+            return
+        out_q: asyncio.Queue = self.call_ctx.get("out_queue") if self.call_ctx else None
+        if out_q is None:
+            return
+        rem = len(self._audio_buffer_48k)
+        if rem > 0:
+            pad = TELEGRAM_FRAME_BYTES - (rem % TELEGRAM_FRAME_BYTES)
+            if pad < TELEGRAM_FRAME_BYTES:
+                self._audio_buffer_48k.extend(b"\x00" * pad)
+            while len(self._audio_buffer_48k) >= TELEGRAM_FRAME_BYTES:
+                frame = bytes(self._audio_buffer_48k[:TELEGRAM_FRAME_BYTES])
+                del self._audio_buffer_48k[:TELEGRAM_FRAME_BYTES]
+                try:
+                    out_q.put_nowait(frame)
+                except Exception:
+                    break
+
     async def _hangup_after_delay(self, max_wait: float = 14.0) -> None:
         """Allows farewell audio to generate, buffer, and completely play out on Omar's phone before hanging up."""
         self.log("Graceful hangup scheduled: waiting for farewell audio generation and queue drain...")
         start_wait = time.monotonic()
 
-        # 1. Wait for Gemini model to finish outputting farewell turn
-        self.turn_complete_event.clear()
         try:
-            await asyncio.wait_for(self.turn_complete_event.wait(), timeout=8.0)
-            self.log("Farewell model turn confirmed complete.")
-        except asyncio.TimeoutError:
-            self.log("Timed out waiting for turn_complete during farewell.")
+            # 1. Wait for Gemini model to finish outputting farewell turn
+            self.turn_complete_event.clear()
+            try:
+                await asyncio.wait_for(self.turn_complete_event.wait(), timeout=8.0)
+                self.log("Farewell model turn confirmed complete.")
+            except asyncio.TimeoutError:
+                self.log("Timed out waiting for turn_complete during farewell.")
 
-        # 2. Flush residual buffer into Telegram queue
-        self._flush_telegram_audio()
+            # 2. Flush residual buffer into Telegram queue
+            self._flush_telegram_audio()
 
-        # 3. Wait until the Telegram audio output queue has completely drained
-        out_q: asyncio.Queue = self.call_ctx.get("out_queue") if self.call_ctx else None
-        if out_q is not None:
-            while not out_q.empty() and (time.monotonic() - start_wait < max_wait):
-                await asyncio.sleep(0.15)
+            # 3. Wait until the Telegram audio output queue has completely drained
+            out_q: asyncio.Queue = self.call_ctx.get("out_queue") if self.call_ctx else None
+            if out_q is not None:
+                while not out_q.empty() and (time.monotonic() - start_wait < max_wait):
+                    await asyncio.sleep(0.15)
 
-        # 4. Generous post-playback acoustic buffer so remote device finishes rendering
-        await asyncio.sleep(2.0)
-
-        self.log("Farewell audio drained completely. Closing call gracefully.")
-        if self.hangup_cb and not self.is_closing:
-            res = self.hangup_cb()
-            if asyncio.iscoroutine(res):
-                await res
-        # Post-call debrief sent automatically to Omar's Telegram chat (@aethelgard_vault_bot)
-        asyncio.create_task(self._send_post_call_debrief())
+            # 4. Generous post-playback acoustic buffer so remote device finishes rendering
+            await asyncio.sleep(1.8)
+        except Exception as drain_err:
+            self.log(f"Notice during farewell audio drain: {drain_err}")
+        finally:
+            self.log("Farewell audio drained. Closing call via hangup_cb...")
+            if self.hangup_cb and not self.is_closing:
+                try:
+                    res = self.hangup_cb()
+                    if asyncio.iscoroutine(res):
+                        await res
+                except Exception as h_err:
+                    self.log(f"Error executing hangup_cb: {h_err}")
+            # Post-call debrief sent automatically to Omar's Telegram chat (@aethelgard_vault_bot)
+            asyncio.create_task(self._send_post_call_debrief())
 
     async def _send_post_call_debrief(self) -> None:
         """Dispatches an executive debrief of the live call to Omar's Telegram chat."""
