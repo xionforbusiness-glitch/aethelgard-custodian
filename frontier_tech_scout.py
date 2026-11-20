@@ -255,6 +255,8 @@ class FrontierTechScoutEngine:
         date_str = damascus_now.strftime("%Y-%m-%d")
         time_str = damascus_now.strftime("%H:%M Damascus Time")
         slug = re.sub(r"[^a-zA-Z0-9]+", "_", topic.strip().lower())[:40].strip("_")
+        if not slug:
+            slug = "frontier_ai_breakthrough"
 
         lead_summaries = "\n".join([f"- **[{l['title']}]({l['url']}):** {l['snippet']}" for l in leads])
 
