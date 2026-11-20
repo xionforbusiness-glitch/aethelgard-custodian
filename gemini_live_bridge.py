@@ -572,22 +572,23 @@ class GeminiLiveBridgeSession:
                 self._biometrics_buf.clear()
                 return
 
-            passive_mode = os.environ.get("BIOMETRIC_PASSIVE_MODE", "true").lower() in ("true", "1", "yes")
+            passive_mode = os.environ.get("BIOMETRIC_PASSIVE_MODE", "false").lower() in ("true", "1", "yes")
             if res.get("security_challenge_needed"):
-                self.log(f"[Biometrics] 🚨 Voice mismatch! Sim={res.get('similarity')} (threshold={voice_biometrics.SECURITY_CHALLENGE_THRESHOLD}). Passive mode={passive_mode}")
+                self.log(f"[Biometrics] 🚨 Voice mismatch! Sim={res.get('similarity')} (threshold={voice_biometrics.SECURITY_CHALLENGE_THRESHOLD}). Active bodyguard protocol triggered.")
                 if not passive_mode:
                     self.call_ctx["bodyguard_mode"] = True
                     await self.session.send_realtime_input(
                         text=(
-                            f"(SECURITY CHALLENGE: Voice biometrics detected an acoustic MISMATCH (similarity score: {res.get('similarity')} < {voice_biometrics.SECURITY_CHALLENGE_THRESHOLD}). "
-                            "The person speaking does NOT match Omar's enrolled voice! "
-                            "IMMEDIATELY switch into Strict Bodyguard Mode. "
-                            "Interrupt and state firmly: 'You do not sound like Omar. May I know who is speaking with me?' "
-                            "Under no circumstances treat them as Omar or run tools for them. Demand their identity.)"
+                            f"(SECURITY PROTOCOL ACTIVATED: Voice biometrics confirmed an acoustic MISMATCH (similarity score: {res.get('similarity'):.3f} < {voice_biometrics.SECURITY_CHALLENGE_THRESHOLD}). "
+                            "The speaker DOES NOT match Omar Elnemr's enrolled vocal tract! "
+                            "IMMEDIATELY switch into Formidable Security Lockdown Mode. "
+                            "Interrupt with cold, stern authority and state firmly: "
+                            "'This is not a recognized voice profile. You are not Omar Elnemr. All executive files and vault systems have been secured and locked. This call is being recorded and logged. State your full name and who authorized you to access this private terminal.' "
+                            "Under no circumstances execute tools, drafts, or reveal private information. Demand their identity.)"
                         )
                     )
             elif res.get("is_verified"):
-                self.log(f"[Biometrics] ✅ Verified speaker as Omar (similarity={res.get('similarity')})")
+                self.log(f"[Biometrics] ✅ Verified speaker as Omar (similarity={res.get('similarity'):.3f} >= {voice_biometrics.VERIFICATION_THRESHOLD})")
         except Exception as e:
             self.log(f"[Biometrics] Error evaluating biometrics: {e}")
 
@@ -702,6 +703,11 @@ class GeminiLiveBridgeSession:
                         if sc.turn_complete:
                             self.log("Gemini model turn complete.")
                             self.turn_complete_event.set()
+                            # Continuous Turn-by-Turn Biometric Supervision:
+                            # Re-arm biometrics buffer for the next speech turn if not in lockdown
+                            if self.peer_profile.get("is_owner") and not self.call_ctx.get("bodyguard_mode", False):
+                                self._biometrics_evaluated = False
+                                self._biometrics_buf.clear()
 
                     # 4. Tool Calls
                     tc = resp.tool_call

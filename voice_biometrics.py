@@ -33,9 +33,9 @@ VOICEPRINTS_CACHE_FILE = STATE_DIR / "speaker_voiceprints.json"
 _extractor = None
 _extractor_init_attempted = False
 
-# Verification thresholds adapted for real-time mobile VoIP Opus streams
-VERIFICATION_THRESHOLD = float(os.environ.get("BIOMETRIC_VERIFY_THRESHOLD", "0.42"))  # Above 0.42 -> confirmed Omar
-SECURITY_CHALLENGE_THRESHOLD = float(os.environ.get("BIOMETRIC_CHALLENGE_THRESHOLD", "0.30"))  # Below 0.30 -> genuine mismatch
+# Verification thresholds for 28-sample Master Centroid (Omar mean: 0.83, min: 0.69; Impostor: 0.23)
+VERIFICATION_THRESHOLD = float(os.environ.get("BIOMETRIC_VERIFY_THRESHOLD", "0.58"))  # Above 0.58 -> confirmed Omar
+SECURITY_CHALLENGE_THRESHOLD = float(os.environ.get("BIOMETRIC_CHALLENGE_THRESHOLD", "0.48"))  # Below 0.48 -> confirmed mismatch
 
 
 def get_extractor():
