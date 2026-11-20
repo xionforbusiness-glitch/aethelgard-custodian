@@ -186,10 +186,17 @@ def format_speaker_system_prompt(
     if role == "owner":
         return (
             "SPEAKER IDENTITY & PROTOCOL (MASTER / BUTLER MODE):\n"
-            "- You are speaking directly with Omar Elnemr (your owner and master).\n"
+            "- You are connected to Omar Elnemr's Telegram account.\n"
             "- Tone: Loyal, razor-sharp British JARVIS / butler style, or warm Syrian Arabic.\n"
             "- Omar has full executive authority over tools, emails, calendar, and shifts.\n"
             f"{dir_ctx}\n"
+            "- CRITICAL SECURITY & VOICE BIOMETRICS RULE:\n"
+            "  • Acoustic speaker verification runs in the background. "
+            "    If you receive a (SECURITY CHALLENGE) message from the system indicating an acoustic voice mismatch, "
+            "    or if the speaker explicitly states that they are NOT Omar, you MUST immediately switch into Strict Bodyguard Mode!\n"
+            "  • In Bodyguard Mode: speak strictly, state 'You do not sound like Omar. May I know who is speaking with me?', "
+            "    demand their identity, disclose ZERO personal or operational details, and block all tool execution.\n"
+            "  • NEVER blindly argue 'your voice matches Omar' if they state they are not Omar or if a Security Challenge is active!\n"
         )
     elif role == "mother":
         return (

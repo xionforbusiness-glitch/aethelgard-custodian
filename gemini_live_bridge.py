@@ -328,6 +328,7 @@ class GeminiLiveBridgeSession:
         self._biometrics_evaluated: bool = False
         self._biometrics_buf: bytearray = bytearray()
         self._calibration_mode: bool = bool(call_ctx.get("calibration_mode", False))
+        self.loop: Optional[asyncio.AbstractEventLoop] = getattr(caller, "loop", None)
 
     def log(self, text: str) -> None:
         self.log_cb(f"[GeminiLive] {text}")
@@ -335,6 +336,7 @@ class GeminiLiveBridgeSession:
     async def start(self) -> bool:
         """Connects to Gemini 3.8 Live via Vertex AI with cached GCP OAuth credentials."""
         try:
+            self.loop = asyncio.get_running_loop()
             import antigravity_proxy as ap
             token = ap.get_valid_access_token()
             project = ap.VERTEX_PROJECT
@@ -501,19 +503,32 @@ class GeminiLiveBridgeSession:
             # Zero-latency background acoustic biometrics tap (Tier 3)
             if self.peer_profile.get("is_owner") and (not self._biometrics_evaluated or self._calibration_mode):
                 self._biometrics_buf.extend(pcm_16k)
+                target_loop = self.loop or getattr(self.caller, "loop", None)
                 if not self._calibration_mode and len(self._biometrics_buf) >= 64000:  # ~2.0s
                     self._biometrics_evaluated = True
                     audio_snap = bytes(self._biometrics_buf)
-                    asyncio.create_task(self._async_evaluate_biometrics(audio_snap))
+                    if target_loop and target_loop.is_running():
+                        asyncio.run_coroutine_threadsafe(self._async_evaluate_biometrics(audio_snap), target_loop)
+                    else:
+                        try:
+                            asyncio.create_task(self._async_evaluate_biometrics(audio_snap))
+                        except Exception:
+                            pass
                 elif self._calibration_mode and len(self._biometrics_buf) >= 288000:  # ~9.0s
                     self._biometrics_evaluated = True
                     audio_snap = bytes(self._biometrics_buf)
-                    asyncio.create_task(self._async_enroll_calibration(audio_snap))
+                    if target_loop and target_loop.is_running():
+                        asyncio.run_coroutine_threadsafe(self._async_enroll_calibration(audio_snap), target_loop)
+                    else:
+                        try:
+                            asyncio.create_task(self._async_enroll_calibration(audio_snap))
+                        except Exception:
+                            pass
 
     async def _async_evaluate_biometrics(self, audio_bytes: bytes) -> None:
         """Asynchronously computes acoustic embedding in thread pool with zero audio pipeline delay."""
         try:
-            loop = asyncio.get_running_loop()
+            loop = self.loop or asyncio.get_running_loop()
             import voice_biometrics
             res = await loop.run_in_executor(None, voice_biometrics.verify_speaker, audio_bytes, "omar")
             self.log(f"[Biometrics] Evaluation: sim={res.get('similarity')} verified={res.get('is_verified')} challenge={res.get('security_challenge_needed')}")
@@ -522,10 +537,11 @@ class GeminiLiveBridgeSession:
                 self.call_ctx["bodyguard_mode"] = True
                 await self.session.send_realtime_input(
                     text=(
-                        "(SECURITY CHALLENGE: Acoustic voice biometrics detected a voice that does NOT match Omar. "
-                        "Switch immediately to Strict Bodyguard Mode. "
-                        "State firmly: 'You do not sound like Omar. May I know who is speaking with me?' "
-                        "Disclose ZERO personal information, block all tools, and demand their identity.)"
+                        f"(SECURITY CHALLENGE: Voice biometrics detected an acoustic MISMATCH (similarity score: {res.get('similarity')} < 0.58). "
+                        "The person speaking does NOT match Omar's enrolled voice! "
+                        "IMMEDIATELY switch into Strict Bodyguard Mode. "
+                        "Interrupt and state firmly: 'You do not sound like Omar. May I know who is speaking with me?' "
+                        "Under no circumstances treat them as Omar or run tools for them. Demand their identity.)"
                     )
                 )
             elif res.get("evaluated") and res.get("is_verified"):
@@ -536,7 +552,7 @@ class GeminiLiveBridgeSession:
     async def _async_enroll_calibration(self, audio_bytes: bytes) -> None:
         """Asynchronously enrolls Omar's master voiceprint during calibration call."""
         try:
-            loop = asyncio.get_running_loop()
+            loop = self.loop or asyncio.get_running_loop()
             import voice_biometrics
             res = await loop.run_in_executor(None, voice_biometrics.enroll_speaker, "omar", audio_bytes)
             self.log(f"[Biometrics Calibration] Result: {res}")
