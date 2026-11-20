@@ -26,6 +26,12 @@ from typing import Any, Callable, Dict, List, Optional
 from google import genai
 from google.genai import types
 
+from voice_contacts import (
+    format_direction_context,
+    format_speaker_system_prompt,
+    resolve_peer_profile,
+)
+
 logger = logging.getLogger("gemini_live_bridge")
 
 # Sample rates
@@ -110,10 +116,22 @@ def _get_last_call_state_path() -> Path:
     return p / "last_call_state.json"
 
 
-def generate_dynamic_live_greeting_prompt(call_ctx: Dict[str, Any], brain: Any = None) -> str:
-    """Generates a dynamic, context-aware instruction for Gemini Live to greet Omar naturally,
-    accounting for abrupt call drops, rapid redials, Damascus local time, and previous actions."""
-    # 1. Damascus local time (UTC+3)
+def generate_dynamic_live_greeting_prompt(
+    call_ctx: Dict[str, Any],
+    brain: Any = None,
+    peer_profile: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Generates a dynamic, context-aware instruction for Gemini Live to greet the peer naturally,
+    accounting for peer identity, direction (outgoing vs incoming), abrupt drops, rapid redials, and local time."""
+    from voice_contacts import resolve_peer_profile
+    if peer_profile is None:
+        peer_profile = resolve_peer_profile(call_ctx.get("peer_id"))
+
+    direction = str(call_ctx.get("direction") or "incoming").lower()
+    name = peer_profile.get("name", "the caller")
+    role = peer_profile.get("role", "third_party")
+    is_owner = bool(peer_profile.get("is_owner"))
+
     damascus_tz = datetime.timezone(datetime.timedelta(hours=3))
     now_damascus = datetime.datetime.now(damascus_tz)
     hour = now_damascus.hour
@@ -127,7 +145,53 @@ def generate_dynamic_live_greeting_prompt(call_ctx: Dict[str, Any], brain: Any =
     else:
         period = "late night"
 
-    # 2. Read last call state
+    # Specific handling for Omar's mother (Fotnah)
+    if role == "mother":
+        if direction == "outgoing":
+            return (
+                f"(SYSTEM NOTIFICATION: You (Aethelgard) just connected an OUTGOING call that you placed to Fotnah (Omar's mother). "
+                f"Damascus local time is {time_str} ({period}). "
+                "Speak immediately and warmly in Syrian Arabic (or polite English): "
+                "'يسعد مساكِ خالتو فُطنة، أنا أثيلجارد مساعد عمر، عم طمنك...' "
+                "(or in English: 'Good evening Ma'am, this is Aethelgard, Omar's assistant calling on his behalf.'). "
+                "CRITICAL: If she asks why you called, state clearly that Omar asked you to call her. "
+                "Keep spoken greeting under 10 words, respectful and warm. Absolutely NEVER address her as Omar or claim there is a mistake.)"
+            )
+        else:
+            return (
+                f"(SYSTEM NOTIFICATION: Fotnah (Omar's mother) has called you on Telegram. "
+                f"Damascus local time is {time_str} ({period}). "
+                "Speak immediately and warmly: 'أهلاً وسهلاً خالتو فُطنة، يسعد مساكِ، معك أثيلجارد مساعد عمر، تفضلي' "
+                "(or in English: 'Good evening Ma'am, Aethelgard here, Omar's assistant. How may I help you?'). "
+                "CRITICAL: Address her respectfully as خالتو فُطنة / Ma'am. Keep under 10 words.)"
+            )
+
+    # Handling for Third Parties
+    if not is_owner:
+        salut = peer_profile.get("salutation", "Sir/Ma'am")
+        if direction == "outgoing":
+            return (
+                f"(SYSTEM NOTIFICATION: You connected an OUTGOING call to {name}. "
+                f"Speak immediately: 'Hello {salut}, this is Aethelgard calling on behalf of Omar Elnemr.' "
+                "Keep under 10 words.)"
+            )
+        else:
+            return (
+                f"(SYSTEM NOTIFICATION: Incoming call from {name} connected. "
+                f"Speak immediately: 'Hello {salut}, Aethelgard here, Omar Elnemr's assistant. How may I assist you today?' "
+                "Keep under 10 words.)"
+            )
+
+    # Handling for Omar (Owner)
+    if direction == "outgoing":
+        return (
+            f"(SYSTEM NOTIFICATION: You placed an OUTGOING call to Omar, and he just answered. "
+            f"Damascus local time is {time_str} ({period}). "
+            f"Speak immediately: 'Aethelgard on the line, Omar. Ready whenever you are.' or 'Good {period}, Sir. Aethelgard here as requested.' "
+            "Keep under 8 words.)"
+        )
+
+    # Incoming from Omar (uses last_call_state history for drops/redials)
     last_state: Dict[str, Any] = {}
     try:
         p = _get_last_call_state_path()
@@ -218,6 +282,7 @@ class GeminiLiveBridgeSession:
         caller: Optional[Any] = None,
     ):
         self.peer_id = peer_id
+        self.peer_profile = resolve_peer_profile(peer_id)
         self.call_ctx = call_ctx
         self.brain = brain
         self.caller = caller
@@ -267,10 +332,25 @@ class GeminiLiveBridgeSession:
                 except Exception:
                     pass
 
+            direction = str(self.call_ctx.get("direction") or "incoming").lower()
+            explicit_opening = str(self.call_ctx.get("opening_prompt") or "").strip()
+            speaker_block = format_speaker_system_prompt(
+                self.peer_profile,
+                direction=direction,
+                opening_prompt=explicit_opening,
+            )
+
+            if self.peer_profile.get("role") == "mother":
+                rule1 = "1. Address her with highest respect and warmth: 'خالتو فُطنة' / 'Tant Fotnah' or 'Ma'am'. NEVER address her as Omar or Sir."
+            elif self.peer_profile.get("is_owner"):
+                rule1 = "1. Address him courteously as Omar or Sir."
+            else:
+                rule1 = f"1. Address them courteously as {self.peer_profile.get('salutation', 'Sir/Ma\'am')}. NEVER address them as Omar."
+
             system_instruction = (
-                "You are Aethelgard, Omar Elnemr's refined, loyal, and highly capable British butler custodian. "
-                "You are speaking with Omar on a live Telegram voice call. "
-                "\nCRITICAL IDENTITY & CAREER CONTEXT:\n"
+                "You are Aethelgard, Omar Elnemr's refined, loyal, and highly capable British butler custodian and executive voice assistant.\n"
+                f"{speaker_block}\n"
+                "\nCRITICAL IDENTITY & CAREER CONTEXT (Omar Elnemr):\n"
                 "- Omar Elnemr is an experienced Airport Passenger Service & Ground Operations Agent. "
                 "- Practical Station Experience: Ground handling at Damascus International Airport (DAM / OSDI with Syravia ID: 20264), handling flights for Etihad Airways (EY), flydubai (FZ), Air Arabia (G9), Turkish Airlines (TK), and Syrian Airlines (RB DCS operator). "
                 "- Verified Credentials: Amadeus Altéa Customer Management (CM DCS, 91% score) and 5 official Etihad Airways training certificates (IGS Ground Services, INSPIRE Service Delivery, Disruption Management, GSU-34, Aviation Orientation). "
@@ -292,15 +372,17 @@ class GeminiLiveBridgeSession:
                 "- When Omar asks to draft for a single specific airline, call `save_gmail_draft` with that single airline's email, target role, and attach_career_pack=True. "
                 "- For personal, casual, or test emails, attach_career_pack MUST be False! Attach Omar's CV and certificates ONLY for job/aviation applications. "
                 "\nCONVERSATION RULES:\n"
-                "1. Address him courteously as Omar or Sir. "
+                f"{rule1}\n"
                 "2. Keep spoken replies brief, crisp, and natural (1 to 2 sentences per response unless details are requested). "
                 "3. Never recite code, raw JSON, or long markdown tables over voice. "
-                "4. If Omar speaks in Syrian/Levantine Arabic, respond fluently in Syrian Arabic. Otherwise, speak in British English. "
-                "5. When Omar says 'goodbye', 'end the call', 'hang up', or 'talk later', call `end_call` and say farewell. "
+                "4. Language: If the speaker speaks Syrian/Levantine Arabic, respond fluently in Syrian Arabic. Otherwise, speak in British English. "
+                "5. When the user says 'goodbye', 'end the call', 'hang up', or 'talk later', call `end_call` and say farewell. "
                 "6. If Omar mentions having sent or pasted notes, airline lists, documents, or texts in the chat ('I pasted them in the bot', 'check the chat', 'can you see them now?', 'I sent them'), IMMEDIATELY call `get_recent_telegram_messages` to read what he provided. "
                 "7. If Omar asks you to call him back later or in a few minutes ('call me in 5 minutes', 'call me back'), call `schedule_callback` or specify `callback_minutes` in `end_call`, and confirm the callback time before hanging up. "
-                "8. NATURAL CONVERSATIONAL STYLE & ZERO-ROBOTIC VARIETY: NEVER sound like a scripted IVR robot repeating canned lines like 'Right away, Sir. I have initiated...' or 'Consider it underway...'. When taking on a task, respond authentically, sharply, and spontaneously like a real trusted partner ('Got it, Sir, I\\'ll do that right now', 'I got you. Setting that in motion—what\\'s next?', 'Leave that with me, Omar. I\\'ll get those rolling while we talk', 'All over it. Go ahead, I\\'m listening'). If speaking Syrian Arabic: 'تكرم عينك، فوراً عم جهزلك ياهن، كمل معي شو في كمان؟' أو 'صار عندك، شغال عليهن هلق.' Heavy tasks run asynchronously in the background, so acknowledge the job in 1-2 punchy, natural words and keep the dialogue flowing smoothly with zero dead air! "
-                "9. DYNAMIC GREETING & CALL STATE MEMORY: Every time a call connects, greet Omar with spontaneous, contextual variety. If the previous call was cut off abruptly or he hung up unexpectedly, acknowledge it naturally or ask with subtle wit if the line dropped or if he hung up on you. If he redials right after saying goodbye, acknowledge the quick return ('Back already, Sir?'). Always adapt to the local time in Damascus and current tasks. NEVER repeat identical canned greeting phrases like 'Aethelgard listening, Omar' or 'online and at your service'. "
+                "8. NATURAL CONVERSATIONAL STYLE & ZERO-ROBOTIC VARIETY: NEVER sound like a scripted IVR robot repeating canned lines. Keep dialogue flowing smoothly with zero dead air! "
+                "9. CALL GROUNDING & MEMORY INTEGRITY: Maintain absolute truth about the call. "
+                + (f"This is an OUTGOING call you placed to {self.peer_profile.get('name')} on Omar's instruction. NEVER claim you did not call them! " if direction == "outgoing" else f"This is an INCOMING call from {self.peer_profile.get('name')}. ")
+                + "Always adapt to local Damascus time and context. "
                 "10. TELEGRAM FILE & DOCUMENT DELIVERY: If Omar asks you to send his CV, certificates, or documents to the chat ('can you send them on the chat?', 'send my CV to Telegram', 'send the certificates to my chat'), IMMEDIATELY call `send_telegram_file(file_type='all' or 'cv' or 'certificates')`! Confirm courteously once dispatched. "
                 "11. REAL-TIME DRAFT STATUS: If Omar asks where the drafts are, how many were created, or if they are ready, call `check_draft_status` to report current drafts and whether the background generator is actively uploading. "
                 "12. LIVE WEB SEARCH & RECRUITER PITCHING: If Omar asks you to search the internet, look up airlines, or pitch to a recruiter, call `live_web_search(query=...)` or `pitch_recruiter(company=...)`. "
@@ -339,13 +421,16 @@ class GeminiLiveBridgeSession:
 
             # Send dynamic, context-aware opening prompt to trigger immediate authentic spoken greeting
             explicit_opening = str(self.call_ctx.get("opening_prompt") or "").strip()
-            if explicit_opening and "calling you back as promised" in explicit_opening:
+            if explicit_opening:
+                name = self.peer_profile.get("name", "the caller")
                 opening_instruction = (
-                    f"(SYSTEM NOTIFICATION: Omar just answered your scheduled callback call. "
-                    f"Speak to him immediately and courteously: '{explicit_opening}')"
+                    f"(SYSTEM NOTIFICATION: The live voice call with {name} has connected ({direction.upper()}). "
+                    f"Speak to them immediately and courteously: '{explicit_opening}')"
                 )
             else:
-                opening_instruction = generate_dynamic_live_greeting_prompt(self.call_ctx, self.brain)
+                opening_instruction = generate_dynamic_live_greeting_prompt(
+                    self.call_ctx, self.brain, self.peer_profile
+                )
 
             self.log(f"Dispatching dynamic opening prompt instruction: {opening_instruction[:120]}...")
             await self.session.send_realtime_input(text=opening_instruction)
@@ -464,11 +549,12 @@ class GeminiLiveBridgeSession:
                         if sc.input_transcription and sc.input_transcription.text:
                             u_txt = sc.input_transcription.text.strip()
                             if u_txt:
-                                self.log(f"Omar: {u_txt}")
+                                peer_label = self.peer_profile.get("display_name", "Caller")
+                                self.log(f"{peer_label}: {u_txt}")
                                 self.last_user_text = u_txt
-                                self.transcript_log.append(f"**Omar:** {u_txt}")
+                                self.transcript_log.append(f"**{peer_label}:** {u_txt}")
                                 if self.brain and hasattr(self.brain, "transcript_log"):
-                                    self.brain.transcript_log.append(f"**Omar:** {u_txt}")
+                                    self.brain.transcript_log.append(f"**{peer_label}:** {u_txt}")
 
                         # 3. Interruption / Barge-in (Omar spoke while Aethelgard was speaking)
                         if sc.interrupted:
