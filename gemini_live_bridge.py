@@ -239,6 +239,8 @@ class GeminiLiveBridgeSession:
         self._warned_14m = False
         self._barge_streak_frames = 0
         self.turn_complete_event = asyncio.Event()
+        self.transcript_log: List[str] = []
+        self.last_user_text: str = ""
 
     def log(self, text: str) -> None:
         self.log_cb(f"[GeminiLive] {text}")
@@ -454,6 +456,7 @@ class GeminiLiveBridgeSession:
                             txt = sc.output_transcription.text.strip()
                             if txt:
                                 self.log(f"Aethelgard: {txt}")
+                                self.transcript_log.append(f"**Aethelgard:** {txt}")
                                 if self.brain and hasattr(self.brain, "transcript_log"):
                                     self.brain.transcript_log.append(f"**Aethelgard:** {txt}")
 
@@ -461,6 +464,8 @@ class GeminiLiveBridgeSession:
                             u_txt = sc.input_transcription.text.strip()
                             if u_txt:
                                 self.log(f"Omar: {u_txt}")
+                                self.last_user_text = u_txt
+                                self.transcript_log.append(f"**Omar:** {u_txt}")
                                 if self.brain and hasattr(self.brain, "transcript_log"):
                                     self.brain.transcript_log.append(f"**Omar:** {u_txt}")
 
@@ -482,30 +487,23 @@ class GeminiLiveBridgeSession:
                             self.log(f"Tool Call received: {c_name} args={c_args}")
 
                             # Instant zero-latency (<50ms) acoustic earcon to kill dead air while tool runs!
-                            if c_name != "end_call" and self.caller and hasattr(self.caller, "_play_earcon"):
-                                earcon_kind = "checking"
-                                c_lower = c_name.lower()
-                                if any(k in c_lower for k in ("search", "find", "google", "web")):
-                                    earcon_kind = "searching"
-                                elif any(k in c_lower for k in ("portal", "login", "signup", "auth")):
-                                    earcon_kind = "portal"
-                                elif any(k in c_lower for k in ("email", "draft", "mail", "application")):
-                                    earcon_kind = "drafting"
-                                elif any(k in c_lower for k in ("mission", "wargame", "task")):
-                                    earcon_kind = "mission"
+                            try:
+                                if c_name != "end_call" and self.caller and hasattr(self.caller, "_play_earcon"):
+                                    earcon_kind = "checking"
+                                    c_lower = c_name.lower()
+                                    if any(k in c_lower for k in ("search", "find", "google", "web")):
+                                        earcon_kind = "searching"
+                                    elif any(k in c_lower for k in ("portal", "login", "signup", "auth")):
+                                        earcon_kind = "portal"
+                                    elif any(k in c_lower for k in ("email", "draft", "mail", "application")):
+                                        earcon_kind = "drafting"
+                                    elif any(k in c_lower for k in ("mission", "wargame", "task")):
+                                        earcon_kind = "mission"
 
-                                # Detect if user spoke Arabic
-                                is_ar = False
-                                if self.transcript_log:
-                                    last_u_lines = [str(x) for x in self.transcript_log if "**Omar:**" in str(x)]
-                                    if last_u_lines:
-                                        last_u = last_u_lines[-1].replace("**Omar:**", "")
-                                        is_ar = any("\u0600" <= ch <= "\u06ff" for ch in last_u)
-
-                                try:
+                                    is_ar = any("\u0600" <= ch <= "\u06ff" for ch in self.last_user_text)
                                     asyncio.create_task(self.caller._play_earcon(self.peer_id, kind=earcon_kind, is_ar=is_ar))
-                                except Exception as e_err:
-                                    self.log(f"Notice playing tool earcon: {e_err}")
+                            except Exception as e_err:
+                                self.log(f"Notice playing tool earcon: {e_err}")
 
                             # Execute tool using VoiceBrainSession's proven execution dispatcher
                             tool_res = {}
