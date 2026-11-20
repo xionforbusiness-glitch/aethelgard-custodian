@@ -47,11 +47,48 @@ if str(REPO_ROOT) not in sys.path:
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] [TechScout] %(message)s")
 logger = logging.getLogger("FrontierTechScout")
 
-# Config & Credentials
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_USER_ID = os.environ.get("TELEGRAM_ALLOWED_USERS", "1021125594")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-FIRECRAWL_API_KEY = os.environ.get("FIRECRAWL_API_KEY", "")
+
+def _load_env_val(key: str, default: str = "") -> str:
+    """Reads environment variable with fallback scanning across known .env locations."""
+    val = os.environ.get(key, "").strip()
+    if val:
+        return val
+    candidates = [
+        Path.home() / "aethelgard-custodian" / ".env",
+        REPO_ROOT / ".env",
+        Path.home() / ".hermes" / "profiles" / "llm-wiki" / ".env",
+        Path.home() / ".aethelgard" / ".env",
+    ]
+    for env_path in candidates:
+        if env_path.is_file():
+            try:
+                for line in env_path.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        if k.strip() == key:
+                            cleaned = v.strip().strip("'\"")
+                            if cleaned:
+                                return cleaned
+            except Exception:
+                pass
+    return default
+
+
+def get_telegram_bot_token() -> str:
+    return _load_env_val("TELEGRAM_BOT_TOKEN")
+
+
+def get_telegram_user_id() -> str:
+    return _load_env_val("TELEGRAM_ALLOWED_USERS", "1021125594")
+
+
+def get_gemini_api_key() -> str:
+    return _load_env_val("GEMINI_API_KEY") or _load_env_val("GOOGLE_API_KEY")
+
+
+def get_firecrawl_api_key() -> str:
+    return _load_env_val("FIRECRAWL_API_KEY")
 
 
 def get_vault_scout_dir(custom_vault_dir: Optional[str] = None) -> Path:
@@ -82,14 +119,16 @@ def get_vault_scout_dir(custom_vault_dir: Optional[str] = None) -> Path:
 
 def send_telegram_briefing(card_text: str) -> bool:
     """Dispatches executive briefing card to Omar's Telegram bot."""
-    if not TELEGRAM_BOT_TOKEN:
+    bot_token = get_telegram_bot_token()
+    user_id = get_telegram_user_id()
+    if not bot_token:
         logger.warning("TELEGRAM_BOT_TOKEN not configured; logging card locally.")
         print(f"\n[TELEGRAM PREVIEW]\n{card_text}\n")
         return False
 
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {
-        "chat_id": TELEGRAM_USER_ID,
+        "chat_id": user_id,
         "text": card_text,
         "parse_mode": "Markdown",
         "disable_web_page_preview": False,
@@ -123,10 +162,11 @@ class FrontierTechScoutEngine:
         logger.info(f"Scouting global landscape for topic: '{topic}'...")
         results = []
 
-        if FIRECRAWL_API_KEY:
+        fc_key = get_firecrawl_api_key()
+        if fc_key:
             try:
                 import requests
-                headers = {"Authorization": f"Bearer {FIRECRAWL_API_KEY}", "Content-Type": "application/json"}
+                headers = {"Authorization": f"Bearer {fc_key}", "Content-Type": "application/json"}
                 payload = {"query": f"{topic} latest open source developer tools architecture API 2026", "limit": limit}
                 resp = requests.post("https://api.firecrawl.dev/v1/search", headers=headers, json=payload, timeout=12)
                 if resp.status_code == 200:
