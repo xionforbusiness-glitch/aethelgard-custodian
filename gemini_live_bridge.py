@@ -145,6 +145,14 @@ def generate_dynamic_live_greeting_prompt(
     else:
         period = "late night"
 
+    # Calibration Mode
+    if call_ctx.get("calibration_mode"):
+        return (
+            "(SYSTEM NOTIFICATION: Voice Biometric Calibration Call. "
+            "Greet Omar warmly: 'Aethelgard calibration link active, Omar. Please speak naturally for 10 to 15 seconds about your day or airport operations to calibrate your voiceprint.' "
+            "Keep spoken words under 15 words.)"
+        )
+
     # Specific handling for Omar's mother (Fotnah)
     if role == "mother":
         if direction == "outgoing":
@@ -166,7 +174,18 @@ def generate_dynamic_live_greeting_prompt(
                 "CRITICAL: Address her respectfully as خالتو فُطنة / Ma'am. Keep under 10 words.)"
             )
 
-    # Handling for Third Parties
+    # Handling for Unknown Callers (Strict VIP Gatekeeper)
+    if role == "unknown":
+        return (
+            f"(SYSTEM NOTIFICATION: Unknown incoming caller from Telegram (uid={call_ctx.get('peer_id')}). "
+            "You are acting as the strict VIP Gatekeeper for Omar Elnemr. "
+            "Speak immediately with firm, crisp, authoritative bodyguard etiquette: "
+            "'This is the private executive line of Omar Elnemr. State your full name and the purpose of your call.' "
+            "CRITICAL SECURITY: Absolutely NEVER answer any questions about Omar, his location, schedule, or business. "
+            "Keep spoken words under 12 words.)"
+        )
+
+    # Handling for Whitelisted Third Parties
     if not is_owner:
         salut = peer_profile.get("salutation", "Sir/Ma'am")
         if direction == "outgoing":
@@ -306,6 +325,9 @@ class GeminiLiveBridgeSession:
         self.turn_complete_event = asyncio.Event()
         self.transcript_log: List[str] = []
         self.last_user_text: str = ""
+        self._biometrics_evaluated: bool = False
+        self._biometrics_buf: bytearray = bytearray()
+        self._calibration_mode: bool = bool(call_ctx.get("calibration_mode", False))
 
     def log(self, text: str) -> None:
         self.log_cb(f"[GeminiLive] {text}")
@@ -338,6 +360,7 @@ class GeminiLiveBridgeSession:
                 self.peer_profile,
                 direction=direction,
                 opening_prompt=explicit_opening,
+                calibration_mode=self._calibration_mode,
             )
 
             if self.peer_profile.get("role") == "mother":
@@ -474,6 +497,63 @@ class GeminiLiveBridgeSession:
                 self._send_queue.put_nowait(pcm_16k)
             except Exception:
                 pass
+
+            # Zero-latency background acoustic biometrics tap (Tier 3)
+            if self.peer_profile.get("is_owner") and (not self._biometrics_evaluated or self._calibration_mode):
+                self._biometrics_buf.extend(pcm_16k)
+                if not self._calibration_mode and len(self._biometrics_buf) >= 64000:  # ~2.0s
+                    self._biometrics_evaluated = True
+                    audio_snap = bytes(self._biometrics_buf)
+                    asyncio.create_task(self._async_evaluate_biometrics(audio_snap))
+                elif self._calibration_mode and len(self._biometrics_buf) >= 288000:  # ~9.0s
+                    self._biometrics_evaluated = True
+                    audio_snap = bytes(self._biometrics_buf)
+                    asyncio.create_task(self._async_enroll_calibration(audio_snap))
+
+    async def _async_evaluate_biometrics(self, audio_bytes: bytes) -> None:
+        """Asynchronously computes acoustic embedding in thread pool with zero audio pipeline delay."""
+        try:
+            loop = asyncio.get_running_loop()
+            import voice_biometrics
+            res = await loop.run_in_executor(None, voice_biometrics.verify_speaker, audio_bytes, "omar")
+            self.log(f"[Biometrics] Evaluation: sim={res.get('similarity')} verified={res.get('is_verified')} challenge={res.get('security_challenge_needed')}")
+            if res.get("evaluated") and res.get("security_challenge_needed"):
+                self.log(f"[Biometrics] 🚨 Voice mismatch! Sim={res.get('similarity')}. Triggering Security Challenge.")
+                self.call_ctx["bodyguard_mode"] = True
+                await self.session.send_realtime_input(
+                    text=(
+                        "(SECURITY CHALLENGE: Acoustic voice biometrics detected a voice that does NOT match Omar. "
+                        "Switch immediately to Strict Bodyguard Mode. "
+                        "State firmly: 'You do not sound like Omar. May I know who is speaking with me?' "
+                        "Disclose ZERO personal information, block all tools, and demand their identity.)"
+                    )
+                )
+            elif res.get("evaluated") and res.get("is_verified"):
+                self.log(f"[Biometrics] ✅ Verified speaker as Omar (similarity={res.get('similarity')})")
+        except Exception as e:
+            self.log(f"[Biometrics] Error evaluating biometrics: {e}")
+
+    async def _async_enroll_calibration(self, audio_bytes: bytes) -> None:
+        """Asynchronously enrolls Omar's master voiceprint during calibration call."""
+        try:
+            loop = asyncio.get_running_loop()
+            import voice_biometrics
+            res = await loop.run_in_executor(None, voice_biometrics.enroll_speaker, "omar", audio_bytes)
+            self.log(f"[Biometrics Calibration] Result: {res}")
+            if res.get("success"):
+                await self.session.send_realtime_input(
+                    text=(
+                        "(SYSTEM NOTIFICATION: Voice biometric calibration is COMPLETE and successfully enrolled! "
+                        "Inform Omar: 'Master voiceprint successfully calibrated and locked in, Omar. Voice biometrics is now fully active.' "
+                        "Conclude the call politely and call end_call.)"
+                    )
+                )
+            else:
+                await self.session.send_realtime_input(
+                    text=f"(SYSTEM NOTIFICATION: Voice calibration failed: {res.get('error')}. Inform Omar and hang up.)"
+                )
+        except Exception as e:
+            self.log(f"[Biometrics Calibration] Error during enrollment: {e}")
 
     async def _send_audio_loop(self) -> None:
         """Pumps downsampled 16kHz audio from Telegram into Gemini Live WebSocket."""

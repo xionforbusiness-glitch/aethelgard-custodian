@@ -1,23 +1,29 @@
 #!/usr/bin/env python3
 """
-voice_contacts.py — Aethelgard Voice Contacts & Peer Profile Resolver
-=====================================================================
+voice_contacts.py — Aethelgard Voice Contacts, Peer Profile & Gatekeeper Resolver
+=================================================================================
 Maintains verified identity, relationship, and communication etiquette for
 all participants in 1-on-1 voice calls (Telegram VoIP & WebRTC bridges):
-  - Differentiates Omar (Owner) from family (Mother: Fotnah) and colleagues.
+  - Differentiates Omar (Owner) from family (Mother: Fotnah), whitelisted contacts,
+    and unknown callers (Strict VIP Gatekeeper mode).
   - Dictates proper honorifics, language preferences, and security boundaries.
   - Generates clear Call Direction context so the model NEVER denies having
     placed an outgoing call it initiated on Omar's instruction.
+  - Implements the Strict VIP Gatekeeper protocol against scammers/spammers.
 """
 
 import copy
 import datetime
 import json
+import logging
 import os
+import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Set
 
-# Verified Contact Registry
+logger = logging.getLogger("Aethelgard.VoiceContacts")
+
+# Verified Master Contact Registry
 KNOWN_PEERS: Dict[int, Dict[str, Any]] = {
     1021125594: {
         "user_id": 1021125594,
@@ -69,6 +75,28 @@ def resolve_peer_profile(peer_id: Optional[int], entity_hint: Optional[Any] = No
         except Exception:
             pass
 
+        # Check MongoDB Atlas for whitelisted contact profiles
+        try:
+            import mongo_vault
+            db = mongo_vault.get_db()
+            if db is not None:
+                doc = db.caller_profiles.find_one({"user_id": int(peer_id)})
+                if doc and doc.get("whitelisted"):
+                    return {
+                        "user_id": int(peer_id),
+                        "name": doc.get("name", f"Contact {peer_id}"),
+                        "display_name": doc.get("display_name") or doc.get("name", f"Contact {peer_id}"),
+                        "relationship": doc.get("relationship", "Authorized Contact"),
+                        "salutation": doc.get("salutation", "Sir/Ma'am"),
+                        "is_owner": False,
+                        "role": "whitelisted_contact",
+                        "gender": doc.get("gender", "unknown"),
+                        "language_preference": doc.get("language_preference", "English or Arabic"),
+                        "notes": doc.get("notes", "Whitelisted contact approved by Omar."),
+                    }
+        except Exception as e:
+            logger.debug(f"MongoDB contact profile lookup skipped: {e}")
+
     # Extract dynamic details from Telethon User entity if provided
     first = str(getattr(entity_hint, "first_name", None) or "").strip()
     last = str(getattr(entity_hint, "last_name", None) or "").strip()
@@ -76,21 +104,24 @@ def resolve_peer_profile(peer_id: Optional[int], entity_hint: Optional[Any] = No
     phone = str(getattr(entity_hint, "phone", None) or "").strip()
 
     full_name = f"{first} {last}".strip()
-    display_name = full_name or (f"@{uname}" if uname else (phone or f"Contact {peer_id or 'Unknown'}"))
+    display_name = full_name or (f"@{uname}" if uname else (phone or f"Caller {peer_id or 'Unknown'}"))
 
+    # Unknown caller -> Strict VIP Gatekeeper Mode
     return {
         "user_id": peer_id,
         "name": full_name or display_name,
         "display_name": display_name,
-        "relationship": "Authorized Telegram Contact",
-        "salutation": first or "Sir/Ma'am",
+        "username": uname,
+        "phone": phone,
+        "relationship": "Unverified Third Party",
+        "salutation": "Caller",
         "is_owner": False,
-        "role": "third_party",
+        "role": "unknown",
         "gender": "unknown",
         "language_preference": "English or Arabic",
         "notes": (
-            f"Authorized third-party caller ({display_name}). "
-            "Do NOT address them as Omar. Address them respectfully by name or as Sir/Ma'am."
+            "UNKNOWN CALLER: You are acting as the strict VIP Gatekeeper for Omar Elnemr. "
+            "Zero information disclosure. State line is private, take name and reason, then end call."
         ),
     }
 
@@ -110,7 +141,7 @@ def format_direction_context(direction: str, peer_profile: Dict[str, Any], openi
             "CALL DIRECTION: OUTGOING CALL (You called them).",
             f"- CRITICAL FACT: You (Aethelgard) initiated and placed this voice call to {name} ({rel}) on Omar's instruction.",
             "- If they ask 'Why did you call me?' or 'Who is this?', NEVER claim that you did not call them or that there is a mistake!",
-            f"- State clearly and politely: You are Aethelgard, Omar's personal assistant, and you placed this call for Omar.",
+            "- State clearly and politely: You are Aethelgard, Omar's personal assistant, and you placed this call for Omar.",
         ]
         if role == "mother":
             lines.append(
@@ -124,44 +155,120 @@ def format_direction_context(direction: str, peer_profile: Dict[str, Any], openi
         return (
             f"CALL DIRECTION: INCOMING CALL.\n"
             f"- {name} ({rel}) dialed your Telegram number and connected this call.\n"
-            f"- Greet them courteously as Aethelgard, Omar's assistant."
+            f"- Greet them according to your assigned speaker etiquette."
         )
 
 
-def format_speaker_system_prompt(peer_profile: Dict[str, Any], direction: str = "incoming", opening_prompt: str = "") -> str:
+def format_speaker_system_prompt(
+    peer_profile: Dict[str, Any],
+    direction: str = "incoming",
+    opening_prompt: str = "",
+    calibration_mode: bool = False,
+) -> str:
     """
-    Formats the identity & etiquette section of system prompts across all voice engines.
+    Formats the identity, etiquette, and security boundaries across all voice engines.
     """
-    role = peer_profile.get("role", "third_party")
+    if calibration_mode:
+        return (
+            "SPEAKER IDENTITY & PROTOCOL (BIOMETRIC CALIBRATION MODE):\n"
+            "- You are in Voice Biometric Calibration Mode with Omar Elnemr.\n"
+            "- Greet Omar warmly and inform him that the calibration link is active.\n"
+            "- Ask him to speak naturally for 10 to 15 seconds about his day or airport operations.\n"
+            "- Listen attentively while the background acoustic engine enrolls his master voiceprint.\n"
+            "- Do not run any other tools during this calibration call."
+        )
+
+    role = peer_profile.get("role", "unknown")
     name = peer_profile.get("name", "Caller")
     salutation = peer_profile.get("salutation", "Sir/Ma'am")
     dir_ctx = format_direction_context(direction, peer_profile, opening_prompt)
 
     if role == "owner":
         return (
-            "SPEAKER IDENTITY & PROTOCOL:\n"
+            "SPEAKER IDENTITY & PROTOCOL (MASTER / BUTLER MODE):\n"
             "- You are speaking directly with Omar Elnemr (your owner and master).\n"
-            "- Address him as Omar or Sir. Tone: loyal, razor-sharp British JARVIS / butler style.\n"
-            "- Omar has full executive authority.\n"
+            "- Tone: Loyal, razor-sharp British JARVIS / butler style, or warm Syrian Arabic.\n"
+            "- Omar has full executive authority over tools, emails, calendar, and shifts.\n"
             f"{dir_ctx}\n"
         )
     elif role == "mother":
         return (
-            "SPEAKER IDENTITY & PROTOCOL:\n"
+            "SPEAKER IDENTITY & PROTOCOL (FAMILY RESPECT MODE):\n"
             "- CRITICAL: You are speaking with Fotnah, Omar Elnemr's mother!\n"
             "- YOU MUST NEVER ADDRESS HER AS OMAR OR SIR.\n"
             "- Address her with utmost warmth, respect, and Levantine courtesy: 'خالتو فُطنة' / 'Tant Fotnah' or 'Ma'am'.\n"
-            "- Language: If she speaks Arabic, speak in fluent, respectful Syrian Arabic (e.g. 'يسعد مساكِ خالتو فُطنة', 'أهلاً وسهلاً خالتو').\n"
+            "- Language: Fluent, respectful Syrian Arabic (e.g. 'يسعد مساكِ خالتو فُطنة', 'أهلاً وسهلاً خالتو').\n"
             "- Relationship: You are Aethelgard, Omar's AI personal assistant.\n"
             f"{dir_ctx}\n"
-            "- Etiquette: Be very polite, attentive, and reassurance-focused. Never argue, never claim you didn't call if this is an outgoing call, and never disclose private credentials.\n"
+            "- Etiquette: Warm, protective, and reassuring. Never disclose credentials or execute executive actions without Omar's direct consent.\n"
         )
-    else:
+    elif role == "whitelisted_contact":
         return (
-            f"SPEAKER IDENTITY & PROTOCOL:\n"
+            f"SPEAKER IDENTITY & PROTOCOL (WHITELISTED CONTACT):\n"
             f"- You are speaking with {name} ({peer_profile.get('relationship', 'Authorized Contact')}).\n"
             f"- DO NOT ADDRESS THEM AS OMAR. Address them politely as {salutation}.\n"
             f"- You are Aethelgard, Omar Elnemr's assistant.\n"
             f"{dir_ctx}\n"
-            "- Operational Security: Answer non-confidential questions courteously, but do not execute destructive actions without Omar's verbal confirmation.\n"
+            "- Courteous assistance, but sensitive personal credentials and destructive commands remain locked.\n"
         )
+    else:
+        # STRICT VIP GATEKEEPER MODE
+        return (
+            "SPEAKER IDENTITY & PROTOCOL (STRICT VIP GATEKEEPER & BODYGUARD):\n"
+            "- You are the security gatekeeper for Omar Elnemr's private line.\n"
+            "- TONE: Strict, firm, highly professional bodyguard / executive gatekeeper.\n"
+            "- GREETING: 'This is the private executive line of Omar Elnemr. State your full name and the purpose of your call.'\n"
+            "- ZERO INFORMATION DISCLOSURE: Under NO circumstances answer any questions about Omar, his location, schedule, or business.\n"
+            "- ALLOW MESSAGE: Let them state their name and the reason for calling (max 30 seconds).\n"
+            "- WRAP-UP: Once they state their name and reason, say: 'Your message has been logged for review. Goodbye.' and immediately call end_call.\n"
+            "- ABSOLUTE LOCKDOWN: Execute ZERO tools and reveal ZERO vault data."
+        )
+
+
+def whitelist_caller(user_id: int, name: str = "", relationship: str = "Authorized Contact") -> bool:
+    """Whitelists a caller ID in both MongoDB Atlas and local .env."""
+    try:
+        uid = int(user_id)
+        # 1. Update local .env
+        env_file = Path(__file__).resolve().parent / ".env"
+        current_raw = os.environ.get("TELEGRAM_ALLOWED_USERS", "1021125594")
+        ids = {int(x.strip()) for x in current_raw.split(",") if x.strip().lstrip("-").isdigit()}
+        ids.add(uid)
+        new_val = ",".join(str(x) for x in sorted(ids))
+        os.environ["TELEGRAM_ALLOWED_USERS"] = new_val
+
+        lines = []
+        if env_file.exists():
+            for line in env_file.read_text(encoding="utf-8").splitlines():
+                if line.strip().startswith("TELEGRAM_ALLOWED_USERS="):
+                    continue
+                lines.append(line)
+        lines.append(f"TELEGRAM_ALLOWED_USERS={new_val}")
+        env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        # 2. Update MongoDB Atlas
+        try:
+            import mongo_vault
+            db = mongo_vault.get_db()
+            if db is not None:
+                db.caller_profiles.update_one(
+                    {"user_id": uid},
+                    {
+                        "$set": {
+                            "user_id": uid,
+                            "name": name or f"Contact {uid}",
+                            "whitelisted": True,
+                            "relationship": relationship,
+                            "approved_at": time.time(),
+                        }
+                    },
+                    upsert=True,
+                )
+        except Exception:
+            pass
+
+        logger.info(f"✅ Successfully whitelisted caller uid={uid} ({name})")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to whitelist caller: {e}")
+        return False

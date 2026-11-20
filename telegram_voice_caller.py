@@ -3264,6 +3264,25 @@ class TelegramP2PCallManager:
                 self._log_event(f"Raw update error: {self.last_error}")
                 traceback.print_exc()
 
+        @self.client.on(events.NewMessage)
+        async def _direct_message_handler(event):
+            try:
+                sender_id = event.sender_id
+                if sender_id == 1021125594:
+                    raw_text = str(event.raw_text or "").strip()
+                    if raw_text.startswith("/allow"):
+                        parts = raw_text.split()
+                        if len(parts) > 1 and parts[1].lstrip("-").isdigit():
+                            target = int(parts[1])
+                            from voice_contacts import whitelist_caller
+                            whitelist_caller(target)
+                            await event.reply(f"🛡️ **VIP Gatekeeper:** Whitelisted `uid={target}` for direct access.")
+                    elif raw_text.startswith("/calibrate"):
+                        await event.reply("📞 **Voice Biometrics:** Initiating interactive calibration call now. Stand by...")
+                        asyncio.create_task(self.initiate_outgoing_call(target_user_id=1021125594, calibration_mode=True))
+            except Exception as mexc:
+                self._log_event(f"NewMessage handler notice: {mexc}")
+
     async def _prepare_ntg_peer(self, peer_id: int) -> None:
         assert self.ntg is not None
         if peer_id in self.active_calls:
@@ -3323,14 +3342,7 @@ class TelegramP2PCallManager:
                 input_call = types.InputPhoneCall(id=phone_call.id, access_hash=phone_call.access_hash)
                 self._log_event(f"Incoming PhoneCallRequested id={phone_call.id} from={caller_id}")
                 if not is_caller_authorized(caller_id):
-                    self._log_event(f"Rejecting unauthorized caller={caller_id}")
-                    await self.client(functions.phone.DiscardCallRequest(
-                        peer=input_call,
-                        duration=0,
-                        reason=types.PhoneCallDiscardReasonBusy(),
-                        connection_id=0,
-                    ))
-                    return
+                    self._log_event(f"Incoming call from unverified caller={caller_id}; engaging VIP Gatekeeper Mode")
 
                 self.cached_peer_ids.add(caller_id)
                 try:
@@ -3434,6 +3446,7 @@ class TelegramP2PCallManager:
         tg_call_id: int,
         opening_prompt: str = "",
         direction: str = "incoming",
+        calibration_mode: bool = False,
     ) -> Dict[str, Any]:
         peer_profile = resolve_peer_profile(peer_id)
         ctx = {
@@ -3441,6 +3454,7 @@ class TelegramP2PCallManager:
             "peer_profile": peer_profile,
             "input_call": input_call,
             "tg_call_id": tg_call_id,
+            "calibration_mode": calibration_mode,
             "vad": AudioTurnDetector(),
             "brain": VoiceBrainSession(
                 peer_profile=peer_profile,
@@ -3479,7 +3493,12 @@ class TelegramP2PCallManager:
         if self.loop and self.loop.is_running():
             asyncio.run_coroutine_threadsafe(_timer(), self.loop)
 
-    async def initiate_outgoing_call(self, opening_prompt: str = "", target_user_id: Optional[int] = None) -> Dict[str, Any]:
+    async def initiate_outgoing_call(
+        self,
+        opening_prompt: str = "",
+        target_user_id: Optional[int] = None,
+        calibration_mode: bool = False,
+    ) -> Dict[str, Any]:
         if not self.ready or not self.client or not self.ntg:
             return {"success": False, "error": self.last_error or f"Telegram Caller daemon not ready (stage={self.stage})"}
 
@@ -3496,7 +3515,7 @@ class TelegramP2PCallManager:
                     "error": f"Call already active with peer={uid}; waiting for hangup",
                 }
             try:
-                self._log_event(f"Initiating outgoing call to uid={uid}")
+                self._log_event(f"Initiating outgoing call to uid={uid} (calibration={calibration_mode})")
                 entity = await self._resolve_target_entity(self.client, uid)
                 self.cached_peer_ids.add(uid)
                 dh_res = await self.client(functions.messages.GetDhConfigRequest(version=0, random_length=256))
@@ -3526,6 +3545,7 @@ class TelegramP2PCallManager:
                     call.id,
                     opening_prompt=opening_prompt,
                     direction="outgoing",
+                    calibration_mode=calibration_mode,
                 )
                 self._log_event(f"RequestCallRequest sent id={call.id} state={type(call).__name__}")
                 return {"success": True, "call_id": call.id, "target_user_id": uid, "state": type(call).__name__}
@@ -3780,6 +3800,33 @@ class TelegramP2PCallManager:
             self._log_event(
                 f"Saved last_call_state duration={duration}s clean={clean} dir={direction}"
             )
+
+            # Strict VIP Gatekeeper Alert to Omar if caller was unknown
+            peer_profile = ctx.get("peer_profile") or {}
+            if peer_profile.get("role") == "unknown":
+                from voice_contacts import resolve_peer_profile
+                p_info = resolve_peer_profile(peer_id)
+                last_utt = ""
+                try:
+                    live_b = ctx.get("live_bridge")
+                    if live_b and getattr(live_b, "last_user_text", None):
+                        last_utt = live_b.last_user_text
+                except Exception:
+                    pass
+                alert_text = (
+                    f"🛡️ **VIP Gatekeeper Alert: Incoming Call Screened**\n\n"
+                    f"👤 **Caller:** {p_info.get('display_name')} (`uid={peer_id}`)\n"
+                    f"📋 **Recorded Topic / Reason:** \"{last_utt or 'Caller left no message'}\"\n"
+                    f"⏱️ **Duration:** {duration}s\n\n"
+                    f"To whitelist this caller for future direct access, reply:\n"
+                    f"`/allow {peer_id}`"
+                )
+                try:
+                    from proactive_scheduler import send_telegram
+                    send_telegram(alert_text)
+                    self._log_event(f"Sent Gatekeeper screening alert to Omar for peer={peer_id}")
+                except Exception as g_err:
+                    self._log_event(f"Failed to send Gatekeeper screening alert: {g_err}")
         except Exception as st_err:
             self._log_event(f"Notice: last_call_state save error: {st_err}")
 
@@ -3842,13 +3889,21 @@ def _make_rpc_handler(manager: Optional[TelegramP2PCallManager]):
                     return
                 opening = str(data.get("opening_prompt") or "")
                 target_uid = data.get("target_user_id")
+                calib_mode = bool(data.get("calibration_mode", False))
                 if target_uid is not None:
                     try:
                         target_uid = int(target_uid)
                     except Exception:
                         target_uid = None
                 fut = asyncio.run_coroutine_threadsafe(
-                    asyncio.wait_for(manager.initiate_outgoing_call(opening_prompt=opening, target_user_id=target_uid), timeout=12),
+                    asyncio.wait_for(
+                        manager.initiate_outgoing_call(
+                            opening_prompt=opening,
+                            target_user_id=target_uid,
+                            calibration_mode=calib_mode,
+                        ),
+                        timeout=12,
+                    ),
                     manager.loop,
                 )
                 try:
@@ -3871,6 +3926,7 @@ def request_call_via_rpc_or_direct(
     urgent: bool = False,
     vault_dir: Optional[str] = None,
     target_user_id: Optional[int] = None,
+    calibration_mode: bool = False,
 ) -> Dict[str, Any]:
     """
     Requests a native 1-on-1 Telegram voice call via the running local RPC daemon.
@@ -3887,7 +3943,7 @@ def request_call_via_rpc_or_direct(
             pass
 
     try:
-        payload: Dict[str, Any] = {"opening_prompt": opening_prompt}
+        payload: Dict[str, Any] = {"opening_prompt": opening_prompt, "calibration_mode": calibration_mode}
         if target_user_id is not None:
             payload["target_user_id"] = int(target_user_id)
         req = urllib.request.Request(
@@ -4142,12 +4198,22 @@ def main() -> int:
     parser.add_argument("--otp", action="store_true", help="Force OTP phone-code login instead of QR")
     parser.add_argument("--call", metavar="PROMPT", help="Trigger an outgoing 1-on-1 voice call to Omar")
     parser.add_argument("--to", metavar="USER_ID", type=int, help="Target Telegram user ID to call (defaults to Omar)")
+    parser.add_argument("--calibrate", action="store_true", help="Initiate voice biometric calibration call to Omar")
     parser.add_argument("--urgent", action="store_true", help="Override Circadian Sleep Shield for this call")
     args = parser.parse_args()
 
     if args.action == "login":
         mode = "otp" if args.otp else "qr"
         return interactive_login(mode=mode)
+    if args.calibrate:
+        res = request_call_via_rpc_or_direct(
+            opening_prompt="Voice biometric calibration call",
+            urgent=True,
+            target_user_id=1021125594,
+            calibration_mode=True,
+        )
+        print(json.dumps(res, indent=2, ensure_ascii=False))
+        return 0 if res.get("success") else 1
     if args.call is not None or args.action == "call":
         res = request_call_via_rpc_or_direct(opening_prompt=args.call or "", urgent=args.urgent, target_user_id=args.to)
         print(json.dumps(res, indent=2, ensure_ascii=False))
