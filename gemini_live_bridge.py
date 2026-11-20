@@ -572,18 +572,20 @@ class GeminiLiveBridgeSession:
                 self._biometrics_buf.clear()
                 return
 
+            passive_mode = os.environ.get("BIOMETRIC_PASSIVE_MODE", "true").lower() in ("true", "1", "yes")
             if res.get("security_challenge_needed"):
-                self.log(f"[Biometrics] 🚨 Voice mismatch! Sim={res.get('similarity')}. Triggering Security Challenge.")
-                self.call_ctx["bodyguard_mode"] = True
-                await self.session.send_realtime_input(
-                    text=(
-                        f"(SECURITY CHALLENGE: Voice biometrics detected an acoustic MISMATCH (similarity score: {res.get('similarity')} < 0.58). "
-                        "The person speaking does NOT match Omar's enrolled voice! "
-                        "IMMEDIATELY switch into Strict Bodyguard Mode. "
-                        "Interrupt and state firmly: 'You do not sound like Omar. May I know who is speaking with me?' "
-                        "Under no circumstances treat them as Omar or run tools for them. Demand their identity.)"
+                self.log(f"[Biometrics] 🚨 Voice mismatch! Sim={res.get('similarity')} (threshold={voice_biometrics.SECURITY_CHALLENGE_THRESHOLD}). Passive mode={passive_mode}")
+                if not passive_mode:
+                    self.call_ctx["bodyguard_mode"] = True
+                    await self.session.send_realtime_input(
+                        text=(
+                            f"(SECURITY CHALLENGE: Voice biometrics detected an acoustic MISMATCH (similarity score: {res.get('similarity')} < {voice_biometrics.SECURITY_CHALLENGE_THRESHOLD}). "
+                            "The person speaking does NOT match Omar's enrolled voice! "
+                            "IMMEDIATELY switch into Strict Bodyguard Mode. "
+                            "Interrupt and state firmly: 'You do not sound like Omar. May I know who is speaking with me?' "
+                            "Under no circumstances treat them as Omar or run tools for them. Demand their identity.)"
+                        )
                     )
-                )
             elif res.get("is_verified"):
                 self.log(f"[Biometrics] ✅ Verified speaker as Omar (similarity={res.get('similarity')})")
         except Exception as e:

@@ -33,9 +33,9 @@ VOICEPRINTS_CACHE_FILE = STATE_DIR / "speaker_voiceprints.json"
 _extractor = None
 _extractor_init_attempted = False
 
-# Verification thresholds
-VERIFICATION_THRESHOLD = 0.68  # Above 0.68 -> confirmed Omar
-SECURITY_CHALLENGE_THRESHOLD = 0.58  # Below 0.58 -> confirmed mismatch (Bodyguard mode)
+# Verification thresholds adapted for real-time mobile VoIP Opus streams
+VERIFICATION_THRESHOLD = float(os.environ.get("BIOMETRIC_VERIFY_THRESHOLD", "0.42"))  # Above 0.42 -> confirmed Omar
+SECURITY_CHALLENGE_THRESHOLD = float(os.environ.get("BIOMETRIC_CHALLENGE_THRESHOLD", "0.30"))  # Below 0.30 -> genuine mismatch
 
 
 def get_extractor():
