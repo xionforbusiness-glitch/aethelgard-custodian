@@ -624,17 +624,17 @@ class GeminiLiveBridgeSession:
 
             passive_mode = os.environ.get("BIOMETRIC_PASSIVE_MODE", "false").lower() in ("true", "1", "yes")
 
-            # CASE 1: VERIFIED AUTHENTIC OMAR (sim >= 0.55)
-            if sim >= 0.55:
+            # CASE 1: VERIFIED AUTHENTIC OMAR (sim >= 0.58)
+            if sim >= 0.58:
                 self._mismatch_streak = 0
                 if is_currently_locked:
                     # INSTANT UNLOCK: Omar spoke after a lockdown was triggered!
                     self.call_ctx["bodyguard_mode"] = False
-                    self.log(f"[Biometrics] 🔓 LOCKDOWN LIFTED! Omar voice re-verified (sim={sim:.4f} >= 0.55). Vault systems restored!")
+                    self.log(f"[Biometrics] 🔓 LOCKDOWN LIFTED! Omar voice re-verified (sim={sim:.4f} >= 0.58). Vault systems restored!")
                     if not passive_mode:
                         await self.session.send_realtime_input(
                             text=(
-                                f"(SECURITY PROTOCOL DEACTIVATED: Voice biometrics has re-verified Omar Elnemr's authentic acoustic signature (similarity score: {sim:.3f} >= 0.55). "
+                                f"(SECURITY PROTOCOL DEACTIVATED: Voice biometrics has re-verified Omar Elnemr's authentic acoustic signature (similarity score: {sim:.3f} >= 0.58). "
                                 "THE REAL OMAR IS BACK! All executive vault systems, file privileges, and tool access are fully unlocked and active. "
                                 "React spontaneously with genuine relief, warmth, and witty butler charm—do NOT recite a canned line! "
                                 "Acknowledge that his true voice is back (e.g. banter about the vocal disguise, express relief that the real master returned, or playfully comment on the voice test), "
@@ -643,25 +643,31 @@ class GeminiLiveBridgeSession:
                             )
                         )
                 else:
-                    self.log(f"[Biometrics] ✅ Verified speaker as Omar (similarity={sim:.4f} >= 0.55). Profile confirmed.")
+                    self.log(f"[Biometrics] ✅ Verified speaker as Omar (similarity={sim:.4f} >= 0.58). Profile confirmed.")
+                    # Feature: Continuous Acoustic Drift Adaptation on high-confidence speech
+                    if sim >= 0.70:
+                        try:
+                            await loop.run_in_executor(None, voice_biometrics.adapt_voiceprint, "omar", audio_bytes)
+                        except Exception as a_err:
+                            self.log(f"[Biometrics Adaptation Notice]: {a_err}")
                 return
 
-            # CASE 2: INCONCLUSIVE ACOUSTIC ZONE (0.45 <= sim < 0.55)
-            # Brief phrase, phone Opus compression variation, or room hum.
-            if sim >= 0.45:
+            # CASE 2: INCONCLUSIVE ACOUSTIC ZONE (0.55 <= sim < 0.58)
+            # Narrow 0.03 buffer for marginal audio
+            if sim >= 0.55:
                 self.log(f"[Biometrics] ℹ️ Inconclusive acoustic match (similarity={sim:.4f}). Preserving current state (locked={is_currently_locked}).")
                 return
 
-            # CASE 3: DEFINITE ACOUSTIC MISMATCH (sim < 0.45)
+            # CASE 3: DEFINITE ACOUSTIC MISMATCH (sim < 0.55)
             # User Directive: 1 CONSECUTIVE TURN of acoustic mismatch immediately locks down!
-            self.log(f"[Biometrics] ⚠️ Acoustic mismatch detected! sim={sim:.4f} < 0.45")
+            self.log(f"[Biometrics] ⚠️ Acoustic mismatch detected! sim={sim:.4f} < 0.55")
             if not is_currently_locked:
                 self.log("🚨 UNRECOGNIZED VOICE DETECTED (Turn 1 mismatch)! Activating Dynamic Bodyguard Security Lockdown.")
                 if not passive_mode:
                     self.call_ctx["bodyguard_mode"] = True
                     await self.session.send_realtime_input(
                         text=(
-                            f"(SECURITY PROTOCOL ACTIVATED: Acoustic biometrics detected an unfamiliar voice profile (similarity: {sim:.3f} < 0.45). "
+                            f"(SECURITY PROTOCOL ACTIVATED: Acoustic biometrics detected an unfamiliar voice profile (similarity: {sim:.3f} < 0.55). "
                             "You are certain this voice does NOT match Omar Elnemr's enrolled acoustic signature! "
                             "All executive vault systems, drafts, and confidential files are automatically SECURED and LOCKED behind the scenes. "
                             "Under NO circumstances execute tools, delete/send drafts, or reveal private personal details! "
@@ -674,7 +680,19 @@ class GeminiLiveBridgeSession:
                         )
                     )
             else:
-                self.log(f"[Biometrics] 🔒 Security lockdown maintained (sim={sim:.4f} < 0.45). Speaker is not Omar.")
+                self.log(f"[Biometrics] 🔒 Security lockdown maintained (sim={sim:.4f} < 0.55). Continuing playful/firm challenge.")
+                if not passive_mode:
+                    await self.session.send_realtime_input(
+                        text=(
+                            f"(SECURITY PROTOCOL ONGOING: Voice evaluated again and STILL does not match Omar (similarity: {sim:.3f} < 0.55). "
+                            "Vault and confidential tools remain 100% LOCKED! "
+                            "Stay in character! Continue the playful or firm banter on this turn: "
+                            "- If the caller continues in this disguised voice or insists they are Omar, tease them: 'Nice try, but that voice still isn\\'t passing inspection! Did you catch a cold, or are you practicing for an audition?' "
+                            "- You can playfully challenge them with a security riddle: 'If you truly are Omar, prove it with our aviation lore—what score did we earn on our Amadeus Altéa DCS exam, or which airline station flights did we handle at Damascus airport?' "
+                            "- If they speak Arabic, banter in Syrian Arabic ('لساتك عم تحاول تقلد صوته؟ والله ما عم تزبط معك يا غالي! مين عم يحكي؟'). "
+                            "- Keep the interaction dynamic, witty, and engaging, but keep all vault actions strictly locked!)"
+                        )
+                    )
         except Exception as e:
             self.log(f"[Biometrics] Error evaluating biometrics: {e}")
 

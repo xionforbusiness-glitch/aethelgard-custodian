@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -253,3 +254,55 @@ def verify_speaker(
         "is_verified": is_verified,
         "security_challenge_needed": challenge,
     }
+
+
+def adapt_voiceprint(speaker_name: str, pcm_bytes: bytes, alpha: float = 0.05, sample_rate: int = 16000) -> bool:
+    """
+    Continuous Acoustic Drift Adaptation:
+    Gently adapts the enrolled Master Centroid with confirmed authentic speech (sim >= 0.70).
+    C_new = normalize((1 - alpha) * C_old + alpha * new_emb).
+    """
+    try:
+        clean_name = speaker_name.strip().lower()
+        enrolled = get_enrolled_voiceprint(clean_name)
+        if enrolled is None:
+            return False
+
+        new_emb = compute_embedding(pcm_bytes, sample_rate=sample_rate)
+        if new_emb is None:
+            return False
+
+        sim = float(np.dot(new_emb, enrolled))
+        if sim < 0.70:
+            return False
+
+        updated = (1.0 - alpha) * enrolled + alpha * new_emb
+        norm = np.linalg.norm(updated)
+        if norm > 0:
+            updated = updated / norm
+
+        emb_list = [round(float(v), 6) for v in updated.tolist()]
+
+        cache = _load_cached_voiceprints()
+        cache[clean_name] = emb_list
+        _save_cached_voiceprints(cache)
+
+        try:
+            import db
+            client = db.get_client()
+            if client:
+                m_db = client["aethelgard"]
+                coll = m_db["speaker_voiceprints"]
+                coll.update_one(
+                    {"speaker": clean_name},
+                    {"$set": {"embedding": emb_list, "updated_at": datetime.now(timezone.utc)}},
+                    upsert=True,
+                )
+        except Exception:
+            pass
+
+        logger.info(f"🧬 [Continuous Adaptation] Refined Master Centroid for '{clean_name}' (sim={sim:.3f}, alpha={alpha})")
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to adapt voiceprint: {e}")
+        return False
