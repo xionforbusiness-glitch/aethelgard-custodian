@@ -349,8 +349,8 @@ class GeminiLiveBridgeSession:
             using_ai_studio = bool(api_key)
             if using_ai_studio:
                 self.log("Initializing Gemini Live client via Google AI Studio API key (Zero-Cost Free Tier)...")
-                self.client = genai.Client(api_key=api_key)
-                models_to_try = [live_model] if live_model else ["gemini-2.0-flash-exp", "gemini-3.8-live"]
+                self.client = genai.Client(api_key=api_key, http_options={"api_version": "v1alpha"})
+                models_to_try = [live_model] if live_model else ["gemini-3.8-live", "gemini-2.5-flash-native-audio-dialog"]
             else:
                 self.log("Initializing Gemini Live client via Vertex AI OAuth credentials...")
                 import antigravity_proxy as ap
