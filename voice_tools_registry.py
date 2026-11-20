@@ -233,10 +233,10 @@ def get_voice_tool_declarations() -> List[types.Tool]:
                     parameters=types.Schema(
                         type=types.Type.OBJECT,
                         properties={
-                            "to": types.Schema(type=types.Type.STRING, description="Single recipient email address"),
+                            "to": types.Schema(type=types.Type.STRING, description="Single recipient email address. If Omar says 'me' or 'myself', pass 'omar.alnemr04@gmail.com'"),
                             "subject": types.Schema(type=types.Type.STRING, description="Descriptive email subject line"),
                             "body": types.Schema(type=types.Type.STRING, description="Complete email body content"),
-                            "attach_career_pack": types.Schema(type=types.Type.BOOLEAN, description="Whether to attach CV and certificates (default True)"),
+                            "attach_career_pack": types.Schema(type=types.Type.BOOLEAN, description="Whether to attach CV and certificates (set True ONLY for job/career applications, default False)"),
                         },
                         required=["to", "subject", "body"],
                     ),

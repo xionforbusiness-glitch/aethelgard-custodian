@@ -679,10 +679,10 @@ VOICE_TOOLS: List[Dict[str, Any]] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "to": {"type": "string", "description": "Recipient email"},
+                    "to": {"type": "string", "description": "Recipient email. If Omar says 'me' or 'myself', pass 'omar.alnemr04@gmail.com'"},
                     "subject": {"type": "string", "description": "Email subject"},
                     "body": {"type": "string", "description": "Draft body"},
-                    "attach_career_pack": {"type": "boolean", "description": "Attach Omar's primary CV and Etihad certificates"},
+                    "attach_career_pack": {"type": "boolean", "description": "Attach Omar's primary CV and certificates (set True ONLY for job applications, default False)"},
                 },
                 "required": ["to", "subject", "body"],
             },
@@ -1884,15 +1884,18 @@ class VoiceBrainSession:
             if name == "save_gmail_draft":
                 from omnichannel_bridge import GoogleAdapter
                 to_raw = str(args.get("to") or "").strip()
-                subject = str(args.get("subject") or "Application from Omar Elnemr").strip()
+                if to_raw.lower() in ("me", "myself", "omar", "omar.elnemr@example.com", "omar@example.com") or not to_raw:
+                    to_raw = "omar.alnemr04@gmail.com"
+
+                subject = str(args.get("subject") or "Draft from Omar Elnemr").strip()
                 body = str(args.get("body") or "").strip()
 
                 # Clean up generic placeholder names
                 for ph in ["[Your Name]", "[Applicant Name]", "[Name]"]:
                     body = body.replace(ph, "Omar Elnemr")
 
-                # Detect if this is job-related or if attach_career_pack was requested
-                attach_career = bool(args.get("attach_career_pack", True))
+                # Detect if this is job-related or if attach_career_pack was requested (default FALSE for non-job emails!)
+                attach_career = bool(args.get("attach_career_pack", False))
                 is_job_related = any(k in f"{to_raw} {subject} {body}".lower() for k in [
                     "recruit", "career", "job", "hr@", "application", "ground ops", "passenger service", "officer", "agent"
                 ])
