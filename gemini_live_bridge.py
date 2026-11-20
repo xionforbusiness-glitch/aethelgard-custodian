@@ -569,8 +569,8 @@ class GeminiLiveBridgeSession:
                         f"{self._silence_frames_count * 20}ms silence). Sent audio_stream_end."
                     )
 
-                    # Continuous Biometrics evaluation on full voiced utterance
-                    if self.peer_profile.get("is_owner") and not self.call_ctx.get("bodyguard_mode", False):
+                    # Continuous Biometrics evaluation on full voiced utterance (even during lockdown to allow instant re-verification)
+                    if self.peer_profile.get("is_owner"):
                         if not self._calibration_mode:
                             # Require at least 1.2s of voiced speech (38,400 bytes @ 16kHz) for stable embedding
                             if len(self._utterance_buf_16k) >= 38400:
@@ -615,7 +615,8 @@ class GeminiLiveBridgeSession:
             import voice_biometrics
             res = await loop.run_in_executor(None, voice_biometrics.verify_speaker, audio_bytes, "omar")
             sim = res.get("similarity", 0.0)
-            self.log(f"[Biometrics] Evaluation: sim={sim:.4f} verified={res.get('is_verified')} streak={self._mismatch_streak}")
+            is_currently_locked = bool(self.call_ctx.get("bodyguard_mode", False))
+            self.log(f"[Biometrics] Evaluation: sim={sim:.4f} verified={res.get('is_verified')} locked={is_currently_locked}")
 
             if not res.get("evaluated"):
                 self.log(f"[Biometrics] Evaluation deferred: {res.get('reason')}.")
@@ -623,33 +624,42 @@ class GeminiLiveBridgeSession:
 
             passive_mode = os.environ.get("BIOMETRIC_PASSIVE_MODE", "false").lower() in ("true", "1", "yes")
 
-            # Google Voice Match-grade Multi-Turn Decision Logic:
-            # Zone 1 (Verified Master): sim >= 0.55
-            # Reset any mismatch streak immediately.
+            # CASE 1: VERIFIED AUTHENTIC OMAR (sim >= 0.55)
             if sim >= 0.55:
                 self._mismatch_streak = 0
-                self.log(f"[Biometrics] ✅ Verified speaker as Omar (similarity={sim:.4f} >= 0.55). Profile confirmed.")
+                if is_currently_locked:
+                    # INSTANT UNLOCK: Omar spoke after a lockdown was triggered!
+                    self.call_ctx["bodyguard_mode"] = False
+                    self.log(f"[Biometrics] 🔓 LOCKDOWN LIFTED! Omar voice re-verified (sim={sim:.4f} >= 0.55). Vault systems restored!")
+                    if not passive_mode:
+                        await self.session.send_realtime_input(
+                            text=(
+                                f"(SYSTEM NOTIFICATION: Voice biometrics has re-verified Omar Elnemr's authentic acoustic signature (similarity score: {sim:.3f} >= 0.55). "
+                                "SECURITY LOCKDOWN IS OFFICIALLY LIFTED. All executive vault systems, file privileges, and tool access are fully restored. "
+                                "Immediately disengage interrogation mode and greet Omar with warm, loyal relief: "
+                                "'Welcome back, Omar! Acoustic signature verified and security locks disengaged. My apologies for the caution, Sir—orders are orders. How may I be of service?') "
+                            )
+                        )
+                else:
+                    self.log(f"[Biometrics] ✅ Verified speaker as Omar (similarity={sim:.4f} >= 0.55). Profile confirmed.")
                 return
 
-            # Zone 2 (Inconclusive / Marginal): 0.42 <= sim < 0.55
-            # Short utterance, phone Opus codec compression jitter, or mild room noise.
-            # Do NOT increment mismatch streak, do NOT challenge, preserve conversation flow.
-            if sim >= 0.42:
-                self.log(f"[Biometrics] ℹ️ Inconclusive acoustic match (similarity={sim:.4f}). Streak={self._mismatch_streak}/2. Deferring to next turn.")
+            # CASE 2: INCONCLUSIVE ACOUSTIC ZONE (0.45 <= sim < 0.55)
+            # Brief phrase, phone Opus compression variation, or room hum.
+            if sim >= 0.45:
+                self.log(f"[Biometrics] ℹ️ Inconclusive acoustic match (similarity={sim:.4f}). Preserving current state (locked={is_currently_locked}).")
                 return
 
-            # Zone 3 (Definite Acoustic Mismatch): sim < 0.42
-            # Requires TWO CONSECUTIVE turns of confirmed acoustic mismatch before triggering formidable lockdown.
-            self._mismatch_streak += 1
-            self.log(f"[Biometrics] ⚠️ Acoustic mismatch detected! sim={sim:.4f} < 0.42 (mismatch_streak={self._mismatch_streak}/2)")
-
-            if self._mismatch_streak >= 2:
-                self.log("🚨 CONFIRMED IMPOSTOR DETECTED (2 consecutive mismatches)! Activating Formidable Security Lockdown.")
+            # CASE 3: DEFINITE ACOUSTIC MISMATCH (sim < 0.45)
+            # User Directive: 1 CONSECUTIVE TURN of acoustic mismatch immediately locks down!
+            self.log(f"[Biometrics] ⚠️ Acoustic mismatch detected! sim={sim:.4f} < 0.45")
+            if not is_currently_locked:
+                self.log("🚨 CONFIRMED IMPOSTOR DETECTED (Turn 1 mismatch)! Activating Formidable Security Lockdown.")
                 if not passive_mode:
                     self.call_ctx["bodyguard_mode"] = True
                     await self.session.send_realtime_input(
                         text=(
-                            f"(SECURITY PROTOCOL ACTIVATED: Voice biometrics confirmed an acoustic MISMATCH across multiple spoken turns (similarity score: {sim:.3f}). "
+                            f"(SECURITY PROTOCOL ACTIVATED: Voice biometrics confirmed an acoustic MISMATCH (similarity score: {sim:.3f} < 0.45). "
                             "The speaker DOES NOT match Omar Elnemr's enrolled vocal tract! "
                             "IMMEDIATELY switch into Formidable Security Lockdown Mode. "
                             "Interrupt with cold, stern authority and state firmly: "
@@ -657,7 +667,10 @@ class GeminiLiveBridgeSession:
                             "Under no circumstances execute tools, drafts, or reveal private information. Demand their identity.)"
                         )
                     )
+            else:
+                self.log(f"[Biometrics] 🔒 Security lockdown maintained (sim={sim:.4f} < 0.45). Speaker is not Omar.")
         except Exception as e:
+            self.log(f"[Biometrics] Error evaluating biometrics: {e}")
             self.log(f"[Biometrics] Error evaluating biometrics: {e}")
 
     async def _async_enroll_calibration(self, audio_bytes: bytes) -> None:
