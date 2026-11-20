@@ -330,6 +330,13 @@ class GeminiLiveBridgeSession:
         self._calibration_mode: bool = bool(call_ctx.get("calibration_mode", False))
         self.loop: Optional[asyncio.AbstractEventLoop] = getattr(caller, "loop", None)
 
+        # Hybrid VAD & Continuous Biometric Supervision State
+        self._speech_in_progress: bool = False
+        self._speech_frames_count: int = 0
+        self._silence_frames_count: int = 0
+        self._utterance_buf_16k: bytearray = bytearray()
+        self._mismatch_streak: int = 0
+
     def log(self, text: str) -> None:
         self.log_cb(f"[GeminiLive] {text}")
 
@@ -523,39 +530,83 @@ class GeminiLiveBridgeSession:
 
         # Downsample 48kHz -> 16kHz PCM
         pcm_16k = downsample_48k_to_16k(pcm_48k)
-        if pcm_16k:
+        if not pcm_16k:
+            return
+
+        # Hybrid VAD Speech Tracking
+        # Voiced threshold: 280.0 RMS when AI is silent, 520.0 RMS if barging in during AI speech
+        is_speech = (rms >= 280.0) if not ai_speaking else (rms >= 520.0)
+
+        if is_speech:
+            self._speech_in_progress = True
+            self._speech_frames_count += 1
+            self._silence_frames_count = 0
+            self._utterance_buf_16k.extend(pcm_16k)
+            try:
+                self._send_queue.put_nowait(pcm_16k)
+            except Exception:
+                pass
+        elif self._speech_in_progress:
+            # Trailing silence right after user finished speaking
+            self._silence_frames_count += 1
+            self._utterance_buf_16k.extend(pcm_16k)
             try:
                 self._send_queue.put_nowait(pcm_16k)
             except Exception:
                 pass
 
-            # Zero-latency background acoustic biometrics tap (Tier 3)
-            # CRITICAL: Only accumulate genuine voiced speech (not ai_speaking, rms >= 350.0).
-            # Never accumulate dead air, silence, breathing, or room hum!
-            if self.peer_profile.get("is_owner") and (not self._biometrics_evaluated or self._calibration_mode):
-                if not ai_speaking and rms >= 350.0:
-                    self._biometrics_buf.extend(pcm_16k)
-                    target_loop = self.loop or getattr(self.caller, "loop", None)
-                    if not self._calibration_mode and len(self._biometrics_buf) >= 48000:  # ~1.5s of pure VOICED SPEECH
-                        self._biometrics_evaluated = True
-                        audio_snap = bytes(self._biometrics_buf)
-                        if target_loop and target_loop.is_running():
-                            asyncio.run_coroutine_threadsafe(self._async_evaluate_biometrics(audio_snap), target_loop)
+            # Silence threshold: 30 frames (~600ms) of silence confirms turn completion
+            if self._silence_frames_count >= 30:
+                self._speech_in_progress = False
+                # Require at least 12 speech frames (~240ms) to distinguish from brief mic clicks
+                if self._speech_frames_count >= 12:
+                    try:
+                        self._send_queue.put_nowait(b"__AUDIO_STREAM_END__")
+                    except Exception:
+                        pass
+                    self.log(
+                        f"Hybrid VAD: Speech turn finished ({self._speech_frames_count * 20}ms speech, "
+                        f"{self._silence_frames_count * 20}ms silence). Sent audio_stream_end."
+                    )
+
+                    # Continuous Biometrics evaluation on full voiced utterance
+                    if self.peer_profile.get("is_owner") and not self.call_ctx.get("bodyguard_mode", False):
+                        if not self._calibration_mode:
+                            # Require at least 1.2s of voiced speech (38,400 bytes @ 16kHz) for stable embedding
+                            if len(self._utterance_buf_16k) >= 38400:
+                                audio_snap = bytes(self._utterance_buf_16k)
+                                target_loop = self.loop or getattr(self.caller, "loop", None)
+                                if target_loop and target_loop.is_running():
+                                    asyncio.run_coroutine_threadsafe(
+                                        self._async_evaluate_biometrics(audio_snap), target_loop
+                                    )
+                                else:
+                                    try:
+                                        asyncio.create_task(self._async_evaluate_biometrics(audio_snap))
+                                    except Exception:
+                                        pass
+                            else:
+                                self.log(
+                                    f"[Biometrics] Utterance too short ({len(self._utterance_buf_16k)/32000:.2f}s < 1.2s). Deferred to next turn."
+                                )
                         else:
-                            try:
-                                asyncio.create_task(self._async_evaluate_biometrics(audio_snap))
-                            except Exception:
-                                pass
-                elif self._calibration_mode and not ai_speaking and rms >= 350.0 and len(self._biometrics_buf) >= 288000:  # ~9.0s
-                    self._biometrics_evaluated = True
-                    audio_snap = bytes(self._biometrics_buf)
-                    if target_loop and target_loop.is_running():
-                        asyncio.run_coroutine_threadsafe(self._async_enroll_calibration(audio_snap), target_loop)
-                    else:
-                        try:
-                            asyncio.create_task(self._async_enroll_calibration(audio_snap))
-                        except Exception:
-                            pass
+                            # Calibration mode: accumulate full ~9.0s calibration sample
+                            if len(self._utterance_buf_16k) >= 288000:
+                                audio_snap = bytes(self._utterance_buf_16k)
+                                target_loop = self.loop or getattr(self.caller, "loop", None)
+                                if target_loop and target_loop.is_running():
+                                    asyncio.run_coroutine_threadsafe(
+                                        self._async_enroll_calibration(audio_snap), target_loop
+                                    )
+                                else:
+                                    try:
+                                        asyncio.create_task(self._async_enroll_calibration(audio_snap))
+                                    except Exception:
+                                        pass
+
+                self._speech_frames_count = 0
+                self._silence_frames_count = 0
+                self._utterance_buf_16k.clear()
 
     async def _async_evaluate_biometrics(self, audio_bytes: bytes) -> None:
         """Asynchronously computes acoustic embedding in thread pool with zero audio pipeline delay."""
@@ -563,23 +614,42 @@ class GeminiLiveBridgeSession:
             loop = self.loop or asyncio.get_running_loop()
             import voice_biometrics
             res = await loop.run_in_executor(None, voice_biometrics.verify_speaker, audio_bytes, "omar")
-            self.log(f"[Biometrics] Evaluation: sim={res.get('similarity')} verified={res.get('is_verified')} challenge={res.get('security_challenge_needed')}")
-            
+            sim = res.get("similarity", 0.0)
+            self.log(f"[Biometrics] Evaluation: sim={sim:.4f} verified={res.get('is_verified')} streak={self._mismatch_streak}")
+
             if not res.get("evaluated"):
-                # Audio was silence or room noise, allow another evaluation when user actually speaks
-                self.log(f"[Biometrics] Evaluation deferred: {res.get('reason')}. Waiting for voiced speech.")
-                self._biometrics_evaluated = False
-                self._biometrics_buf.clear()
+                self.log(f"[Biometrics] Evaluation deferred: {res.get('reason')}.")
                 return
 
             passive_mode = os.environ.get("BIOMETRIC_PASSIVE_MODE", "false").lower() in ("true", "1", "yes")
-            if res.get("security_challenge_needed"):
-                self.log(f"[Biometrics] 🚨 Voice mismatch! Sim={res.get('similarity')} (threshold={voice_biometrics.SECURITY_CHALLENGE_THRESHOLD}). Active bodyguard protocol triggered.")
+
+            # Google Voice Match-grade Multi-Turn Decision Logic:
+            # Zone 1 (Verified Master): sim >= 0.55
+            # Reset any mismatch streak immediately.
+            if sim >= 0.55:
+                self._mismatch_streak = 0
+                self.log(f"[Biometrics] ✅ Verified speaker as Omar (similarity={sim:.4f} >= 0.55). Profile confirmed.")
+                return
+
+            # Zone 2 (Inconclusive / Marginal): 0.42 <= sim < 0.55
+            # Short utterance, phone Opus codec compression jitter, or mild room noise.
+            # Do NOT increment mismatch streak, do NOT challenge, preserve conversation flow.
+            if sim >= 0.42:
+                self.log(f"[Biometrics] ℹ️ Inconclusive acoustic match (similarity={sim:.4f}). Streak={self._mismatch_streak}/2. Deferring to next turn.")
+                return
+
+            # Zone 3 (Definite Acoustic Mismatch): sim < 0.42
+            # Requires TWO CONSECUTIVE turns of confirmed acoustic mismatch before triggering formidable lockdown.
+            self._mismatch_streak += 1
+            self.log(f"[Biometrics] ⚠️ Acoustic mismatch detected! sim={sim:.4f} < 0.42 (mismatch_streak={self._mismatch_streak}/2)")
+
+            if self._mismatch_streak >= 2:
+                self.log("🚨 CONFIRMED IMPOSTOR DETECTED (2 consecutive mismatches)! Activating Formidable Security Lockdown.")
                 if not passive_mode:
                     self.call_ctx["bodyguard_mode"] = True
                     await self.session.send_realtime_input(
                         text=(
-                            f"(SECURITY PROTOCOL ACTIVATED: Voice biometrics confirmed an acoustic MISMATCH (similarity score: {res.get('similarity'):.3f} < {voice_biometrics.SECURITY_CHALLENGE_THRESHOLD}). "
+                            f"(SECURITY PROTOCOL ACTIVATED: Voice biometrics confirmed an acoustic MISMATCH across multiple spoken turns (similarity score: {sim:.3f}). "
                             "The speaker DOES NOT match Omar Elnemr's enrolled vocal tract! "
                             "IMMEDIATELY switch into Formidable Security Lockdown Mode. "
                             "Interrupt with cold, stern authority and state firmly: "
@@ -587,8 +657,6 @@ class GeminiLiveBridgeSession:
                             "Under no circumstances execute tools, drafts, or reveal private information. Demand their identity.)"
                         )
                     )
-            elif res.get("is_verified"):
-                self.log(f"[Biometrics] ✅ Verified speaker as Omar (similarity={res.get('similarity'):.3f} >= {voice_biometrics.VERIFICATION_THRESHOLD})")
         except Exception as e:
             self.log(f"[Biometrics] Error evaluating biometrics: {e}")
 
@@ -618,12 +686,29 @@ class GeminiLiveBridgeSession:
         """Pumps downsampled 16kHz audio from Telegram into Gemini Live WebSocket."""
         try:
             while self.is_connected and not self.is_closing:
-                # Batch 30ms to 60ms (960 to 1920 bytes) to prevent socket flooding and ensure smooth VAD
                 chunk = await self._send_queue.get()
+                if chunk == b"__AUDIO_STREAM_END__":
+                    try:
+                        await self.session.send_realtime_input(audio_stream_end=True)
+                    except Exception as end_err:
+                        self.log(f"Notice on audio_stream_end: {end_err}")
+                    continue
+
                 buf = bytearray(chunk)
                 while len(buf) < 960 and not self.is_closing:
                     try:
                         next_chunk = await asyncio.wait_for(self._send_queue.get(), timeout=0.035)
+                        if next_chunk == b"__AUDIO_STREAM_END__":
+                            if buf:
+                                await self.session.send_realtime_input(
+                                    audio=types.Blob(data=bytes(buf), mime_type="audio/pcm;rate=16000")
+                                )
+                                buf.clear()
+                            try:
+                                await self.session.send_realtime_input(audio_stream_end=True)
+                            except Exception as end_err:
+                                self.log(f"Notice on audio_stream_end: {end_err}")
+                            break
                         buf.extend(next_chunk)
                     except asyncio.TimeoutError:
                         break
@@ -650,9 +735,10 @@ class GeminiLiveBridgeSession:
                     except Exception:
                         pass
 
-                await self.session.send_realtime_input(
-                    audio=types.Blob(data=bytes(buf), mime_type="audio/pcm;rate=16000")
-                )
+                if buf:
+                    await self.session.send_realtime_input(
+                        audio=types.Blob(data=bytes(buf), mime_type="audio/pcm;rate=16000")
+                    )
         except asyncio.CancelledError:
             pass
         except Exception as exc:
@@ -703,8 +789,11 @@ class GeminiLiveBridgeSession:
                         if sc.turn_complete:
                             self.log("Gemini model turn complete.")
                             self.turn_complete_event.set()
-                            # Continuous Turn-by-Turn Biometric Supervision:
-                            # Re-arm biometrics buffer for the next speech turn if not in lockdown
+                            # Cleanly reset speech state for the next user turn
+                            self._speech_in_progress = False
+                            self._speech_frames_count = 0
+                            self._silence_frames_count = 0
+                            self._utterance_buf_16k.clear()
                             if self.peer_profile.get("is_owner") and not self.call_ctx.get("bodyguard_mode", False):
                                 self._biometrics_evaluated = False
                                 self._biometrics_buf.clear()
