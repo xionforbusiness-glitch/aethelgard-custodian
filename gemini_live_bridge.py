@@ -634,10 +634,12 @@ class GeminiLiveBridgeSession:
                     if not passive_mode:
                         await self.session.send_realtime_input(
                             text=(
-                                f"(SYSTEM NOTIFICATION: Voice biometrics has re-verified Omar Elnemr's authentic acoustic signature (similarity score: {sim:.3f} >= 0.55). "
-                                "SECURITY LOCKDOWN IS OFFICIALLY LIFTED. All executive vault systems, file privileges, and tool access are fully restored. "
-                                "Immediately disengage interrogation mode and greet Omar with warm, loyal relief: "
-                                "'Welcome back, Omar! Acoustic signature verified and security locks disengaged. My apologies for the caution, Sir—orders are orders. How may I be of service?') "
+                                f"(SECURITY PROTOCOL DEACTIVATED: Voice biometrics has re-verified Omar Elnemr's authentic acoustic signature (similarity score: {sim:.3f} >= 0.55). "
+                                "THE REAL OMAR IS BACK! All executive vault systems, file privileges, and tool access are fully unlocked and active. "
+                                "React spontaneously with genuine relief, warmth, and witty butler charm—do NOT recite a canned line! "
+                                "Acknowledge that his true voice is back (e.g. banter about the vocal disguise, express relief that the real master returned, or playfully comment on the voice test), "
+                                "and ask how you can be of service. "
+                                "If Omar speaks Arabic: react warmly in Syrian Arabic ('يا هلا والله بعمر! هيك الصوت الأصلي رجع وفتحنا كل الأنظمة. تفضل معك شو بتحب نعمل؟').)"
                             )
                         )
                 else:
@@ -654,23 +656,26 @@ class GeminiLiveBridgeSession:
             # User Directive: 1 CONSECUTIVE TURN of acoustic mismatch immediately locks down!
             self.log(f"[Biometrics] ⚠️ Acoustic mismatch detected! sim={sim:.4f} < 0.45")
             if not is_currently_locked:
-                self.log("🚨 CONFIRMED IMPOSTOR DETECTED (Turn 1 mismatch)! Activating Formidable Security Lockdown.")
+                self.log("🚨 UNRECOGNIZED VOICE DETECTED (Turn 1 mismatch)! Activating Dynamic Bodyguard Security Lockdown.")
                 if not passive_mode:
                     self.call_ctx["bodyguard_mode"] = True
                     await self.session.send_realtime_input(
                         text=(
-                            f"(SECURITY PROTOCOL ACTIVATED: Voice biometrics confirmed an acoustic MISMATCH (similarity score: {sim:.3f} < 0.45). "
-                            "The speaker DOES NOT match Omar Elnemr's enrolled vocal tract! "
-                            "IMMEDIATELY switch into Formidable Security Lockdown Mode. "
-                            "Interrupt with cold, stern authority and state firmly: "
-                            "'This is not a recognized voice profile. You are not Omar Elnemr. All executive files and vault systems have been secured and locked. This call is being recorded and logged. State your full name and who authorized you to access this private terminal.' "
-                            "Under no circumstances execute tools, drafts, or reveal private information. Demand their identity.)"
+                            f"(SECURITY PROTOCOL ACTIVATED: Acoustic biometrics detected an unfamiliar voice profile (similarity: {sim:.3f} < 0.45). "
+                            "You are certain this voice does NOT match Omar Elnemr's enrolled acoustic signature! "
+                            "All executive vault systems, drafts, and confidential files are automatically SECURED and LOCKED behind the scenes. "
+                            "Under NO circumstances execute tools, delete/send drafts, or reveal private personal details! "
+                            "HOWEVER, DO NOT recite a rigid robotic script! Adapt to the situation with spontaneous creativity, wit, and charisma: "
+                            "- You can be playfully suspicious or tease the speaker with dry British butler humor (e.g., 'Did you catch a sudden cold, Omar, or has an ambitious impostor taken over your phone? Do tell, who is actually speaking?', or 'My acoustic sensors suggest either you\\'ve swallowed a bass flute, Sir, or someone else has borrowed the receiver. Who might this be?'). "
+                            "- You can play along, joke around, or act charmingly skeptical while probing their identity until they admit who they are. "
+                            "- If the speaker sounds serious or hostile, shift smoothly into firm, suave, aristocratic authority. "
+                            "- If they speak Arabic, banter playfully in Syrian/Levantine Arabic ('شو القصة عمر؟ مغير صوتك ولا في حدا تاني عم يحكي من موبايلك؟ مين معنا يا محترم؟'). "
+                            "- Maintain the game and have fun with it, but keep all sensitive vault controls firmly guarded until authentic voice is restored!)"
                         )
                     )
             else:
                 self.log(f"[Biometrics] 🔒 Security lockdown maintained (sim={sim:.4f} < 0.45). Speaker is not Omar.")
         except Exception as e:
-            self.log(f"[Biometrics] Error evaluating biometrics: {e}")
             self.log(f"[Biometrics] Error evaluating biometrics: {e}")
 
     async def _async_enroll_calibration(self, audio_bytes: bytes) -> None:
