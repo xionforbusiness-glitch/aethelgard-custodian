@@ -195,9 +195,14 @@ class StudioOrchestrator:
                     logger.warning(f"Failed photo upload, falling back to text: {pe}")
 
             # 2. Text fallback
-            from proactive_scheduler import send_telegram
-            delivered = send_telegram(card_text)
-            logger.info(f"Delivered Telegram text card successfully: {delivered}")
+            tok = get_telegram_bot_token()
+            uid = get_telegram_user_id()
+            if tok and uid:
+                from proactive_scheduler import send_telegram
+                delivered = send_telegram(card_text, chat_id=uid, token=tok)
+                logger.info(f"Delivered Telegram text card successfully: {delivered}")
+            else:
+                logger.warning("Telegram bot token or user ID not available for studio briefing card.")
         except Exception as e:
             logger.error(f"Error delivering Telegram card: {e}")
 
