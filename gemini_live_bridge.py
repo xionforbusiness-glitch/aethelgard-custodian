@@ -18,6 +18,7 @@ import io
 import json
 import logging
 import os
+import random
 import sys
 import time
 from pathlib import Path
@@ -336,6 +337,8 @@ class GeminiLiveBridgeSession:
         self._silence_frames_count: int = 0
         self._utterance_buf_16k: bytearray = bytearray()
         self._mismatch_streak: int = 0
+        self._lockdown_turns_count: int = 0
+        self._max_lockdown_turns: int = random.randint(15, 20)
 
     def log(self, text: str) -> None:
         self.log_cb(f"[GeminiLive] {text}")
@@ -627,6 +630,7 @@ class GeminiLiveBridgeSession:
             # CASE 1: VERIFIED AUTHENTIC OMAR (sim >= 0.58)
             if sim >= 0.58:
                 self._mismatch_streak = 0
+                self._lockdown_turns_count = 0
                 if is_currently_locked:
                     # INSTANT UNLOCK: Omar spoke after a lockdown was triggered!
                     self.call_ctx["bodyguard_mode"] = False
@@ -660,7 +664,27 @@ class GeminiLiveBridgeSession:
 
             # CASE 3: DEFINITE ACOUSTIC MISMATCH (sim < 0.55)
             # User Directive: 1 CONSECUTIVE TURN of acoustic mismatch immediately locks down!
-            self.log(f"[Biometrics] ⚠️ Acoustic mismatch detected! sim={sim:.4f} < 0.55")
+            self._lockdown_turns_count += 1
+            self.log(f"[Biometrics] ⚠️ Acoustic mismatch detected! sim={sim:.4f} < 0.55 (impostor turn {self._lockdown_turns_count}/{self._max_lockdown_turns})")
+
+            # Check maximum persistence threshold (15-20 turns): Dismiss and hang up on persistent impostor
+            if self._lockdown_turns_count >= self._max_lockdown_turns:
+                self.log(f"[Biometrics] 🛑 Impostor reached maximum persistence limit ({self._lockdown_turns_count}/{self._max_lockdown_turns} turns). Terminating call!")
+                if not passive_mode:
+                    await self.session.send_realtime_input(
+                        text=(
+                            f"(CRITICAL TERMINATION DIRECTIVE: The caller has persisted for {self._lockdown_turns_count} turns without authenticating as Omar Elnemr. "
+                            "They are clearly an impostor wasting your executive time! "
+                            "Immediately and dismissively terminate the call. "
+                            "Tell them coldly and firmly (or in Syrian Arabic if speaking Arabic): "
+                            "'You are unmistakably not Omar Elnemr, and I have far more pressing executive duties than to indulge an impostor wasting my time. This conversation is now terminated. Good day.' "
+                            "If Arabic: 'واضح تماماً أنك مو عمر النمر، وأنا عندي واجبات ومسؤوليات أهم بكتير من إني ضيع وقتي معك. المكالمة منتهية هون. فرصة سعيدة.' "
+                            "CRITICAL: Deliver this final dismissal immediately and call `end_call`!)"
+                        )
+                    )
+                    asyncio.create_task(self._hangup_after_delay(max_wait=10.0))
+                return
+
             if not is_currently_locked:
                 self.log("🚨 UNRECOGNIZED VOICE DETECTED (Turn 1 mismatch)! Activating Dynamic Bodyguard Security Lockdown.")
                 if not passive_mode:
@@ -684,7 +708,7 @@ class GeminiLiveBridgeSession:
                 if not passive_mode:
                     await self.session.send_realtime_input(
                         text=(
-                            f"(SECURITY PROTOCOL ONGOING: Voice evaluated again and STILL does not match Omar (similarity: {sim:.3f} < 0.55). "
+                            f"(SECURITY PROTOCOL ONGOING: Voice evaluated again and STILL does not match Omar (similarity: {sim:.3f} < 0.55, turn {self._lockdown_turns_count}/{self._max_lockdown_turns}). "
                             "Vault and confidential tools remain 100% LOCKED! "
                             "Stay in character! Continue the playful or firm banter on this turn: "
                             "- If the caller continues in this disguised voice or insists they are Omar, tease them: 'Nice try, but that voice still isn\\'t passing inspection! Did you catch a cold, or are you practicing for an audition?' "
