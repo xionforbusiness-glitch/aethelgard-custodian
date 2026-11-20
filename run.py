@@ -983,6 +983,12 @@ def auto_sync_worker():
                 remote_rev = subprocess.run(["git", "-C", SCRIPT_DIR, "rev-parse", "origin/main"], capture_output=True, text=True, timeout=10).stdout.strip()
             target_ref = "FETCH_HEAD" if remote_rev else "origin/main"
             if local_rev and remote_rev and local_rev != remote_rev:
+                # ── Zero-Interruption Guard: Defer reload if a studio mission or active call is in progress ──
+                lock_file = "/tmp/aethelgard_studio_lock" if os.name != "nt" else os.path.join(SCRIPT_DIR, "studio.lock")
+                if os.path.exists(lock_file):
+                    print(f"[Code Sync] ⏳ New commits detected ({local_rev[:7]} -> {remote_rev[:7]}), but active studio mission lock is held. Deferring reload...", flush=True)
+                    continue
+
                 print(f"[Code Sync] 🚀 New commits detected on origin/main ({local_rev[:7]} -> {remote_rev[:7]})! Force-syncing and triggering reload...", flush=True)
                 subprocess.run(["git", "-C", SCRIPT_DIR, "reset", "--hard", target_ref], check=False, timeout=15)
                 with open(restart_path, "w", encoding="utf-8") as rf:
@@ -1202,10 +1208,19 @@ def antigravity_health_check_worker(interval_sec: int = 7200):
     while True:
         time.sleep(interval_sec)
         print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 🩺 Running scheduled 2-hour Antigravity health check...", flush=True)
-        if test_antigravity_liveness():
+        healthy = False
+        for attempt in range(1, 4):
+            if test_antigravity_liveness():
+                healthy = True
+                break
+            if attempt < 3:
+                print(f"[Health Check] Transient timeout (attempt {attempt}/3). Retrying in 10s...", flush=True)
+                time.sleep(10)
+
+        if healthy:
             print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] ✅ Antigravity 2-hour health check PASSED. System fully operational.", flush=True)
         else:
-            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 🚨 Antigravity health check FAILED! Auto-healing initiated...", flush=True)
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 🚨 Antigravity health check FAILED (3 attempts)! Auto-healing initiated...", flush=True)
             heal_antigravity_service()
 
 

@@ -15,6 +15,7 @@ staging/*
 !staging/.gitkeep
 conversation_state.json
 last_request.json
+studio.lock
 tests/recordings/
 tests/reports/
 shift_attendance_tracker.json

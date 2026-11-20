@@ -441,6 +441,53 @@ def get_voice_tool_declarations() -> List[types.Tool]:
                     behavior="BLOCKING",
                 ),
                 types.FunctionDeclaration(
+                    name="deploy_autonomous_website",
+                    description=(
+                        "Dispatches the Autonomous Web Studio Swarm to research, design, code in Next.js 15, "
+                        "push to GitHub (xionforbusiness-glitch), deploy live to Vercel (*.vercel.app), capture a full-page "
+                        "screenshot, and deliver the live production URL and visual preview directly to Omar's Telegram. "
+                        "Call this whenever Omar verbally asks: 'build a website for X', 'deploy a landing page', 'create a site for X'."
+                    ),
+                    parameters=types.Schema(
+                        type=types.Type.OBJECT,
+                        properties={
+                            "prompt": types.Schema(
+                                type=types.Type.STRING,
+                                description="The website purpose, features, or design specification (e.g. 'Landing page for air cargo turnaround at Damascus with dark theme').",
+                            ),
+                            "project_name": types.Schema(
+                                type=types.Type.STRING,
+                                description="Optional slug or project name (e.g. 'damascus-cargo').",
+                            ),
+                        },
+                        required=["prompt"],
+                    ),
+                    behavior="BLOCKING",
+                ),
+                types.FunctionDeclaration(
+                    name="generate_canva_presentation",
+                    description=(
+                        "Dispatches the Autonomous Presentation Studio to synthesize an executive slide deck "
+                        "(Canva/Marp structure), format visual assets, and deliver the presentation deck directly to Omar on Telegram. "
+                        "Call this whenever Omar verbally asks: 'create a presentation', 'draft a slide deck', 'make slides about X'."
+                    ),
+                    parameters=types.Schema(
+                        type=types.Type.OBJECT,
+                        properties={
+                            "topic": types.Schema(
+                                type=types.Type.STRING,
+                                description="The topic, briefing agenda, or subject of the presentation deck.",
+                            ),
+                            "title": types.Schema(
+                                type=types.Type.STRING,
+                                description="Optional title for the presentation deck.",
+                            ),
+                        },
+                        required=["topic"],
+                    ),
+                    behavior="BLOCKING",
+                ),
+                types.FunctionDeclaration(
                     name="end_call",
                     description="Terminates the live Telegram call after speaking a brief polite farewell to Omar. If Omar requested a callback, specify callback_minutes.",
                     parameters=types.Schema(
@@ -1447,6 +1494,58 @@ def execute_scout_frontier_tech(args: Dict[str, Any], session_ctx: Dict[str, Any
     }
 
 
+def execute_deploy_autonomous_website(args: Dict[str, Any], session_ctx: Dict[str, Any]) -> Dict[str, Any]:
+    """Dispatches the Autonomous Web Studio Swarm to build and deploy a live Next.js website."""
+    prompt = str(args.get("prompt") or "").strip()
+    project_name = str(args.get("project_name") or "").strip()
+    if not prompt:
+        prompt = "Modern aviation ground operations and turnaround tracking landing page"
+
+    def _run_bg_web():
+        try:
+            from modules.studio.studio_orchestrator import StudioOrchestrator
+            orch = StudioOrchestrator()
+            orch.build_and_deploy_website(prompt=prompt, project_name=project_name)
+        except Exception as e:
+            logger.error(f"[VoiceTools] Autonomous website deployment error: {e}")
+
+    threading.Thread(target=_run_bg_web, daemon=True).start()
+
+    return {
+        "status": "success",
+        "dispatched": True,
+        "prompt": prompt,
+        "summary": f"Dispatched Autonomous Web Studio to synthesize and deploy website for '{prompt}'. Live Vercel/GitHub URL and screenshot will be delivered to Telegram.",
+        "message": f"Understood, Sir. I have initiated the Autonomous Web Studio Swarm. The application is being synthesized in Next.js 15 and deployed to Vercel and GitHub. I shall deliver the live link and screenshot to your Telegram chat shortly.",
+    }
+
+
+def execute_generate_canva_presentation(args: Dict[str, Any], session_ctx: Dict[str, Any]) -> Dict[str, Any]:
+    """Dispatches the Autonomous Presentation Studio to synthesize an executive presentation deck."""
+    topic = str(args.get("topic") or "").strip()
+    title = str(args.get("title") or "").strip()
+    if not topic:
+        topic = "Aviation station operations and autonomous turnaround telemetry"
+
+    def _run_bg_deck():
+        try:
+            from modules.studio.studio_orchestrator import StudioOrchestrator
+            orch = StudioOrchestrator()
+            orch.generate_presentation_deck(topic=topic, title=title)
+        except Exception as e:
+            logger.error(f"[VoiceTools] Autonomous presentation generation error: {e}")
+
+    threading.Thread(target=_run_bg_deck, daemon=True).start()
+
+    return {
+        "status": "success",
+        "dispatched": True,
+        "topic": topic,
+        "summary": f"Dispatched Autonomous Presentation Studio to generate executive slide deck on '{topic}'. Presentation will be delivered to Telegram.",
+        "message": f"Understood, Sir. I have dispatched the presentation studio to draft the executive slide deck on {topic}. I will send the completed deck to your Telegram chat shortly.",
+    }
+
+
 # ==============================================================================
 # 3. UNIFIED DISPATCHER (CALLED BY VoiceBrainSession)
 # ==============================================================================
@@ -1465,6 +1564,8 @@ NEW_VOICE_TOOL_HANDLERS: Dict[str, Callable[[Dict[str, Any], Dict[str, Any]], Di
     "place_telegram_call": execute_place_telegram_call,
     "schedule_callback": execute_schedule_callback,
     "scout_frontier_tech": execute_scout_frontier_tech,
+    "deploy_autonomous_website": execute_deploy_autonomous_website,
+    "generate_canva_presentation": execute_generate_canva_presentation,
 }
 
 

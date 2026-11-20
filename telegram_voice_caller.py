@@ -3334,6 +3334,30 @@ class TelegramP2PCallManager:
                                 self._log_event(f"Frontier Scout error: {tse}")
                         import threading
                         threading.Thread(target=_run_scout_task, daemon=True).start()
+                    elif raw_text.startswith("/design"):
+                        parts = raw_text.split(None, 2)
+                        subcmd = parts[1].strip().lower() if len(parts) > 1 else "web"
+                        prompt_body = parts[2].strip() if len(parts) > 2 else ""
+                        if subcmd not in ("web", "deck"):
+                            prompt_body = f"{subcmd} {prompt_body}".strip()
+                            subcmd = "web"
+                        await event.reply(
+                            f"🎨 **Autonomous Studio Swarm:** Initializing {subcmd.upper()} creation for: "
+                            f"\"{prompt_body or 'Next.js 15 Web Application'}\"...\n"
+                            f"Synthesizing Next.js 15, pushing to GitHub, deploying to Vercel, and taking screenshot."
+                        )
+                        def _run_studio_task():
+                            try:
+                                from modules.studio.studio_orchestrator import StudioOrchestrator
+                                orch = StudioOrchestrator()
+                                if subcmd == "deck":
+                                    orch.generate_presentation_deck(topic=prompt_body or "Executive Briefing")
+                                else:
+                                    orch.build_and_deploy_website(prompt=prompt_body or "Modern Web Application")
+                            except Exception as s_err:
+                                self._log_event(f"Studio deployment error: {s_err}")
+                        import threading
+                        threading.Thread(target=_run_studio_task, daemon=True).start()
             except Exception as mexc:
                 self._log_event(f"NewMessage handler notice: {mexc}")
 
