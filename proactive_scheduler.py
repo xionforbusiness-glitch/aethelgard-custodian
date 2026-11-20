@@ -348,6 +348,7 @@ def proactive_scheduler_daemon(vault_dir):
     last_scout_date = None
     last_nightly_date = None
     last_weekly_date = None
+    last_tech_scout_date = None
     last_curiosity_hm = None
     last_vip_triage_slot = None
     last_linkedin_slot = None
@@ -415,6 +416,16 @@ def proactive_scheduler_daemon(vault_dir):
                 print(f"[Second Brain Librarian] Firing Weekly Executive Review: {today_str}")
                 trigger_weekly_review(vault_dir)
                 last_weekly_date = today_str
+
+            # 5b. Daily Autonomous Frontier Tech Scout (09:30 AM Damascus time)
+            if hour == 9 and minute >= 30 and last_tech_scout_date != today_str:
+                print(f"[Frontier Tech Scout] Firing Daily Breakthrough Hunt: {today_str} {hour}:{minute:02d}")
+                try:
+                    import frontier_tech_scout
+                    frontier_tech_scout.trigger_daily_tech_scout(vault_dir)
+                    last_tech_scout_date = today_str
+                except Exception as tse:
+                    print(f"⚠ Frontier Tech Scout notice: {tse}")
 
             # 6. Spontaneous Daytime Curiosity Ping (Stochastic check-in every 15m, suppressed during SLEEP_SHIELD)
             current_hm = (hour, minute // 15)

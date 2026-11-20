@@ -14,7 +14,9 @@ vault/
 staging/*
 !staging/.gitkeep
 conversation_state.json
+last_request.json
 tests/recordings/
+tests/reports/
 shift_attendance_tracker.json
 omniroute/omniroute_backup.json
 omniroute/storage.sqlite.gz

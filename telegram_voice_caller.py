@@ -3318,6 +3318,22 @@ class TelegramP2PCallManager:
                             except (ValueError, TypeError):
                                 pass
                             asyncio.create_task(self.initiate_outgoing_call(target_user_id=t_uid, opening_prompt=obj_str))
+                    elif raw_text.startswith("/scout"):
+                        parts = raw_text.split(None, 1)
+                        topic_str = parts[1].strip() if len(parts) > 1 else ""
+                        await event.reply(
+                            f"🔭 **Frontier Tech Scout:** Initiating deep breakthrough hunt on "
+                            f"`{topic_str or 'Autonomous Agents & Real-Time Voice'}`...\n"
+                            f"Synthesizing architectural dossier and Telegram briefing now."
+                        )
+                        def _run_scout_task():
+                            try:
+                                import frontier_tech_scout
+                                frontier_tech_scout.run_tech_scout_cycle(topic=topic_str)
+                            except Exception as tse:
+                                self._log_event(f"Frontier Scout error: {tse}")
+                        import threading
+                        threading.Thread(target=_run_scout_task, daemon=True).start()
             except Exception as mexc:
                 self._log_event(f"NewMessage handler notice: {mexc}")
 
